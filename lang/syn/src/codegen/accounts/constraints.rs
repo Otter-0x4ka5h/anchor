@@ -600,12 +600,52 @@ fn generate_constraint_init_group(
 
             let token_account_space = generate_get_token_account_space(mint);
 
+            // Find the payer field in the accounts struct to detect PDA constraints
+            let payer_field = accs
+                .fields
+                .iter()
+                .find(|f| f.ident() == &payer.to_token_stream().to_string().replace('\"', ""))
+                .and_then(|af| match af {
+                    AccountField::Field(field) => Some(field),
+                    AccountField::CompositeField(_) => None,
+                });
+
+            // Generate PDA signing code if payer has PDA constraints
+            let (pda_signing, payer_signing) = if let Some(payer_field) = payer_field {
+                if let Some(seeds) = &payer_field.constraints.seeds {
+                    if seeds.bump.is_some() {
+                        // Payer has PDA constraints, generate PDA signing
+                        let seeds_expr = &seeds.seeds;
+                        (
+                            quote! {
+                                let (__payer_pda_address, __payer_bump) = Pubkey::find_program_address(
+                                    &[#seeds_expr],
+                                    __program_id,
+                                );
+                                let __payer_seeds_with_bump = &[
+                                    #seeds_expr,
+                                    &[__payer_bump][..]
+                                ][..];
+                            },
+                            quote! { __payer_seeds_with_bump },
+                        )
+                    } else {
+                        (quote! {}, quote! { #seeds_with_bump })
+                    }
+                } else {
+                    (quote! {}, quote! { #seeds_with_bump })
+                }
+            } else {
+                (quote! {}, quote! { #seeds_with_bump })
+            };
+
             let create_account = generate_create_account(
                 field,
                 quote! {#token_account_space},
                 quote! {&#token_program.key()},
                 quote! {#payer},
-                seeds_with_bump,
+                payer_field,
+                payer_signing,
             );
 
             quote! {
@@ -619,6 +659,9 @@ fn generate_constraint_init_group(
                     let owner_program = #account_ref.owner;
                     if !#if_needed || owner_program == &anchor_lang::solana_program::system_program::ID {
                         #payer_optional_check
+
+                        // Generate PDA signing code for payer if needed
+                        #pda_signing
 
                         // Create the account with the system program.
                         #create_account
@@ -926,11 +969,22 @@ fn generate_constraint_init_group(
                 None => quote! { Option::<anchor_lang::prelude::Pubkey>::None },
             };
 
+            // Find the payer field in the accounts struct to detect PDA constraints
+            let payer_field = accs
+                .fields
+                .iter()
+                .find(|f| f.ident() == &payer.to_token_stream().to_string().replace('\"', ""))
+                .and_then(|af| match af {
+                    AccountField::Field(field) => Some(field),
+                    AccountField::CompositeField(_) => None,
+                });
+
             let create_account = generate_create_account(
                 field,
                 mint_space,
                 quote! {&#token_program.key()},
                 quote! {#payer},
+                payer_field,
                 seeds_with_bump,
             );
 
@@ -1070,11 +1124,22 @@ fn generate_constraint_init_group(
             };
 
             // CPI to the system program to create the account.
+            // Find the payer field in the accounts struct to detect PDA constraints
+            let payer_field = accs
+                .fields
+                .iter()
+                .find(|f| f.ident() == &payer.to_token_stream().to_string().replace('\"', ""))
+                .and_then(|af| match af {
+                    AccountField::Field(field) => Some(field),
+                    AccountField::CompositeField(_) => None,
+                });
+
             let create_account = generate_create_account(
                 field,
                 quote! {space},
                 owner.clone(),
                 quote! {#payer},
+                payer_field,
                 seeds_with_bump,
             );
 
@@ -1619,8 +1684,8 @@ fn generate_get_token_account_space(mint: &Expr) -> proc_macro2::TokenStream {
 // Generated code to create an account with with system program with the
 // given `space` amount of data, owned by `owner`.
 //
-// `seeds_with_nonce` should be given for creating PDAs. Otherwise it's an
-// empty stream.
+// `payer_signing` should be given for PDA signing. Otherwise it's the
+// seeds_with_nonce for the account being created.
 //
 // This should only be run within scopes where `system_program` is not Optional
 fn generate_create_account(
@@ -1628,7 +1693,8 @@ fn generate_create_account(
     space: proc_macro2::TokenStream,
     owner: proc_macro2::TokenStream,
     payer: proc_macro2::TokenStream,
-    seeds_with_nonce: proc_macro2::TokenStream,
+    _payer_field: Option<&Field>,
+    payer_signing: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
     // Field, payer, and system program are already validated to not be an Option at this point
     quote! {
@@ -1646,7 +1712,7 @@ fn generate_create_account(
                 to: #field.to_account_info()
             };
             let cpi_context = anchor_lang::context::CpiContext::new(system_program.to_account_info(), cpi_accounts);
-            anchor_lang::system_program::create_account(cpi_context.with_signer(&[#seeds_with_nonce]), lamports, space as u64, #owner)?;
+            anchor_lang::system_program::create_account(cpi_context.with_signer(&[#payer_signing]), lamports, space as u64, #owner)?;
         } else {
             require_keys_neq!(#payer.key(), #field.key(), anchor_lang::error::ErrorCode::TryingToInitPayerAsProgramAccount);
             // Fund the account for rent exemption.
@@ -1660,6 +1726,7 @@ fn generate_create_account(
                     to: #field.to_account_info(),
                 };
                 let cpi_context = anchor_lang::context::CpiContext::new(system_program.to_account_info(), cpi_accounts);
+
                 anchor_lang::system_program::transfer(cpi_context, required_lamports)?;
             }
             // Allocate space.
@@ -1667,13 +1734,13 @@ fn generate_create_account(
                 account_to_allocate: #field.to_account_info()
             };
             let cpi_context = anchor_lang::context::CpiContext::new(system_program.to_account_info(), cpi_accounts);
-            anchor_lang::system_program::allocate(cpi_context.with_signer(&[#seeds_with_nonce]), #space as u64)?;
+            anchor_lang::system_program::allocate(cpi_context.with_signer(&[#payer_signing]), #space as u64)?;
             // Assign to the spl token program.
             let cpi_accounts = anchor_lang::system_program::Assign {
                 account_to_assign: #field.to_account_info()
             };
             let cpi_context = anchor_lang::context::CpiContext::new(system_program.to_account_info(), cpi_accounts);
-            anchor_lang::system_program::assign(cpi_context.with_signer(&[#seeds_with_nonce]), #owner)?;
+            anchor_lang::system_program::assign(cpi_context.with_signer(&[#payer_signing]), #owner)?;
         }
     }
 }

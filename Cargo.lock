@@ -2711,6 +2711,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pda_payer_test"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "anchor-spl",
+]
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

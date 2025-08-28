@@ -1,0 +1,11 @@
+[package]
+name = "pda_payer_test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anchor-lang = { path = "../../lang" }
+anchor-spl = { path = "../../spl" }
+
+[lib]
+crate-type = ["cdylib", "lib"]
