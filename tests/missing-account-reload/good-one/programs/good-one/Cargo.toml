@@ -1,0 +1,21 @@
+[package]
+name = "good-one"
+version = "0.1.0"
+description = "Created with Anchor"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "good_one"
+
+[features]
+no-entrypoint = []
+no-idl = []
+cpi = ["no-entrypoint"]
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+default = []
+
+
+[dependencies]
+anchor-lang = { path = "../../../../../lang", features = ["init-if-needed"] }
+anchor-spl = { path = "../../../../../spl" }
