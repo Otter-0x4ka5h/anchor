@@ -14,38 +14,28 @@ pub mod good_one {
         Ok(())
     }
 
-    // GOOD: This function should NOT trigger the linting rule
-    pub fn transfer_with_cpi_good(ctx: Context<Transfer>, amount: u64) -> Result<()> {
-        let user_account = &mut ctx.accounts.user_account;
-        let initial_balance = user_account.balance;
-
+    pub fn transfer_with_cpi_bad(ctx: Context<Transfer>, amount: u64) -> Result<()> {
         let instruction = anchor_lang::solana_program::instruction::Instruction {
             program_id: anchor_lang::solana_program::system_program::ID,
             accounts: vec![],
             data: vec![],
         };
 
-        invoke(&instruction, &[])?;
+        ctx.accounts.user_account.reload()?;
 
-        // GOOD: Reload account to get updated data after CPI
-        user_account.reload()?;
+        let i = &mut ctx.accounts.user_account;
+        let i = &mut ctx.accounts.beneficiary;
 
-        let final_balance = user_account.balance;
+        invoke(&instruction, &[
+            i.to_account_info(),
+        ])?;
 
-        msg!(
-            "Initial: {}, Final: {}, Amount: {}",
-            initial_balance,
-            final_balance,
-            amount
-        );
-        Ok(())
-    }
+        let i = &mut ctx.accounts.beneficiary;
+        i.reload()?;
 
-    // GOOD: This function should NOT trigger the linting rule
-    pub fn simple_transfer(ctx: Context<Transfer>, amount: u64) -> Result<()> {
-        let user_account = &mut ctx.accounts.user_account;
-        let balance = user_account.balance;
-        user_account.balance = balance - amount;
+        let balance = ctx.accounts.user_account.balance;
+        i.balance = 0u64 - amount;
+
         Ok(())
     }
 }
@@ -63,6 +53,8 @@ pub struct Initialize<'info> {
 pub struct Transfer<'info> {
     #[account(mut)]
     pub user_account: Account<'info, UserAccount>,
+    #[account(mut)]
+    pub beneficiary: Account<'info, UserAccount>,
     #[account(mut)]
     pub authority: Signer<'info>,
 }

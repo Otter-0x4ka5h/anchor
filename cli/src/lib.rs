@@ -1340,6 +1340,12 @@ pub fn build(
         docker_image: docker_image.unwrap_or_else(|| cfg.docker()),
         bootstrap,
     };
+    
+    // Detect and print invoke/invoke_signed usage in instruction functions
+    if let Err(e) = crate::checks::detect_invoke_usage(cfg_parent) {
+        eprintln!("Warning: Failed to scan for invoke usage: {}", e);
+    }
+
     match cargo {
         // No Cargo.toml so build the entire workspace.
         None => build_all(
