@@ -1,4 +1,4 @@
-use std::{fs, path::Path, sync::LazyLock};
+use std::{collections::HashMap, fs, path::Path, process::Command, sync::LazyLock};
 
 use anyhow::{anyhow, Result};
 use codespan_reporting::{
@@ -21,6 +21,10 @@ use crate::{
 static WARNING_COLLECTOR: LazyLock<Arc<Mutex<Vec<WarningInfo>>>> =
     LazyLock::new(|| Arc::new(Mutex::new(Vec::new())));
 
+/// Expanded usage analyzers cache keyed by main source path (e.g., crate_dir/src/lib.rs)
+static EXPANDED_USAGE_ANALYZERS: LazyLock<Arc<Mutex<HashMap<String, AccountUsageAnalyzer>>>> =
+    LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
+
 /// Information needed to print a warning later
 #[derive(Debug, Clone)]
 struct WarningInfo {
@@ -41,6 +45,14 @@ struct WarningInfo {
 /// - Any function that calls invoke
 pub fn detect_invoke_usage(workspace_path: &std::path::Path) -> Result<()> {
     let mut invoke_functions = Vec::new();
+
+    // First, attempt macro expansion-based analysis (default behavior).
+    // If expansion fails or yields nothing, fall back to non-expanded walk.
+    if let Ok(expanded_functions) = try_analyze_workspace_with_macro_expansion(workspace_path) {
+        if !expanded_functions.is_empty() {
+            invoke_functions.extend(expanded_functions);
+        }
+    }
 
     // Use WalkDir for efficient directory traversal
     for entry in WalkDir::new(workspace_path)
@@ -89,6 +101,63 @@ pub fn detect_invoke_usage(workspace_path: &std::path::Path) -> Result<()> {
     });
 
     Ok(())
+}
+
+/// Attempt to analyze all crates in the workspace by expanding macros via `cargo expand`.
+/// Returns Ok(vec) when at least attempted; empty vec if none found/expanded.
+fn try_analyze_workspace_with_macro_expansion(
+    workspace_path: &std::path::Path,
+) -> Result<Vec<InvokeFunctionInfo>> {
+    let mut results: Vec<InvokeFunctionInfo> = Vec::new();
+
+    // Find crate roots (directories containing Cargo.toml, excluding target)
+    for entry in WalkDir::new(workspace_path)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter(|e| e.path().file_name().map_or(false, |f| f == "Cargo.toml"))
+        .filter(|e| !e.path().to_string_lossy().contains("/target/"))
+    {
+        let crate_dir = entry
+            .path()
+            .parent()
+            .unwrap_or(workspace_path)
+            .to_path_buf();
+
+        // Run `cargo expand` in the crate directory
+        let output = Command::new("cargo")
+            .arg("expand")
+            .current_dir(&crate_dir)
+            .output();
+
+        let Ok(output) = output else { continue };
+        if !output.status.success() {
+            continue;
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        if stdout.trim().is_empty() {
+            continue;
+        }
+
+        // Parse expanded source and collect invoke usage, and cache usage lines for mapping
+        if let Ok(syntax) = syn::parse_file(&stdout) {
+            let main_src = crate_dir.join("src/lib.rs");
+
+            let mut analyzer = InvokeAnalyzer::new(&main_src);
+            analyzer.visit_file(&syntax);
+            results.extend(analyzer.functions);
+
+            let mut usage_analyzer = AccountUsageAnalyzer::new();
+            usage_analyzer.visit_file(&syntax);
+            EXPANDED_USAGE_ANALYZERS
+                .lock()
+                .unwrap()
+                .insert(main_src.to_string_lossy().to_string(), usage_analyzer);
+        }
+    }
+
+    Ok(results)
 }
 
 impl AccountUsageAnalyzer {
@@ -325,114 +394,211 @@ fn analyze_account_usage_patterns(
     invoke_functions: &mut Vec<InvokeFunctionInfo>,
     _workspace_path: &std::path::Path,
 ) -> Result<()> {
+    // Snapshot of all invoke calls to avoid borrowing conflicts during analysis
+    let all_calls_snapshot = invoke_functions.clone();
+
     for func_info in invoke_functions.iter_mut() {
-        // Re-analyze the file to check for account usage patterns
-        if let Ok(content) = std::fs::read_to_string(&func_info.file_path) {
-            if let Ok(syntax) = syn::parse_file(&content) {
-                let mut usage_analyzer = AccountUsageAnalyzer::new();
-                usage_analyzer.visit_file(&syntax);
+        // Re-analyze the file to check for account usage patterns, preferring expanded cache
+        let mut usage_analyzer = if let Some(cached) = EXPANDED_USAGE_ANALYZERS
+            .lock()
+            .unwrap()
+            .get(&func_info.file_path)
+            .cloned()
+        {
+            cached
+        } else {
+            let mut ua = AccountUsageAnalyzer::new();
+            if let Ok(content) = std::fs::read_to_string(&func_info.file_path) {
+                if let Ok(syntax) = syn::parse_file(&content) {
+                    ua.visit_file(&syntax);
+                }
+            }
+            ua
+        };
 
-                // for (name, line) in &usage_analyzer.account_usage_lines {}
+        // for (name, line) in &usage_analyzer.account_usage_lines {}
 
-                // For each invoke call, check if any accounts are used after it anywhere in the file
-                for invoke_call in &mut func_info.invoke_calls {
-                    // Check all account usage lines that come after this CPI call
-                    // OR in functions that are called after the CPI call
-                    for (account_name, _usage_line) in &usage_analyzer.account_usage_lines {
-                        // For now, let's check if the account usage is in a different function
-                        // and if the account was passed to the CPI call
-                        let account_passed_to_cpi = invoke_call.accounts.iter().any(|acc| {
-                            // Extract base account name from the CPI account
-                            let cpi_account_base =
-                                if let Some(start) = acc.name.find("ctx.accounts.") {
-                                    let after_ctx = &acc.name[start + 13..];
-                                    let end = after_ctx
-                                        .find(|c| c == '.' || c == ' ' || c == '(')
-                                        .unwrap_or(after_ctx.len());
-                                    &after_ctx[..end]
-                                } else {
-                                    &acc.name
-                                };
+        // For each invoke call, check if any accounts are used after it anywhere in the file
+        for invoke_call in &mut func_info.invoke_calls {
+            // Check all account usage lines that come after this CPI call
+            // OR in functions that are called after the CPI call
+            for (account_name, usage_line) in &usage_analyzer.account_usage_lines {
+                // For now, let's check if the account usage is in a different function
+                // and if the account was passed to the CPI call
+                let account_passed_to_cpi = invoke_call.accounts.iter().any(|acc| {
+                    // Extract base account name from the CPI account
+                    let cpi_account_base = if let Some(start) = acc.name.find("ctx.accounts.") {
+                        let after_ctx = &acc.name[start + 13..];
+                        let end = after_ctx
+                            .find(|c| c == '.' || c == ' ' || c == '(')
+                            .unwrap_or(after_ctx.len());
+                        &after_ctx[..end]
+                    } else {
+                        &acc.name
+                    };
 
-                            // Extract base account name from the usage
-                            let usage_account_base =
-                                if let Some(start) = account_name.find("ctx.accounts.") {
-                                    let after_ctx = &account_name[start + 13..];
-                                    let end = after_ctx
-                                        .find(|c| c == '.' || c == ' ' || c == '(')
-                                        .unwrap_or(after_ctx.len());
-                                    &after_ctx[..end]
-                                } else {
-                                    account_name
-                                };
+                    // Extract base account name from the usage
+                    let usage_account_base = if let Some(start) = account_name.find("ctx.accounts.")
+                    {
+                        let after_ctx = &account_name[start + 13..];
+                        let end = after_ctx
+                            .find(|c| c == '.' || c == ' ' || c == '(')
+                            .unwrap_or(after_ctx.len());
+                        &after_ctx[..end]
+                    } else {
+                        account_name
+                    };
 
-                            cpi_account_base == usage_account_base
-                        });
+                    cpi_account_base == usage_account_base
+                });
 
-                        if account_passed_to_cpi {
-                            // Mark this account as used after CPI
-                            if let Some(account) = invoke_call.accounts.iter_mut().find(|acc| {
-                                let cpi_account_base =
-                                    if let Some(start) = acc.name.find("ctx.accounts.") {
-                                        let after_ctx = &acc.name[start + 13..];
-                                        let end = after_ctx
-                                            .find(|c| c == '.' || c == ' ' || c == '(')
-                                            .unwrap_or(after_ctx.len());
-                                        &after_ctx[..end]
-                                    } else {
-                                        &acc.name
-                                    };
+                if account_passed_to_cpi {
+                    // Mark this account as used after CPI
+                    if let Some(account) = invoke_call.accounts.iter_mut().find(|acc| {
+                        let cpi_account_base = if let Some(start) = acc.name.find("ctx.accounts.") {
+                            let after_ctx = &acc.name[start + 13..];
+                            let end = after_ctx
+                                .find(|c| c == '.' || c == ' ' || c == '(')
+                                .unwrap_or(after_ctx.len());
+                            &after_ctx[..end]
+                        } else {
+                            &acc.name
+                        };
 
-                                let usage_account_base =
-                                    if let Some(start) = account_name.find("ctx.accounts.") {
-                                        let after_ctx = &account_name[start + 13..];
-                                        let end = after_ctx
-                                            .find(|c| c == '.' || c == ' ' || c == '(')
-                                            .unwrap_or(after_ctx.len());
-                                        &after_ctx[..end]
-                                    } else {
-                                        account_name
-                                    };
+                        let usage_account_base =
+                            if let Some(start) = account_name.find("ctx.accounts.") {
+                                let after_ctx = &account_name[start + 13..];
+                                let end = after_ctx
+                                    .find(|c| c == '.' || c == ' ' || c == '(')
+                                    .unwrap_or(after_ctx.len());
+                                &after_ctx[..end]
+                            } else {
+                                account_name
+                            };
 
-                                cpi_account_base == usage_account_base
-                            }) {
-                                account.used_after_cpi = true;
+                        cpi_account_base == usage_account_base
+                    }) {
+                        account.used_after_cpi = true;
+
+                        // Determine base account name for reload matching
+                        let base_name = if let Some(start) = account.name.find("ctx.accounts.") {
+                            let after_ctx = &account.name[start + 13..];
+                            let end = after_ctx
+                                .find(|c| c == '.' || c == ' ' || c == '(')
+                                .unwrap_or(after_ctx.len());
+                            &after_ctx[..end]
+                        } else {
+                            &account.name
+                        };
+
+                        // Find the last CPI affecting this account before the usage (across functions in this file)
+                        let mut last_cpi_before_usage: Option<u32> = None;
+                        let mut max_any_cpi_for_account: Option<u32> = None;
+                        for fn_info in all_calls_snapshot.iter() {
+                            if fn_info.file_path != func_info.file_path {
+                                continue;
                             }
+                            for ic in &fn_info.invoke_calls {
+                                let affects_account = ic.accounts.iter().any(|ic_acc| {
+                                    let ic_base =
+                                        if let Some(start) = ic_acc.name.find("ctx.accounts.") {
+                                            let after_ctx = &ic_acc.name[start + 13..];
+                                            let end = after_ctx
+                                                .find(|c| c == '.' || c == ' ' || c == '(')
+                                                .unwrap_or(after_ctx.len());
+                                            &after_ctx[..end]
+                                        } else {
+                                            &ic_acc.name
+                                        };
+                                    ic_base == base_name
+                                });
+                                if !affects_account {
+                                    continue;
+                                }
+
+                                // Track the maximum CPI line for this account across the file
+                                max_any_cpi_for_account = Some(
+                                    max_any_cpi_for_account.map_or(ic.line, |cur| cur.max(ic.line)),
+                                );
+
+                                // Track the last CPI by source-order before usage when available
+                                if ic.line <= *usage_line {
+                                    last_cpi_before_usage = Some(
+                                        last_cpi_before_usage
+                                            .map_or(ic.line, |cur| cur.max(ic.line)),
+                                    );
+                                }
+                            }
+                        }
+
+                        // If none were <= usage_line (common when CPI is in a callee with higher line nums),
+                        // fallback to the maximum CPI line for this account across the file.
+                        if last_cpi_before_usage.is_none() {
+                            last_cpi_before_usage = max_any_cpi_for_account;
+                        }
+
+                        // If a reload of this account happened after the last CPI and before (or at) the usage, record it
+                        let reloaded_between =
+                            usage_analyzer
+                                .reload_lines
+                                .iter()
+                                .any(|(reload_name, reload_line)| {
+                                    let reload_base =
+                                        if let Some(start) = reload_name.find("ctx.accounts.") {
+                                            let after_ctx = &reload_name[start + 13..];
+                                            let end = after_ctx
+                                                .find(|c| c == '.' || c == ' ' || c == '(')
+                                                .unwrap_or(after_ctx.len());
+                                            &after_ctx[..end]
+                                        } else {
+                                            &reload_name
+                                        };
+                                    if reload_base != base_name {
+                                        return false;
+                                    }
+                                    match last_cpi_before_usage {
+                                        Some(last_cpi) => {
+                                            *reload_line > last_cpi && *reload_line <= *usage_line
+                                        }
+                                        None => *reload_line <= *usage_line,
+                                    }
+                                });
+
+                        if reloaded_between {
+                            account.reloaded_before_usage = true;
                         }
                     }
                 }
+            }
+        }
 
-                // Create a global analyzer for warning generation
-                let global_analyzer = AccountUsageAnalyzer {
-                    cpi_lines: usage_analyzer.cpi_lines.clone(),
-                    account_usage_lines: usage_analyzer.account_usage_lines.clone(),
-                    reload_lines: usage_analyzer.reload_lines.clone(),
-                    variable_assignments: usage_analyzer.variable_assignments.clone(),
-                };
+        // Create a global analyzer for warning generation
+        let global_analyzer = AccountUsageAnalyzer {
+            cpi_lines: usage_analyzer.cpi_lines.clone(),
+            account_usage_lines: usage_analyzer.account_usage_lines.clone(),
+            reload_lines: usage_analyzer.reload_lines.clone(),
+            variable_assignments: usage_analyzer.variable_assignments.clone(),
+        };
 
-                // Show warnings for accounts that need reload
-                for invoke_call in &func_info.invoke_calls {
-                    for account in &invoke_call.accounts {
-                        if account.needs_reload
-                            && account.used_after_cpi
-                            && !account.reloaded_before_usage
-                        {
-                            // Find the first usage line after CPI for this account
-                            if let Some(usage_line) = global_analyzer.find_first_usage_after_cpi(
-                                &func_info.file_path,
-                                &account.name,
-                                invoke_call.line,
-                                &func_info.function_name,
-                            ) {
-                                collect_warning(
-                                    &func_info.file_path,
-                                    usage_line,
-                                    &account.name,
-                                    &func_info.function_name,
-                                    &global_analyzer,
-                                );
-                            }
-                        }
+        // Show warnings for accounts that need reload
+        for invoke_call in &func_info.invoke_calls {
+            for account in &invoke_call.accounts {
+                if account.needs_reload && account.used_after_cpi && !account.reloaded_before_usage
+                {
+                    // Find the first usage line after CPI for this account
+                    if let Some(usage_line) = global_analyzer.find_first_usage_after_cpi(
+                        &func_info.file_path,
+                        &account.name,
+                        invoke_call.line,
+                        &func_info.function_name,
+                    ) {
+                        collect_warning(
+                            &func_info.file_path,
+                            usage_line,
+                            &account.name,
+                            &func_info.function_name,
+                            &global_analyzer,
+                        );
                     }
                 }
             }
