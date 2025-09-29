@@ -1564,6 +1564,9 @@ fn build_cwd_verifiable(
             }
 
             println!("Build success");
+            
+            // Print any collected warnings after compilation
+            crate::checks::print_collected_warnings();
         }
     }
 
@@ -1840,6 +1843,7 @@ fn _build_rust_cwd(
         std::process::exit(exit.status.code().unwrap_or(1));
     }
 
+    crate::checks::print_collected_warnings();
     // Generate IDL
     if !no_idl {
         let idl = generate_idl(cfg, skip_lint, no_docs, &cargo_args)?;

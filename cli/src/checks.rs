@@ -1,14 +1,34 @@
-use std::{fs, path::Path};
+use std::{fs, path::Path, sync::LazyLock};
 
 use anyhow::{anyhow, Result};
 use semver::{Version, VersionReq};
 use syn::{visit::Visit, ItemFn, ItemMod, spanned::Spanned};
 use walkdir::WalkDir;
+use codespan_reporting::{
+    diagnostic::{Diagnostic, Label},
+    files::SimpleFiles,
+    term::termcolor::{ColorChoice, StandardStream},
+    term,
+};
+use std::sync::{Arc, Mutex};
 
 use crate::{
     config::{Config, Manifest, PackageManager, WithPath},
     VERSION,
 };
+
+/// Global warning collector for printing warnings after compilation
+static WARNING_COLLECTOR: LazyLock<Arc<Mutex<Vec<WarningInfo>>>> = LazyLock::new(|| Arc::new(Mutex::new(Vec::new())));
+
+/// Information needed to print a warning later
+#[derive(Debug, Clone)]
+struct WarningInfo {
+    file_path: String,
+    line_num: u32,
+    account_name: String,
+    function_name: String,
+    analyzer: AccountUsageAnalyzer,
+}
 
 /// Detect and print ALL functions that use invoke or invoke_signed.
 ///
@@ -116,7 +136,18 @@ impl AccountUsageAnalyzer {
     }
 }
 
-/// Print a Rust-style warning with file:line reference and code snippet
+/// Collect a warning to be printed later after compilation
+fn collect_warning(file_path: &str, line_num: u32, account_name: &str, function_name: &str, analyzer: &AccountUsageAnalyzer) {
+    WARNING_COLLECTOR.lock().unwrap().push(WarningInfo {
+        file_path: file_path.to_string(),
+        line_num,
+        account_name: account_name.to_string(),
+        function_name: function_name.to_string(),
+        analyzer: analyzer.clone(),
+    });
+}
+
+/// Print a beautiful Rust-style warning using codespan-reporting
 fn print_rust_style_warning(file_path: &str, line_num: u32, account_name: &str, function_name: &str, analyzer: &AccountUsageAnalyzer) {
     if let Ok(content) = std::fs::read_to_string(file_path) {
         let lines: Vec<&str> = content.lines().collect();
@@ -124,78 +155,98 @@ fn print_rust_style_warning(file_path: &str, line_num: u32, account_name: &str, 
         
         if line_idx < lines.len() {
             let line_content = lines[line_idx];
-            let file_display = file_path; // Use full path instead of relative
-            
-            // Extract just the account name for highlighting
-            let account_display = if let Some(start) = account_name.find("ctx.accounts.") {
-                &account_name[start + 13..]
-            } else {
-                account_name
-            };
-            
-            
-            // Find the position of the account usage in the line for highlighting
-            let account_pos = line_content.find("ctx.accounts.");
-            let highlight_start = if let Some(pos) = account_pos {
-                pos
-            } else {
-                0
-            };
-            
-            // Calculate the length of the account reference for highlighting
-            let highlight_length = if let Some(pos) = account_pos {
-                let after_ctx = &line_content[pos + 13..];
-                let end = after_ctx.find(|c| c == '.' || c == ' ' || c == '(' || c == ')')
-                    .unwrap_or(after_ctx.len());
-                pos + 13 + end
-            } else {
-                line_content.len()
-            };
-            
-            // ANSI color codes (no external crates needed)
-            let yellow_bold = "\x1b[1;33m";  // Bold yellow
-            let bold = "\x1b[1m";            // Bold (normal color)
-            let reset = "\x1b[0m";           // Reset color
             
             // Resolve variable names to actual ctx.accounts references
-            let resolved_account_display = if account_display.contains("ctx.accounts.") {
-                account_display.replace(".to_account_info()", "")
+            let resolved_account_display = if account_name.contains("ctx.accounts.") {
+                account_name.replace(".to_account_info()", "")
             } else {
                 // If it's a variable name (like "i.to_account_info()"), extract the base variable name
                 // and try to resolve it to the actual ctx.accounts reference
-                if let Some(dot_pos) = account_display.find('.') {
-                    let var_name = &account_display[..dot_pos];
+                if let Some(dot_pos) = account_name.find('.') {
+                    let var_name = &account_name[..dot_pos];
                     // Use the same resolution logic as the analyzer
                     if let Some(assignment) = analyzer.variable_assignments.iter()
                         .rev() // Search in reverse to find the most recent
                         .find(|assignment| assignment.var_name == var_name && assignment.line_number < line_num) {
                         // Replace the variable with the resolved account reference
-                        format!("{}{}", assignment.account_reference, &account_display[dot_pos..]).replace(".to_account_info()", "")
+                        format!("{}{}", assignment.account_reference, &account_name[dot_pos..]).replace(".to_account_info()", "")
                     } else {
-                        account_display.replace(".to_account_info()", "")
+                        account_name.replace(".to_account_info()", "")
                     }
                 } else {
-                    account_display.replace(".to_account_info()", "")
+                    account_name.replace(".to_account_info()", "")
                 }
             };
             
-            eprintln!("{}{}WARNING:{}{} didn't reload the account: `{}` after cpi in `{}`{}", 
-                bold, yellow_bold, reset, bold, resolved_account_display, function_name, reset);
-            eprintln!(" --> {}:{}", file_display, line_num);
-            eprintln!("  |");
-            eprintln!("{} |{}", format!("{:3}", line_num), line_content);
+            // Calculate byte offset for the specific line
+            let mut byte_offset = 0;
+            for (i, line) in lines.iter().enumerate() {
+                if i == line_idx {
+                    break;
+                }
+                byte_offset += line.len() + 1; // +1 for newline
+            }
             
-            // Add the ^ symbols pointing to the account usage
-            let spaces_before_highlight = highlight_start;
-            let highlight_chars = highlight_length - highlight_start;
-            let caret_line = format!("  |{}{}{}", 
-                " ".repeat(spaces_before_highlight), 
-                "^".repeat(highlight_chars.max(1)), 
-                " <----- usage of an account without reload after CPI"
-            );
-            eprintln!("{}{}{}", yellow_bold, caret_line, reset);
+            // Find the position of the account usage in the line for highlighting
+            let account_pos = line_content.find("ctx.accounts.");
+            let highlight_start = if let Some(pos) = account_pos {
+                byte_offset + pos
+            } else {
+                byte_offset
+            };
+            
+            let highlight_length = if let Some(pos) = account_pos {
+                let after_ctx = &line_content[pos + 13..];
+                let end = after_ctx.find(|c| c == '.' || c == ' ' || c == '(' || c == ')')
+                    .unwrap_or(after_ctx.len());
+                byte_offset + pos + 13 + end
+            } else {
+                byte_offset + line_content.len()
+            };
+            
+            // Create a SimpleFiles instance
+            let mut files = SimpleFiles::new();
+            let file_id = files.add(file_path, content);
+            
+            // Create the diagnostic
+            let diagnostic = Diagnostic::warning()
+                .with_message(format!("didn't reload the account: `{}` after cpi in `{}`", resolved_account_display, function_name))
+                .with_labels(vec![
+                    Label::primary(file_id, highlight_start..highlight_length)
+                        .with_message("usage of an account without reload after CPI")
+                ]);
+            
+            // Print the diagnostic
+            let writer = StandardStream::stderr(ColorChoice::Auto);
+            let config = codespan_reporting::term::Config::default();
+            term::emit(&mut writer.lock(), &config, &files, &diagnostic).ok();
         }
     }
+}
+
+/// Print all collected warnings and clear the collector
+pub fn print_collected_warnings() {
+    let mut warnings = WARNING_COLLECTOR.lock().unwrap();
+    if warnings.is_empty() {
+        return;
+    }
+    
+    // Sort warnings by line number for consistent ordering
+    warnings.sort_by_key(|w| w.line_num);
+    
+    // Print each warning
+    for warning in warnings.iter() {
+        print_rust_style_warning(
+            &warning.file_path,
+            warning.line_num,
+            &warning.account_name,
+            &warning.function_name,
+            &warning.analyzer,
+        );
+    }
+    
+    // Clear the collector
+    warnings.clear();
 }
 
 /// Analyze account usage patterns after CPI calls to check reload order
@@ -257,7 +308,7 @@ fn analyze_account_usage_patterns(invoke_functions: &mut Vec<InvokeFunctionInfo>
                             if account.needs_reload && account.used_after_cpi && !account.reloaded_before_usage {
                                 // Find the first usage line after CPI for this account
                                 if let Some(usage_line) = function_analyzer.find_first_usage_after_cpi(&func_info.file_path, &account.name, invoke_call.line) {
-                                    print_rust_style_warning(&func_info.file_path, usage_line, &account.name, &func_info.function_name, &function_analyzer);
+                                    collect_warning(&func_info.file_path, usage_line, &account.name, &func_info.function_name, &function_analyzer);
                                 }
                             }
                         }
@@ -331,6 +382,7 @@ struct VariableAssignment {
 }
 
 /// Analyzer for checking account usage patterns after CPI calls
+#[derive(Debug, Clone)]
 struct AccountUsageAnalyzer {
     cpi_lines: Vec<u32>, // Line numbers where CPI calls occur
     account_usage_lines: Vec<(String, u32)>, // (account_name, line_number) pairs
