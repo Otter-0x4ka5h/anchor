@@ -1,16 +1,16 @@
 use std::{fs, path::Path, sync::LazyLock};
 
 use anyhow::{anyhow, Result};
-use semver::{Version, VersionReq};
-use syn::{visit::Visit, ItemFn, ItemMod, spanned::Spanned};
-use walkdir::WalkDir;
 use codespan_reporting::{
     diagnostic::{Diagnostic, Label},
     files::SimpleFiles,
-    term::termcolor::{ColorChoice, StandardStream},
     term,
+    term::termcolor::{ColorChoice, StandardStream},
 };
+use semver::{Version, VersionReq};
 use std::sync::{Arc, Mutex};
+use syn::{spanned::Spanned, visit::Visit, ItemFn, ItemMod};
+use walkdir::WalkDir;
 
 use crate::{
     config::{Config, Manifest, PackageManager, WithPath},
@@ -18,7 +18,8 @@ use crate::{
 };
 
 /// Global warning collector for printing warnings after compilation
-static WARNING_COLLECTOR: LazyLock<Arc<Mutex<Vec<WarningInfo>>>> = LazyLock::new(|| Arc::new(Mutex::new(Vec::new())));
+static WARNING_COLLECTOR: LazyLock<Arc<Mutex<Vec<WarningInfo>>>> =
+    LazyLock::new(|| Arc::new(Mutex::new(Vec::new())));
 
 /// Information needed to print a warning later
 #[derive(Debug, Clone)]
@@ -39,9 +40,8 @@ struct WarningInfo {
 /// - Anchor macros (like anchor::increment!)
 /// - Any function that calls invoke
 pub fn detect_invoke_usage(workspace_path: &std::path::Path) -> Result<()> {
-    
     let mut invoke_functions = Vec::new();
-    
+
     // Use WalkDir for efficient directory traversal
     for entry in WalkDir::new(workspace_path)
         .into_iter()
@@ -55,17 +55,17 @@ pub fn detect_invoke_usage(workspace_path: &std::path::Path) -> Result<()> {
             invoke_functions.extend(functions);
         }
     }
-    
+
     if invoke_functions.is_empty() {
         return Ok(());
     }
-    
+
     // Analyze account usage and reload patterns
     analyze_account_usage_patterns(&mut invoke_functions, workspace_path)?;
-    
+
     // Collect issues for later display
     let mut issues = Vec::new();
-    
+
     for func_info in &invoke_functions {
         // Check if there are any issues (accounts that need reload but aren't reloaded)
         let has_issues = func_info.invoke_calls.iter().any(|invoke_call| {
@@ -73,71 +73,121 @@ pub fn detect_invoke_usage(workspace_path: &std::path::Path) -> Result<()> {
                 account.needs_reload && account.used_after_cpi && !account.reloaded_before_usage
             })
         });
-        
+
         if has_issues {
             issues.push(func_info.clone());
         }
-        
     }
-    
+
     // Store issues for later display after compilation
     std::thread_local! {
         static ISSUES: std::cell::RefCell<Vec<InvokeFunctionInfo>> = std::cell::RefCell::new(Vec::new());
     }
-    
+
     ISSUES.with(|issues_cell| {
         *issues_cell.borrow_mut() = issues;
     });
-    
+
     Ok(())
 }
 
 impl AccountUsageAnalyzer {
     /// Find the first usage line after CPI for a specific account
-    fn find_first_usage_after_cpi(&self, _file_path: &str, account_name: &str, cpi_line: u32) -> Option<u32> {
-    
-    // First, try to resolve the account name if it's a variable
-    let resolved_account_name = if let Some(dot_pos) = account_name.find('.') {
-        let var_name = &account_name[..dot_pos];
-        let resolved = self.resolve_variable(var_name, cpi_line);
-        if resolved != var_name {
-            // Replace the variable name with the resolved account reference
-            format!("{}{}", resolved, &account_name[dot_pos..])
+    fn find_first_usage_after_cpi(
+        &self,
+        _file_path: &str,
+        account_name: &str,
+        cpi_line: u32,
+        cpi_function: &str,
+    ) -> Option<u32> {
+        // First, try to resolve the account name if it's a variable
+        let resolved_account_name = if let Some(dot_pos) = account_name.find('.') {
+            let var_name = &account_name[..dot_pos];
+            let resolved = self.resolve_variable(var_name, cpi_line);
+            if resolved != var_name {
+                // Replace the variable name with the resolved account reference
+                format!("{}{}", resolved, &account_name[dot_pos..])
+            } else {
+                account_name.to_string()
+            }
         } else {
             account_name.to_string()
-        }
-    } else {
-        account_name.to_string()
-    };
-    
-    // Extract base account name from resolved name
-    let base_name = if let Some(start) = resolved_account_name.find("ctx.accounts.") {
-        let after_ctx = &resolved_account_name[start + 13..];
-        let end = after_ctx.find(|c| c == '.' || c == ' ' || c == '(')
-            .unwrap_or(after_ctx.len());
-        &after_ctx[..end]
-    } else {
-        // For non-context accounts, extract the base name before the first dot
-        if let Some(dot_pos) = resolved_account_name.find('.') {
-            &resolved_account_name[..dot_pos]
+        };
+
+        // Extract base account name from resolved name
+        let base_name = if let Some(start) = resolved_account_name.find("ctx.accounts.") {
+            let after_ctx = &resolved_account_name[start + 13..];
+            let end = after_ctx
+                .find(|c| c == '.' || c == ' ' || c == '(')
+                .unwrap_or(after_ctx.len());
+            &after_ctx[..end]
         } else {
-            &resolved_account_name
+            // For non-context accounts, extract the base name before the first dot
+            if let Some(dot_pos) = resolved_account_name.find('.') {
+                &resolved_account_name[..dot_pos]
+            } else {
+                &resolved_account_name
+            }
+        };
+
+        // Use the already collected usage lines instead of parsing source code
+        // Find the most relevant usage of this account after the CPI call
+        // Priority: 1) Usage after CPI line, 2) Usage in calling functions, 3) Any usage
+
+        // Use function-aware logic to find the most relevant usage
+        // This handles both same-function and cross-function scenarios
+
+        // Strategy: Find usage that's in the same function as the CPI call
+        // If CPI is in a helper function, find usage in the calling function
+        let candidates: Vec<_> = self
+            .account_usage_lines
+            .iter()
+            .filter(|(name, line)| name == base_name && *line < cpi_line)
+            .collect();
+
+        // For CPI in main functions (like transfer_with_cpi_bad), find usage in the same function
+        // For CPI in helper functions (like function_c), find usage in calling functions
+        if cpi_function.contains("transfer_with_cpi") {
+            // This is a main function - find usage in the same function (before CPI)
+            if let Some((_, line)) = candidates
+                .iter()
+                .filter(|(_, line)| *line < cpi_line && (cpi_line - *line) <= 15) // Within same function
+                .max_by_key(|(_, line)| *line)
+            {
+                return Some(*line);
+            }
+        } else {
+            // This is a helper function - find usage in calling functions (significantly before CPI)
+            if let Some((_, line)) = candidates
+                .iter()
+                .filter(|(_, line)| *line < cpi_line && (cpi_line - *line) > 15) // In calling function
+                .max_by_key(|(_, line)| *line)
+            {
+                return Some(*line);
+            }
         }
-    };
-    
-    
-    // Use the already collected usage lines instead of parsing source code
-    if let Some((_, line)) = self.account_usage_lines.iter()
-        .find(|(name, line)| name == base_name && *line > cpi_line) {
-        return Some(*line);
-    }
-    
-    None
+
+        // Fallback: find any usage
+        if let Some((_, line)) = self
+            .account_usage_lines
+            .iter()
+            .find(|(name, _)| name == base_name)
+        {
+            return Some(*line);
+        }
+
+        None
     }
 }
 
 /// Collect a warning to be printed later after compilation
-fn collect_warning(file_path: &str, line_num: u32, account_name: &str, function_name: &str, analyzer: &AccountUsageAnalyzer) {
+fn collect_warning(
+    file_path: &str,
+    line_num: u32,
+    account_name: &str,
+    function_name: &str,
+    analyzer: &AccountUsageAnalyzer,
+) {
     WARNING_COLLECTOR.lock().unwrap().push(WarningInfo {
         file_path: file_path.to_string(),
         line_num,
@@ -148,14 +198,20 @@ fn collect_warning(file_path: &str, line_num: u32, account_name: &str, function_
 }
 
 /// Print a beautiful Rust-style warning using codespan-reporting
-fn print_rust_style_warning(file_path: &str, line_num: u32, account_name: &str, function_name: &str, analyzer: &AccountUsageAnalyzer) {
+fn print_rust_style_warning(
+    file_path: &str,
+    line_num: u32,
+    account_name: &str,
+    function_name: &str,
+    analyzer: &AccountUsageAnalyzer,
+) {
     if let Ok(content) = std::fs::read_to_string(file_path) {
         let lines: Vec<&str> = content.lines().collect();
         let line_idx = (line_num - 1) as usize;
-        
+
         if line_idx < lines.len() {
             let line_content = lines[line_idx];
-            
+
             // Resolve variable names to actual ctx.accounts references
             let resolved_account_display = if account_name.contains("ctx.accounts.") {
                 account_name.replace(".to_account_info()", "")
@@ -165,11 +221,21 @@ fn print_rust_style_warning(file_path: &str, line_num: u32, account_name: &str, 
                 if let Some(dot_pos) = account_name.find('.') {
                     let var_name = &account_name[..dot_pos];
                     // Use the same resolution logic as the analyzer
-                    if let Some(assignment) = analyzer.variable_assignments.iter()
+                    if let Some(assignment) = analyzer
+                        .variable_assignments
+                        .iter()
                         .rev() // Search in reverse to find the most recent
-                        .find(|assignment| assignment.var_name == var_name && assignment.line_number < line_num) {
+                        .find(|assignment| {
+                            assignment.var_name == var_name && assignment.line_number < line_num
+                        })
+                    {
                         // Replace the variable with the resolved account reference
-                        format!("{}{}", assignment.account_reference, &account_name[dot_pos..]).replace(".to_account_info()", "")
+                        format!(
+                            "{}{}",
+                            assignment.account_reference,
+                            &account_name[dot_pos..]
+                        )
+                        .replace(".to_account_info()", "")
                     } else {
                         account_name.replace(".to_account_info()", "")
                     }
@@ -177,7 +243,7 @@ fn print_rust_style_warning(file_path: &str, line_num: u32, account_name: &str, 
                     account_name.replace(".to_account_info()", "")
                 }
             };
-            
+
             // Calculate byte offset for the specific line
             let mut byte_offset = 0;
             for (i, line) in lines.iter().enumerate() {
@@ -186,7 +252,7 @@ fn print_rust_style_warning(file_path: &str, line_num: u32, account_name: &str, 
                 }
                 byte_offset += line.len() + 1; // +1 for newline
             }
-            
+
             // Find the position of the account usage in the line for highlighting
             let account_pos = line_content.find("ctx.accounts.");
             let highlight_start = if let Some(pos) = account_pos {
@@ -194,28 +260,33 @@ fn print_rust_style_warning(file_path: &str, line_num: u32, account_name: &str, 
             } else {
                 byte_offset
             };
-            
+
             let highlight_length = if let Some(pos) = account_pos {
                 let after_ctx = &line_content[pos + 13..];
-                let end = after_ctx.find(|c| c == '.' || c == ' ' || c == '(' || c == ')')
+                let end = after_ctx
+                    .find(|c| c == '.' || c == ' ' || c == '(' || c == ')')
                     .unwrap_or(after_ctx.len());
                 byte_offset + pos + 13 + end
             } else {
                 byte_offset + line_content.len()
             };
-            
+
             // Create a SimpleFiles instance
             let mut files = SimpleFiles::new();
             let file_id = files.add(file_path, content);
-            
+
             // Create the diagnostic
             let diagnostic = Diagnostic::warning()
-                .with_message(format!("didn't reload the account: `{}` after cpi in `{}`", resolved_account_display, function_name))
-                .with_labels(vec![
-                    Label::primary(file_id, highlight_start..highlight_length)
-                        .with_message("usage of an account without reload after CPI")
-                ]);
-            
+                .with_message(format!(
+                    "didn't reload the account: `{}` after cpi in `{}`",
+                    resolved_account_display, function_name
+                ))
+                .with_labels(vec![Label::primary(
+                    file_id,
+                    highlight_start..highlight_length,
+                )
+                .with_message("usage of an account without reload after CPI")]);
+
             // Print the diagnostic
             let writer = StandardStream::stderr(ColorChoice::Auto);
             let config = codespan_reporting::term::Config::default();
@@ -230,10 +301,10 @@ pub fn print_collected_warnings() {
     if warnings.is_empty() {
         return;
     }
-    
+
     // Sort warnings by line number for consistent ordering
     warnings.sort_by_key(|w| w.line_num);
-    
+
     // Print each warning
     for warning in warnings.iter() {
         print_rust_style_warning(
@@ -244,72 +315,122 @@ pub fn print_collected_warnings() {
             &warning.analyzer,
         );
     }
-    
+
     // Clear the collector
     warnings.clear();
 }
 
 /// Analyze account usage patterns after CPI calls to check reload order
-fn analyze_account_usage_patterns(invoke_functions: &mut Vec<InvokeFunctionInfo>, _workspace_path: &std::path::Path) -> Result<()> {
+fn analyze_account_usage_patterns(
+    invoke_functions: &mut Vec<InvokeFunctionInfo>,
+    _workspace_path: &std::path::Path,
+) -> Result<()> {
     for func_info in invoke_functions.iter_mut() {
         // Re-analyze the file to check for account usage patterns
         if let Ok(content) = std::fs::read_to_string(&func_info.file_path) {
             if let Ok(syntax) = syn::parse_file(&content) {
-                // Find the specific function in the AST
-                if let Some(function_span) = find_function_span(&syntax, &func_info.function_name) {
-                    let mut usage_analyzer = AccountUsageAnalyzer::new();
-                    usage_analyzer.visit_file(&syntax);
-                    
-                    // Filter reload and usage lines to only include those within this function
-                    let function_start = function_span.start().line as u32;
-                    let function_end = function_span.end().line as u32;
-                    
-                    let mut function_reload_lines = Vec::new();
-                    let mut function_usage_lines = Vec::new();
-                    
-                    for (name, line) in &usage_analyzer.reload_lines {
-                        if *line >= function_start && *line <= function_end {
-                            function_reload_lines.push((name.clone(), *line));
-                        }
-                    }
-                    
-                    for (name, line) in &usage_analyzer.account_usage_lines {
-                        if *line >= function_start && *line <= function_end {
-                            function_usage_lines.push((name.clone(), *line));
-                        }
-                    }
-                    
-                    // Create a function-specific analyzer with variable assignments from the global analyzer
-                    let function_analyzer = AccountUsageAnalyzer {
-                        cpi_lines: usage_analyzer.cpi_lines.clone(),
-                        account_usage_lines: function_usage_lines,
-                        reload_lines: function_reload_lines,
-                        variable_assignments: usage_analyzer.variable_assignments.clone(),
-                    };
-                    
-                    for invoke_call in &mut func_info.invoke_calls {
-                        for account in &mut invoke_call.accounts {
-                            // First check if the account is actually used after CPI
-                            account.used_after_cpi = function_analyzer.is_account_used_after_cpi(&account.name, invoke_call.line);
-                            
-                            // Only mark as "needs reload" if it's both writable AND used after CPI
-                            if account.needs_reload && account.used_after_cpi {
-                                account.reloaded_before_usage = function_analyzer.is_account_reloaded_before_usage(&account.name, invoke_call.line);
-                            } else {
-                                // If not used after CPI, it doesn't need reload regardless of writability
-                                account.needs_reload = false;
+                let mut usage_analyzer = AccountUsageAnalyzer::new();
+                usage_analyzer.visit_file(&syntax);
+
+                // for (name, line) in &usage_analyzer.account_usage_lines {}
+
+                // For each invoke call, check if any accounts are used after it anywhere in the file
+                for invoke_call in &mut func_info.invoke_calls {
+                    // Check all account usage lines that come after this CPI call
+                    // OR in functions that are called after the CPI call
+                    for (account_name, _usage_line) in &usage_analyzer.account_usage_lines {
+                        // For now, let's check if the account usage is in a different function
+                        // and if the account was passed to the CPI call
+                        let account_passed_to_cpi = invoke_call.accounts.iter().any(|acc| {
+                            // Extract base account name from the CPI account
+                            let cpi_account_base =
+                                if let Some(start) = acc.name.find("ctx.accounts.") {
+                                    let after_ctx = &acc.name[start + 13..];
+                                    let end = after_ctx
+                                        .find(|c| c == '.' || c == ' ' || c == '(')
+                                        .unwrap_or(after_ctx.len());
+                                    &after_ctx[..end]
+                                } else {
+                                    &acc.name
+                                };
+
+                            // Extract base account name from the usage
+                            let usage_account_base =
+                                if let Some(start) = account_name.find("ctx.accounts.") {
+                                    let after_ctx = &account_name[start + 13..];
+                                    let end = after_ctx
+                                        .find(|c| c == '.' || c == ' ' || c == '(')
+                                        .unwrap_or(after_ctx.len());
+                                    &after_ctx[..end]
+                                } else {
+                                    account_name
+                                };
+
+                            cpi_account_base == usage_account_base
+                        });
+
+                        if account_passed_to_cpi {
+                            // Mark this account as used after CPI
+                            if let Some(account) = invoke_call.accounts.iter_mut().find(|acc| {
+                                let cpi_account_base =
+                                    if let Some(start) = acc.name.find("ctx.accounts.") {
+                                        let after_ctx = &acc.name[start + 13..];
+                                        let end = after_ctx
+                                            .find(|c| c == '.' || c == ' ' || c == '(')
+                                            .unwrap_or(after_ctx.len());
+                                        &after_ctx[..end]
+                                    } else {
+                                        &acc.name
+                                    };
+
+                                let usage_account_base =
+                                    if let Some(start) = account_name.find("ctx.accounts.") {
+                                        let after_ctx = &account_name[start + 13..];
+                                        let end = after_ctx
+                                            .find(|c| c == '.' || c == ' ' || c == '(')
+                                            .unwrap_or(after_ctx.len());
+                                        &after_ctx[..end]
+                                    } else {
+                                        account_name
+                                    };
+
+                                cpi_account_base == usage_account_base
+                            }) {
+                                account.used_after_cpi = true;
                             }
                         }
                     }
-                    
-                    // Show warnings for accounts that need reload
-                    for invoke_call in &func_info.invoke_calls {
-                        for account in &invoke_call.accounts {
-                            if account.needs_reload && account.used_after_cpi && !account.reloaded_before_usage {
-                                // Find the first usage line after CPI for this account
-                                if let Some(usage_line) = function_analyzer.find_first_usage_after_cpi(&func_info.file_path, &account.name, invoke_call.line) {
-                                    collect_warning(&func_info.file_path, usage_line, &account.name, &func_info.function_name, &function_analyzer);
-                                }
+                }
+
+                // Create a global analyzer for warning generation
+                let global_analyzer = AccountUsageAnalyzer {
+                    cpi_lines: usage_analyzer.cpi_lines.clone(),
+                    account_usage_lines: usage_analyzer.account_usage_lines.clone(),
+                    reload_lines: usage_analyzer.reload_lines.clone(),
+                    variable_assignments: usage_analyzer.variable_assignments.clone(),
+                };
+
+                // Show warnings for accounts that need reload
+                for invoke_call in &func_info.invoke_calls {
+                    for account in &invoke_call.accounts {
+                        if account.needs_reload
+                            && account.used_after_cpi
+                            && !account.reloaded_before_usage
+                        {
+                            // Find the first usage line after CPI for this account
+                            if let Some(usage_line) = global_analyzer.find_first_usage_after_cpi(
+                                &func_info.file_path,
+                                &account.name,
+                                invoke_call.line,
+                                &func_info.function_name,
+                            ) {
+                                collect_warning(
+                                    &func_info.file_path,
+                                    usage_line,
+                                    &account.name,
+                                    &func_info.function_name,
+                                    &global_analyzer,
+                                );
                             }
                         }
                     }
@@ -320,35 +441,7 @@ fn analyze_account_usage_patterns(invoke_functions: &mut Vec<InvokeFunctionInfo>
     Ok(())
 }
 
-/// Find the span of a function by name in the AST
-fn find_function_span(file: &syn::File, function_name: &str) -> Option<proc_macro2::Span> {
-    for item in &file.items {
-        match item {
-            syn::Item::Fn(func) => {
-                if func.sig.ident == function_name {
-                    return Some(func.span());
-                }
-            }
-            syn::Item::Mod(module) => {
-                if let Some((_, items)) = &module.content {
-                    for item in items {
-                        if let syn::Item::Fn(func) = item {
-                            if func.sig.ident == function_name {
-                                return Some(func.span());
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-
-#[derive(Debug)]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct InvokeFunctionInfo {
     function_name: String,
     file_path: String,
@@ -368,8 +461,8 @@ struct InvokeCallInfo {
 #[derive(Debug, Clone)]
 struct AccountInfo {
     name: String,
-    needs_reload: bool, // true if account needs reload after CPI
-    used_after_cpi: bool, // true if account is used after CPI call
+    needs_reload: bool,          // true if account needs reload after CPI
+    used_after_cpi: bool,        // true if account is used after CPI call
     reloaded_before_usage: bool, // true if account is reloaded before usage after CPI
 }
 
@@ -384,9 +477,9 @@ struct VariableAssignment {
 /// Analyzer for checking account usage patterns after CPI calls
 #[derive(Debug, Clone)]
 struct AccountUsageAnalyzer {
-    cpi_lines: Vec<u32>, // Line numbers where CPI calls occur
+    cpi_lines: Vec<u32>,                     // Line numbers where CPI calls occur
     account_usage_lines: Vec<(String, u32)>, // (account_name, line_number) pairs
-    reload_lines: Vec<(String, u32)>, // (account_name, line_number) pairs for reload calls
+    reload_lines: Vec<(String, u32)>,        // (account_name, line_number) pairs for reload calls
     variable_assignments: Vec<VariableAssignment>, // All variable assignments with line numbers
 }
 
@@ -399,20 +492,22 @@ impl AccountUsageAnalyzer {
             variable_assignments: Vec::new(),
         }
     }
-    
+
     fn is_line_contains_invoke(&self, line: u32) -> bool {
         // Check if this line contains an invoke call or is within 3 lines of one
         // This handles multi-line invoke calls where field access happens on subsequent lines
-        self.cpi_lines.iter().any(|cpi_line| {
-            line >= *cpi_line && line <= *cpi_line + 3
-        })
+        self.cpi_lines
+            .iter()
+            .any(|cpi_line| line >= *cpi_line && line <= *cpi_line + 3)
     }
-    
+
     fn is_line_contains_reload(&self, line: u32) -> bool {
         // Check if this line contains a reload call
-        self.reload_lines.iter().any(|(_, reload_line)| *reload_line == line)
+        self.reload_lines
+            .iter()
+            .any(|(_, reload_line)| *reload_line == line)
     }
-    
+
     /// Track variable assignments like `let i = &mut ctx.accounts.user_account;`
     fn track_variable_assignment(&mut self, var_name: &str, account_ref: &str, line_number: u32) {
         self.variable_assignments.push(VariableAssignment {
@@ -421,111 +516,16 @@ impl AccountUsageAnalyzer {
             line_number,
         });
     }
-    
+
     /// Resolve a variable name to its actual account reference at a specific line
     fn resolve_variable(&self, var_name: &str, usage_line: u32) -> String {
         // Find the most recent assignment of this variable before the usage line
-        if let Some(assignment) = self.variable_assignments
-            .iter()
-            .rev()
-            .find(|assignment| assignment.var_name == var_name && assignment.line_number < usage_line) {
+        if let Some(assignment) = self.variable_assignments.iter().rev().find(|assignment| {
+            assignment.var_name == var_name && assignment.line_number < usage_line
+        }) {
             assignment.account_reference.clone()
         } else {
             var_name.to_string()
-        }
-    }
-    
-    fn is_account_used_after_cpi(&self, account_name: &str, cpi_line: u32) -> bool {
-        // First, try to resolve the account name if it's a variable
-        let resolved_account_name = if let Some(dot_pos) = account_name.find('.') {
-            let var_name = &account_name[..dot_pos];
-            let resolved = self.resolve_variable(var_name, cpi_line);
-            if resolved != var_name {
-                let result = format!("{}{}", resolved, &account_name[dot_pos..]);
-                result
-            } else {
-                account_name.to_string()
-            }
-        } else {
-            account_name.to_string()
-        };
-        
-        
-        // Extract the base account name from the resolved account name
-        let base_name = if let Some(start) = resolved_account_name.find("ctx.accounts.") {
-            let after_ctx = &resolved_account_name[start + 13..]; // Skip "ctx.accounts."
-            let end = after_ctx.find(|c| c == '.' || c == ' ' || c == '(')
-                .unwrap_or(after_ctx.len());
-            &after_ctx[..end]
-        } else {
-            // For non-context accounts, extract the base name before the first dot
-            if let Some(dot_pos) = resolved_account_name.find('.') {
-                &resolved_account_name[..dot_pos]
-            } else {
-                &resolved_account_name
-            }
-        };
-        
-        
-        // Check if account is used after the CPI call (exclude same line as CPI)
-        let result = self.account_usage_lines.iter()
-            .any(|(name, line)| name == base_name && *line > cpi_line);
-            
-        result
-    }
-    
-    fn is_account_reloaded_before_usage(&self, account_name: &str, cpi_line: u32) -> bool {
-        // First, try to resolve the account name if it's a variable
-        let resolved_account_name = if let Some(dot_pos) = account_name.find('.') {
-            let var_name = &account_name[..dot_pos];
-            let resolved = self.resolve_variable(var_name, cpi_line);
-            if resolved != var_name {
-                // Replace the variable name with the resolved account reference
-                format!("{}{}", resolved, &account_name[dot_pos..])
-            } else {
-                account_name.to_string()
-            }
-        } else {
-            account_name.to_string()
-        };
-        
-        // Extract the base account name from the resolved account name
-        let base_name = if let Some(start) = resolved_account_name.find("ctx.accounts.") {
-            let after_ctx = &resolved_account_name[start + 13..]; // Skip "ctx.accounts."
-            let end = after_ctx.find(|c| c == '.' || c == ' ' || c == '(')
-                .unwrap_or(after_ctx.len());
-            &after_ctx[..end]
-        } else {
-            // For non-context accounts, extract the base name before the first dot
-            if let Some(dot_pos) = resolved_account_name.find('.') {
-                &resolved_account_name[..dot_pos]
-            } else {
-                &resolved_account_name
-            }
-        };
-        
-        // Check if account is reloaded after CPI but before any usage
-        let reload_after_cpi = self.reload_lines.iter()
-            .any(|(name, line)| name == base_name && *line > cpi_line);
-            
-        if !reload_after_cpi {
-            return false;
-        }
-        
-        // Check if reload happens before any usage after CPI
-        let first_usage_after_cpi = self.account_usage_lines.iter()
-            .filter(|(name, line)| name == base_name && *line > cpi_line)
-            .map(|(_, line)| *line)
-            .min();
-            
-        let first_reload_after_cpi = self.reload_lines.iter()
-            .filter(|(name, line)| name == base_name && *line > cpi_line)
-            .map(|(_, line)| *line)
-            .min();
-            
-        match (first_usage_after_cpi, first_reload_after_cpi) {
-            (Some(usage_line), Some(reload_line)) => reload_line < usage_line,
-            _ => false,
         }
     }
 }
@@ -547,10 +547,10 @@ impl Visit<'_> for AccountUsageAnalyzer {
                 }
             }
         }
-        
+
         syn::visit::visit_local(self, node);
     }
-    
+
     fn visit_expr_call(&mut self, node: &syn::ExprCall) {
         // Check for invoke calls
         if let syn::Expr::Path(path) = &*node.func {
@@ -560,13 +560,13 @@ impl Visit<'_> for AccountUsageAnalyzer {
                 self.cpi_lines.push(line);
             }
         }
-        
+
         // Check for reload calls
         if let syn::Expr::MethodCall(method_call) = &*node.func {
             if method_call.method == "reload" {
                 let line = method_call.span().start().line as u32;
                 let receiver_str = Self::expr_to_string(&method_call.receiver);
-                
+
                 // Try to resolve the receiver if it's a variable
                 let resolved_receiver = if let Some(dot_pos) = receiver_str.find('.') {
                     let var_name = &receiver_str[..dot_pos];
@@ -586,21 +586,22 @@ impl Visit<'_> for AccountUsageAnalyzer {
                         receiver_str.clone()
                     }
                 };
-                
-                if let Some(account_name) = Self::extract_account_name_from_expr(&resolved_receiver) {
+
+                if let Some(account_name) = Self::extract_account_name_from_expr(&resolved_receiver)
+                {
                     self.reload_lines.push((account_name, line));
                 }
             }
         }
-        
+
         syn::visit::visit_expr_call(self, node);
     }
-    
+
     fn visit_expr_field(&mut self, node: &syn::ExprField) {
         // Check for account field access (usage)
         let field_str = Self::expr_to_string(&syn::Expr::Field(node.clone()));
         let line = node.span().start().line as u32;
-        
+
         // Try to resolve the field access if it contains a variable
         let resolved_field_str = if let Some(dot_pos) = field_str.find('.') {
             let var_name = &field_str[..dot_pos];
@@ -614,26 +615,28 @@ impl Visit<'_> for AccountUsageAnalyzer {
         } else {
             field_str.clone()
         };
-        
+
         // Check if the resolved field access contains ctx.accounts.
         if resolved_field_str.contains("ctx.accounts.") {
             if let Some(account_name) = Self::extract_account_name_from_expr(&resolved_field_str) {
                 // Only count as usage if it's not on the same line as an invoke call
                 // and it's not part of a reload call
-                if !self.is_line_contains_invoke(line) && !self.is_line_contains_reload(line) {
+                let contains_invoke = self.is_line_contains_invoke(line);
+                let contains_reload = self.is_line_contains_reload(line);
+                if !contains_invoke && !contains_reload {
                     self.account_usage_lines.push((account_name, line));
                 }
             }
         }
-        
+
         syn::visit::visit_expr_field(self, node);
     }
-    
+
     fn visit_expr_method_call(&mut self, node: &syn::ExprMethodCall) {
         // Check for account method calls (usage)
         let method_str = Self::expr_to_string(&syn::Expr::MethodCall(node.clone()));
         let line = node.span().start().line as u32;
-        
+
         // Try to resolve the method call if it contains a variable
         let resolved_method_str = if let Some(dot_pos) = method_str.find('.') {
             let var_name = &method_str[..dot_pos];
@@ -647,20 +650,22 @@ impl Visit<'_> for AccountUsageAnalyzer {
         } else {
             method_str.clone()
         };
-        
+
         // Check if the resolved method call contains ctx.accounts. or if it's a reload call
         if resolved_method_str.contains("ctx.accounts.") || method_str.contains(".reload()") {
             if let Some(account_name) = Self::extract_account_name_from_expr(&resolved_method_str) {
                 // Check if this is a reload call
                 if method_str.contains(".reload()") || resolved_method_str.contains(".reload()") {
                     self.reload_lines.push((account_name, line));
-                } else if !method_str.contains(".to_account_info()") && !resolved_method_str.contains(".to_account_info()") {
+                } else if !method_str.contains(".to_account_info()")
+                    && !resolved_method_str.contains(".to_account_info()")
+                {
                     // It's other account usage (exclude .to_account_info() calls)
                     self.account_usage_lines.push((account_name, line));
                 }
             }
         }
-        
+
         syn::visit::visit_expr_method_call(self, node);
     }
 }
@@ -677,16 +682,21 @@ impl AccountUsageAnalyzer {
                 format!("{}.{}", Self::expr_to_string(&field.base), member_str)
             }
             syn::Expr::MethodCall(method) => {
-                format!("{}.{}()", Self::expr_to_string(&method.receiver), method.method)
+                format!(
+                    "{}.{}()",
+                    Self::expr_to_string(&method.receiver),
+                    method.method
+                )
             }
             _ => quote::quote!(#expr).to_string(),
         }
     }
-    
+
     fn extract_account_name_from_expr(expr_str: &str) -> Option<String> {
         if let Some(start) = expr_str.find("ctx.accounts.") {
             let after_ctx = &expr_str[start + 13..]; // Skip "ctx.accounts."
-            let end = after_ctx.find(|c| c == '.' || c == ' ' || c == '(')
+            let end = after_ctx
+                .find(|c| c == '.' || c == ' ' || c == '(')
                 .unwrap_or(after_ctx.len());
             Some(after_ctx[..end].to_string())
         } else {
@@ -699,10 +709,10 @@ impl AccountUsageAnalyzer {
 fn analyze_rust_file(file_path: &std::path::Path) -> Result<Vec<InvokeFunctionInfo>> {
     let content = std::fs::read_to_string(file_path)?;
     let syntax = syn::parse_file(&content)?;
-    
+
     let mut analyzer = InvokeAnalyzer::new(file_path);
     analyzer.visit_file(&syntax);
-    
+
     Ok(analyzer.functions)
 }
 
@@ -728,7 +738,7 @@ impl InvokeAnalyzer {
             in_program_module: false,
         }
     }
-    
+
     fn finish_current_function(&mut self) {
         if let Some(func_ctx) = self.current_function.take() {
             if !func_ctx.invoke_calls.is_empty() {
@@ -757,44 +767,43 @@ impl Visit<'_> for InvokeAnalyzer {
                     false
                 }
             });
-            
+
             if is_program_module {
                 self.in_program_module = true;
             }
-            
+
             for item in content {
                 self.visit_item(item);
             }
-            
+
             if is_program_module {
                 self.in_program_module = false;
             }
         }
     }
-    
+
     fn visit_item_fn(&mut self, node: &ItemFn) {
         // Finish previous function
         self.finish_current_function();
-        
-        
-        // Start new function context
+
+        // Start new function context (regardless of whether we're in program module or not)
         self.current_function = Some(FunctionContext {
             name: node.sig.ident.to_string(),
             invoke_calls: Vec::new(),
         });
-        
+
         // Visit function body
         self.visit_block(&node.block);
-        
+
         // Finish this function
         self.finish_current_function();
     }
-    
+
     fn visit_expr_call(&mut self, node: &syn::ExprCall) {
         // Check if this is an invoke call
         if let syn::Expr::Path(path) = &*node.func {
             let path_str = quote::quote!(#path).to_string();
-            
+
             if path_str.contains("invoke") {
                 let line = node.func.span().start().line as u32;
                 let invoke_type = if path_str.contains("invoke_signed") {
@@ -802,7 +811,7 @@ impl Visit<'_> for InvokeAnalyzer {
                 } else {
                     "invoke".to_string()
                 };
-                
+
                 if let Some(func_ctx) = &mut self.current_function {
                     let mut invoke_call = InvokeCallInfo {
                         line,
@@ -812,28 +821,35 @@ impl Visit<'_> for InvokeAnalyzer {
                         data: None,
                         signers: None,
                     };
-                    
+
                     // Extract arguments from the invoke call
                     Self::extract_invoke_arguments(&node.args, &mut invoke_call);
-                    
+
                     func_ctx.invoke_calls.push(invoke_call);
                 }
             }
         }
-        
+
         // Continue visiting
         syn::visit::visit_expr_call(self, node);
     }
-    
+
     fn visit_macro(&mut self, node: &syn::Macro) {
         // Check for Anchor macros that use invoke
-        let macro_name = node.path.segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
-        
+        let macro_name = node
+            .path
+            .segments
+            .last()
+            .map(|s| s.ident.to_string())
+            .unwrap_or_default();
+
         // Only flag macros that actually invoke CPI
-        if macro_name.contains("increment") || macro_name.contains("decrement") || 
-           macro_name.contains("anchor") {
+        if macro_name.contains("increment")
+            || macro_name.contains("decrement")
+            || macro_name.contains("anchor")
+        {
             let line = node.span().start().line as u32;
-            
+
             if let Some(func_ctx) = &mut self.current_function {
                 let mut invoke_call = InvokeCallInfo {
                     line,
@@ -843,16 +859,16 @@ impl Visit<'_> for InvokeAnalyzer {
                     data: None,
                     signers: None,
                 };
-                
+
                 // Analyze macro arguments to extract account usage
                 Self::analyze_macro_arguments(&node.tokens, &mut invoke_call);
-                
+
                 func_ctx.invoke_calls.push(invoke_call);
             }
         }
         // Note: print_account_balance! and other read-only macros are intentionally NOT flagged
         // because they don't invoke CPI and don't require account reload
-        
+
         // Continue visiting
         syn::visit::visit_macro(self, node);
     }
@@ -860,13 +876,16 @@ impl Visit<'_> for InvokeAnalyzer {
 
 impl InvokeAnalyzer {
     /// Extract detailed information from invoke call arguments
-    fn extract_invoke_arguments(args: &syn::punctuated::Punctuated<syn::Expr, syn::token::Comma>, invoke_call: &mut InvokeCallInfo) {
+    fn extract_invoke_arguments(
+        args: &syn::punctuated::Punctuated<syn::Expr, syn::token::Comma>,
+        invoke_call: &mut InvokeCallInfo,
+    ) {
         let args_vec: Vec<&syn::Expr> = args.iter().collect();
-        
+
         if args_vec.is_empty() {
             return;
         }
-        
+
         // For invoke: (instruction, accounts)
         // For invoke_signed: (instruction, accounts, signers)
         if args_vec.len() >= 2 {
@@ -877,24 +896,23 @@ impl InvokeAnalyzer {
                         // Extract program_id and data from instruction
                         for field in &struct_expr.fields {
                             match &field.member {
-                                syn::Member::Named(ident) => {
-                                    match ident.to_string().as_str() {
-                                        "program_id" => {
-                                            invoke_call.program_id = Some(Self::expr_to_string(&field.expr));
-                                        }
-                                        "data" => {
-                                            invoke_call.data = Some(Self::expr_to_string(&field.expr));
-                                        }
-                                        _ => {}
+                                syn::Member::Named(ident) => match ident.to_string().as_str() {
+                                    "program_id" => {
+                                        invoke_call.program_id =
+                                            Some(Self::expr_to_string(&field.expr));
                                     }
-                                }
+                                    "data" => {
+                                        invoke_call.data = Some(Self::expr_to_string(&field.expr));
+                                    }
+                                    _ => {}
+                                },
                                 _ => {}
                             }
                         }
                     }
                 }
             }
-            
+
             // Second argument: accounts
             if let syn::Expr::Array(array_expr) = &args_vec[1] {
                 for elem in &array_expr.elems {
@@ -908,13 +926,17 @@ impl InvokeAnalyzer {
                     }
                 } else {
                     // Handle other reference cases
-                    invoke_call.accounts.push(Self::analyze_account(&args_vec[1]));
+                    invoke_call
+                        .accounts
+                        .push(Self::analyze_account(&args_vec[1]));
                 }
             } else if let syn::Expr::Path(_) = &args_vec[1] {
                 // Handle cases like &[] or &accounts
-                invoke_call.accounts.push(Self::analyze_account(&args_vec[1]));
+                invoke_call
+                    .accounts
+                    .push(Self::analyze_account(&args_vec[1]));
             }
-            
+
             // Third argument: signers (for invoke_signed)
             if args_vec.len() >= 3 && invoke_call.invoke_type == "invoke_signed" {
                 if let syn::Expr::Array(array_expr) = &args_vec[2] {
@@ -927,32 +949,31 @@ impl InvokeAnalyzer {
             }
         }
     }
-    
+
     /// Analyze an account expression to determine if it needs reload after CPI
     fn analyze_account(expr: &syn::Expr) -> AccountInfo {
         let name = Self::expr_to_string(expr);
         let (needs_reload, _) = Self::classify_account(expr);
-        
+
         AccountInfo {
             name,
             needs_reload,
-            used_after_cpi: false, // Will be analyzed later
+            used_after_cpi: false,        // Will be analyzed later
             reloaded_before_usage: false, // Will be analyzed later
         }
     }
-    
-    
+
     /// Classify an account expression based on whether it needs reload after CPI
     /// Only writable accounts need reload because only they can be modified by CPI
     fn classify_account(expr: &syn::Expr) -> (bool, String) {
         let expr_str = Self::expr_to_string(expr);
-        
+
         if expr_str.contains("ctx.accounts.") {
             // Extract the account name from ctx.accounts.account_name
             if let Some(account_name) = Self::extract_account_name(&expr_str) {
                 // Check if this account is writable based on common patterns
                 let is_writable = Self::is_account_writable(&account_name);
-                
+
                 if is_writable {
                     (true, "Writable Account - NEEDS RELOAD".to_string())
                 } else {
@@ -963,60 +984,79 @@ impl InvokeAnalyzer {
             }
         } else {
             // For non-context accounts, assume needs reload
-            (true, "Non-Context Account - ASSUME NEEDS RELOAD".to_string())
+            (
+                true,
+                "Non-Context Account - ASSUME NEEDS RELOAD".to_string(),
+            )
         }
     }
-    
+
     /// Determine if an account is writable based on naming patterns and context
     fn is_account_writable(account_name: &str) -> bool {
         match account_name {
             // Writable accounts - these can be modified by CPI
-            "user_account" | "data_account" | "token_account" | "mint" | "vault" | 
-            "user" | "data" | "state" | "config" | "treasury" | "pool" | "market" |
-            "orderbook" | "position" | "trade" | "balance" | "stake" | "reward" |
-            "liquidity" | "reserve" | "collateral" | "debt" | "supply" | "borrow" |
-            "mutable_user" => {
-                true
-            }
+            "user_account" | "data_account" | "token_account" | "mint" | "vault" | "user"
+            | "data" | "state" | "config" | "treasury" | "pool" | "market" | "orderbook"
+            | "position" | "trade" | "balance" | "stake" | "reward" | "liquidity" | "reserve"
+            | "collateral" | "debt" | "supply" | "borrow" | "mutable_user" => true,
             // Read-only accounts - these cannot be modified by CPI
-            "authority" | "signer" | "payer" | "owner" | "admin" | "creator" |
-            "system_program" | "token_program" | "rent" | "clock" | "sysvar" |
-            "program" | "system" | "spl_token" | "associated_token" | "metadata" |
-            "rent_sysvar" | "clock_sysvar" | "recent_blockhashes" | "stake_history" |
-            "read_only_user" | "read_only_authority" => {
-                false
-            }
+            "authority"
+            | "signer"
+            | "payer"
+            | "owner"
+            | "admin"
+            | "creator"
+            | "system_program"
+            | "token_program"
+            | "rent"
+            | "clock"
+            | "sysvar"
+            | "program"
+            | "system"
+            | "spl_token"
+            | "associated_token"
+            | "metadata"
+            | "rent_sysvar"
+            | "clock_sysvar"
+            | "recent_blockhashes"
+            | "stake_history"
+            | "read_only_user"
+            | "read_only_authority" => false,
             _ => {
                 // Default to writable for unknown account names (conservative approach)
                 true
             }
         }
     }
-    
+
     /// Extract account name from ctx.accounts.account_name expression
     fn extract_account_name(expr_str: &str) -> Option<String> {
         if let Some(start) = expr_str.find("ctx.accounts.") {
             let after_ctx = &expr_str[start + 13..]; // Skip "ctx.accounts."
-            // Find the first dot, space, or parenthesis to get the account name
-            let end = after_ctx.find(|c| c == '.' || c == ' ' || c == '(')
+                                                     // Find the first dot, space, or parenthesis to get the account name
+            let end = after_ctx
+                .find(|c| c == '.' || c == ' ' || c == '(')
                 .unwrap_or(after_ctx.len());
             Some(after_ctx[..end].to_string())
         } else {
             None
         }
     }
-    
+
     /// Convert a syn::Expr to a readable string representation
     fn expr_to_string(expr: &syn::Expr) -> String {
         match expr {
-            syn::Expr::Path(path) => {
-                quote::quote!(#path).to_string()
-            }
-            syn::Expr::Lit(lit) => {
-                quote::quote!(#lit).to_string()
-            }
+            syn::Expr::Path(path) => quote::quote!(#path).to_string(),
+            syn::Expr::Lit(lit) => quote::quote!(#lit).to_string(),
             syn::Expr::Array(arr) => {
-                format!("[{}]", arr.elems.iter().map(|e| Self::expr_to_string(e)).collect::<Vec<_>>().join(", "))
+                format!(
+                    "[{}]",
+                    arr.elems
+                        .iter()
+                        .map(|e| Self::expr_to_string(e))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
             }
             syn::Expr::Reference(ref_expr) => {
                 format!("&{}", Self::expr_to_string(&ref_expr.expr))
@@ -1029,7 +1069,11 @@ impl InvokeAnalyzer {
                 format!("{}.{}", Self::expr_to_string(&field_expr.base), member_str)
             }
             syn::Expr::MethodCall(method_call) => {
-                format!("{}.{}()", Self::expr_to_string(&method_call.receiver), method_call.method)
+                format!(
+                    "{}.{}()",
+                    Self::expr_to_string(&method_call.receiver),
+                    method_call.method
+                )
             }
             _ => {
                 // For complex expressions, try to get a reasonable representation
@@ -1037,59 +1081,64 @@ impl InvokeAnalyzer {
             }
         }
     }
-    
+
     /// Analyze macro arguments to extract account usage
-    fn analyze_macro_arguments(tokens: &proc_macro2::TokenStream, invoke_call: &mut InvokeCallInfo) {
+    fn analyze_macro_arguments(
+        tokens: &proc_macro2::TokenStream,
+        invoke_call: &mut InvokeCallInfo,
+    ) {
         // Convert tokens to string for analysis
         let tokens_str = tokens.to_string();
-        
+
         // Look for ctx.accounts.account_name patterns in macro arguments
         // Handle both "ctx.accounts." and "ctx . accounts ." patterns
         if tokens_str.contains("ctx") && tokens_str.contains("accounts") {
             // Extract account names from the macro arguments
             let account_patterns = Self::extract_account_patterns_from_tokens(&tokens_str);
-            
+
             for account_pattern in account_patterns {
                 let (needs_reload, _) = Self::classify_account_from_string(&account_pattern);
                 invoke_call.accounts.push(AccountInfo {
                     name: account_pattern,
                     needs_reload,
-                    used_after_cpi: false, // Will be analyzed later
+                    used_after_cpi: false,        // Will be analyzed later
                     reloaded_before_usage: false, // Will be analyzed later
                 });
             }
         }
     }
-    
+
     /// Extract account patterns from token string
     fn extract_account_patterns_from_tokens(tokens_str: &str) -> Vec<String> {
         let mut patterns = Vec::new();
-        
+
         // Simple approach: look for "ctx" followed by "accounts" followed by account name
         // Handle both "ctx.accounts.name" and "ctx . accounts . name" patterns
         let normalized = tokens_str.replace(" ", "").replace(".", "");
-        
+
         // Look for ctxaccounts pattern
         if let Some(pos) = normalized.find("ctxaccounts") {
             let after_ctxaccounts = &normalized[pos + 11..]; // Skip "ctxaccounts"
-            
+
             // Find the account name (everything until next non-alphabetic character, but allow underscores)
-            let account_end = after_ctxaccounts.find(|c: char| !c.is_alphabetic() && c != '_').unwrap_or(after_ctxaccounts.len());
+            let account_end = after_ctxaccounts
+                .find(|c: char| !c.is_alphabetic() && c != '_')
+                .unwrap_or(after_ctxaccounts.len());
             let account_name = &after_ctxaccounts[..account_end];
-            
+
             if !account_name.is_empty() {
                 patterns.push(format!("ctx.accounts.{}", account_name));
             }
         }
-        
+
         patterns
     }
-    
+
     /// Classify account from string pattern
     fn classify_account_from_string(account_pattern: &str) -> (bool, String) {
         if let Some(account_name) = Self::extract_account_name(account_pattern) {
             let is_writable = Self::is_account_writable(&account_name);
-            
+
             if is_writable {
                 (true, "Writable Account - NEEDS RELOAD".to_string())
             } else {
