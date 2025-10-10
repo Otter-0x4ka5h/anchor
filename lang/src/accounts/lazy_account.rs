@@ -1,6 +1,12 @@
 //! Like [`Account`](crate::Account), but deserializes on-demand.
 
-use std::{cell::RefCell, collections::BTreeSet, fmt, mem::MaybeUninit, rc::Rc};
+use core::{cell::RefCell, fmt, mem::MaybeUninit};
+
+#[cfg(not(feature = "std"))]
+use alloc::{collections::BTreeSet, rc::Rc};
+
+#[cfg(feature = "std")]
+use std::{collections::BTreeSet, rc::Rc};
 
 use crate::{
     error::{Error, ErrorCode},

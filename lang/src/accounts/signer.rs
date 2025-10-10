@@ -4,8 +4,13 @@ use crate::solana_program::account_info::AccountInfo;
 use crate::solana_program::instruction::AccountMeta;
 use crate::solana_program::pubkey::Pubkey;
 use crate::{Accounts, AccountsExit, Key, Result, ToAccountInfos, ToAccountMetas};
+use core::ops::Deref;
+
+#[cfg(not(feature = "std"))]
+use alloc::collections::BTreeSet;
+
+#[cfg(feature = "std")]
 use std::collections::BTreeSet;
-use std::ops::Deref;
 
 /// Type validating that the account signed the transaction. No other ownership
 /// or type checks are done. If this is used, one should not try to access the

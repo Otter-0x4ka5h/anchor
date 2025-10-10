@@ -4,7 +4,13 @@ use crate::solana_program::account_info::AccountInfo;
 use crate::solana_program::instruction::AccountMeta;
 use crate::solana_program::pubkey::Pubkey;
 use crate::{Accounts, Bumps, ToAccountInfos, ToAccountMetas};
-use std::fmt;
+use core::fmt;
+
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
+
+#[cfg(feature = "std")]
+use std::vec::Vec;
 
 /// Provides non-argument inputs to the program.
 ///

@@ -5,9 +5,14 @@ use crate::solana_program::account_info::AccountInfo;
 use crate::solana_program::instruction::AccountMeta;
 use crate::solana_program::pubkey::Pubkey;
 use crate::{Accounts, AccountsExit, Key, Result, ToAccountInfos, ToAccountMetas};
+use core::fmt;
+use core::ops::{Deref, DerefMut};
+
+#[cfg(not(feature = "std"))]
+use alloc::collections::BTreeSet;
+
+#[cfg(feature = "std")]
 use std::collections::BTreeSet;
-use std::fmt;
-use std::ops::{Deref, DerefMut};
 
 /// Type validating that the account is a sysvar and deserializing it.
 ///

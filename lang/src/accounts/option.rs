@@ -8,6 +8,10 @@
 //! }
 //! ```
 
+#[cfg(not(feature = "std"))]
+use alloc::collections::BTreeSet;
+
+#[cfg(feature = "std")]
 use std::collections::BTreeSet;
 
 use crate::solana_program::account_info::AccountInfo;

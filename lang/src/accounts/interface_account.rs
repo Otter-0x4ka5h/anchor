@@ -10,9 +10,14 @@ use crate::{
     AccountDeserialize, AccountSerialize, Accounts, AccountsClose, AccountsExit, CheckOwner, Key,
     Owners, Result, ToAccountInfos, ToAccountMetas,
 };
+use core::fmt;
+use core::ops::{Deref, DerefMut};
+
+#[cfg(not(feature = "std"))]
+use alloc::collections::BTreeSet;
+
+#[cfg(feature = "std")]
 use std::collections::BTreeSet;
-use std::fmt;
-use std::ops::{Deref, DerefMut};
 
 /// Wrapper around [`AccountInfo`](crate::solana_program::account_info::AccountInfo)
 /// that verifies program ownership and deserializes underlying data into a Rust type.

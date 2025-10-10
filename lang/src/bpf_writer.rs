@@ -1,6 +1,11 @@
 use crate::solana_program::program_memory::sol_memcpy;
-use std::cmp;
+use core::cmp;
+
+#[cfg(feature = "std")]
 use std::io::{self, Write};
+
+#[cfg(not(feature = "std"))]
+use borsh::maybestd::io::{self, Write};
 
 #[derive(Debug, Default)]
 pub struct BpfWriter<T> {

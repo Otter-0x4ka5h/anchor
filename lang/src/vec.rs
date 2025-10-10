@@ -2,7 +2,12 @@ use crate::solana_program::account_info::AccountInfo;
 use crate::solana_program::instruction::AccountMeta;
 use crate::solana_program::pubkey::Pubkey;
 use crate::{Accounts, Result, ToAccountInfos, ToAccountMetas};
-use std::collections::BTreeSet;
+
+#[cfg(not(feature = "std"))]
+use alloc::{collections::BTreeSet, vec::Vec};
+
+#[cfg(feature = "std")]
+use std::{collections::BTreeSet, vec::Vec};
 
 impl<'info, T: ToAccountInfos<'info>> ToAccountInfos<'info> for Vec<T> {
     fn to_account_infos(&self) -> Vec<AccountInfo<'info>> {

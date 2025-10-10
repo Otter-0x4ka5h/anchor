@@ -1,3 +1,4 @@
+#![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
 
 //! Anchor ⚓ is a framework for Solana's Sealevel runtime providing several
@@ -25,12 +26,22 @@
 
 extern crate self as anchor_lang;
 
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
 use crate::solana_program::account_info::AccountInfo;
 use crate::solana_program::instruction::AccountMeta;
 use crate::solana_program::program_error::ProgramError;
 use crate::solana_program::pubkey::Pubkey;
 use bytemuck::{Pod, Zeroable};
-use std::{collections::BTreeSet, fmt::Debug, io::Write};
+
+#[cfg(not(feature = "std"))]
+use alloc::{collections::BTreeSet, format, string::String, vec::Vec};
+#[cfg(not(feature = "std"))]
+use core::fmt::Debug;
+
+#[cfg(feature = "std")]
+use std::{collections::BTreeSet, fmt::Debug, format, string::String, vec::Vec};
 
 mod account_meta;
 pub mod accounts;
@@ -170,7 +181,7 @@ pub use idl::IdlBuild;
 #[cfg(feature = "interface-instructions")]
 pub use anchor_attribute_program::interface;
 
-pub type Result<T> = std::result::Result<T, error::Error>;
+pub type Result<T> = core::result::Result<T, error::Error>;
 
 /// A data structure of validated accounts that can be deserialized from the
 /// input to a Solana program. Implementations of this trait should perform any
@@ -341,7 +352,13 @@ impl<'info, T: AsRef<AccountInfo<'info>>> Lamports<'info> for T {}
 /// [`#[account]`](./attr.account.html) attribute.
 pub trait AccountSerialize {
     /// Serializes the account data into `writer`.
-    fn try_serialize<W: Write>(&self, _writer: &mut W) -> Result<()> {
+    #[cfg(feature = "std")]
+    fn try_serialize<W: std::io::Write>(&self, _writer: &mut W) -> Result<()> {
+        Ok(())
+    }
+
+    #[cfg(not(feature = "std"))]
+    fn try_serialize<W: borsh::maybestd::io::Write>(&self, _writer: &mut W) -> Result<()> {
         Ok(())
     }
 }
@@ -530,6 +547,32 @@ pub mod prelude {
     pub use borsh;
     pub use error::*;
     pub use thiserror;
+
+    // Re-export core types for no_std compatibility
+    #[cfg(not(feature = "std"))]
+    pub use alloc::{
+        boxed::Box,
+        collections, format,
+        string::{String, ToString},
+        vec::Vec,
+    };
+
+    #[cfg(feature = "std")]
+    pub use std::{
+        boxed::Box,
+        collections, format,
+        string::{String, ToString},
+        vec::Vec,
+    };
+
+    // Re-export vec! macro
+    #[cfg(not(feature = "std"))]
+    #[doc(hidden)]
+    pub use alloc::vec;
+
+    #[cfg(feature = "std")]
+    #[doc(hidden)]
+    pub use std::vec;
 
     #[cfg(feature = "event-cpi")]
     pub use super::{emit_cpi, event_cpi};

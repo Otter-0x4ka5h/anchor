@@ -9,8 +9,13 @@ use crate::{
     AccountDeserialize, Accounts, AccountsExit, CheckId, Key, Result, ToAccountInfos,
     ToAccountMetas,
 };
+use core::ops::Deref;
+
+#[cfg(not(feature = "std"))]
+use alloc::collections::BTreeSet;
+
+#[cfg(feature = "std")]
 use std::collections::BTreeSet;
-use std::ops::Deref;
 
 /// Type validating that the account is one of a set of given Programs
 ///
