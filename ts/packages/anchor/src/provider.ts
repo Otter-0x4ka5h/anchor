@@ -144,55 +144,89 @@ export class AnchorProvider implements Provider {
       opts = this.opts;
     }
 
-    if (isVersionedTransaction(tx)) {
-      if (signers) {
-        tx.sign(signers);
-      }
-    } else {
-      tx.feePayer = tx.feePayer ?? this.wallet.publicKey;
-      tx.recentBlockhash = (
-        await this.connection.getLatestBlockhash(opts.preflightCommitment)
-      ).blockhash;
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY_MS = 500;
+    let lastError: Error | undefined;
 
-      if (signers) {
-        for (const signer of signers) {
-          tx.partialSign(signer);
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      // Prepare and sign the transaction with fresh blockhash for each attempt
+      let txToSend: Transaction | VersionedTransaction;
+      
+      if (isVersionedTransaction(tx)) {
+        // For versioned transactions, sign only on first attempt
+        if (signers && attempt === 0) {
+          tx.sign(signers);
         }
-      }
-    }
-    tx = await this.wallet.signTransaction(tx);
-    const rawTx = tx.serialize();
-
-    try {
-      return await sendAndConfirmRawTransaction(this.connection, rawTx, opts);
-    } catch (err) {
-      // thrown if the underlying 'confirmTransaction' encounters a failed tx
-      // the 'confirmTransaction' error does not return logs so we make another rpc call to get them
-      if (err instanceof ConfirmError) {
-        // choose the shortest available commitment for 'getTransaction'
-        // (the json RPC does not support any shorter than "confirmed" for 'getTransaction')
-        // because that will see the tx sent with `sendAndConfirmRawTransaction` no matter which
-        // commitment `sendAndConfirmRawTransaction` used
-        const txSig = bs58.encode(
-          isVersionedTransaction(tx)
-            ? tx.signatures?.[0] || new Uint8Array()
-            : tx.signature ?? new Uint8Array()
-        );
-        const maxVer = isVersionedTransaction(tx) ? 0 : undefined;
-        const failedTx = await this.connection.getTransaction(txSig, {
-          commitment: "confirmed",
-          maxSupportedTransactionVersion: maxVer,
-        });
-        if (!failedTx) {
-          throw err;
-        } else {
-          const logs = failedTx.meta?.logMessages;
-          throw !logs ? err : new SendTransactionError(err.message, logs);
-        }
+        txToSend = tx;
       } else {
-        throw err;
+        // For legacy transactions, clear signatures on retry and get fresh blockhash
+        if (attempt > 0) {
+          // Clear all signatures for retry attempts
+          tx.signatures = [];
+        }
+        
+        tx.feePayer = tx.feePayer ?? this.wallet.publicKey;
+        tx.recentBlockhash = (
+          await this.connection.getLatestBlockhash(opts.preflightCommitment)
+        ).blockhash;
+
+        if (signers) {
+          for (const signer of signers) {
+            tx.partialSign(signer);
+          }
+        }
+        txToSend = tx;
+      }
+      
+      txToSend = await this.wallet.signTransaction(txToSend);
+      const rawTx = txToSend.serialize();
+
+      try {
+        return await sendAndConfirmRawTransaction(this.connection, rawTx, opts);
+      } catch (err) {
+        lastError = err as Error;
+
+        // Check if this is a blockhash not found error
+        const isBlockhashError = err instanceof Error && 
+          (err.message.includes('Blockhash not found') || 
+           err.message.includes('block height exceeded'));
+
+        if (isBlockhashError && attempt < MAX_RETRIES - 1) {
+          // Wait a bit before retrying to allow blocks to progress
+          await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * (attempt + 1)));
+          continue;
+        }
+
+        // thrown if the underlying 'confirmTransaction' encounters a failed tx
+        // the 'confirmTransaction' error does not return logs so we make another rpc call to get them
+        if (err instanceof ConfirmError) {
+          // choose the shortest available commitment for 'getTransaction'
+          // (the json RPC does not support any shorter than "confirmed" for 'getTransaction')
+          // because that will see the tx sent with `sendAndConfirmRawTransaction` no matter which
+          // commitment `sendAndConfirmRawTransaction` used
+          const txSig = bs58.encode(
+            isVersionedTransaction(txToSend)
+              ? txToSend.signatures?.[0] || new Uint8Array()
+              : txToSend.signature ?? new Uint8Array()
+          );
+          const maxVer = isVersionedTransaction(txToSend) ? 0 : undefined;
+          const failedTx = await this.connection.getTransaction(txSig, {
+            commitment: "confirmed",
+            maxSupportedTransactionVersion: maxVer,
+          });
+          if (!failedTx) {
+            throw err;
+          } else {
+            const logs = failedTx.meta?.logMessages;
+            throw !logs ? err : new SendTransactionError(err.message, logs);
+          }
+        } else {
+          throw err;
+        }
       }
     }
+
+    throw lastError || new Error('Transaction failed after multiple retries');
   }
 
   /**
