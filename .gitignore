@@ -26,3 +26,5 @@ test-keypair.json
 tsconfig.tsbuildinfo
 .vscode
 .vercel
+.yarn/
+.yarnrc.yml

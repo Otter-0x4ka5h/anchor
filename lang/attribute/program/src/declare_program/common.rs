@@ -98,9 +98,9 @@ pub fn convert_idl_type_to_str(ty: &IdlType, is_const: bool) -> Result<String, s
             "::core::option::Option<{}>",
             convert_idl_type_to_str(ty, is_const)?
         ),
-        IdlType::Vec(ty) => format!(
+        IdlType::Vec(vec) => format!(
             "::std::vec::Vec<{}>",
-            convert_idl_type_to_str(ty, is_const)?
+            convert_idl_type_to_str(vec.inner_type(), is_const)?
         ),
         IdlType::Array(ty, len) => format!(
             "[{}; {}]",
@@ -383,7 +383,7 @@ pub fn can_derive_copy_ty(ty: &IdlType, ty_defs: &[IdlTypeDef]) -> bool {
 fn can_derive_default_ty(ty: &IdlType, ty_defs: &[IdlTypeDef]) -> bool {
     match ty {
         IdlType::Option(inner) => can_derive_default_ty(inner, ty_defs),
-        IdlType::Vec(inner) => can_derive_default_ty(inner, ty_defs),
+        IdlType::Vec(vec) => can_derive_default_ty(vec.inner_type(), ty_defs),
         IdlType::Array(inner, len) => {
             if !can_derive_default_ty(inner, ty_defs) {
                 return false;
