@@ -559,11 +559,7 @@ class InstructionFormatter {
         "[" +
         (<Array<IdlField>>data)
           .map((d) =>
-            this.formatIdlData(
-              { name: "", type: innerType },
-              d,
-              types
-            )
+            this.formatIdlData({ name: "", type: innerType }, d, types)
           )
           .join(", ") +
         "]"
