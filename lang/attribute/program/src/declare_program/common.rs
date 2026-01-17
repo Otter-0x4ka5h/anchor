@@ -98,9 +98,9 @@ pub fn convert_idl_type_to_str(ty: &IdlType, is_const: bool) -> Result<String, s
             "::core::option::Option<{}>",
             convert_idl_type_to_str(ty, is_const)?
         ),
-        IdlType::Vec(vec) => format!(
+        IdlType::Vec(inner) => format!(
             "::std::vec::Vec<{}>",
-            convert_idl_type_to_str(vec.inner_type(), is_const)?
+            convert_idl_type_to_str(inner, is_const)?
         ),
         IdlType::Array(ty, len) => format!(
             "[{}; {}]",
@@ -178,6 +178,8 @@ pub fn convert_idl_type_def_to_ts(
 
         let ser_attr = match &ty_def.serialization {
             IdlSerialization::Borsh => quote!(#[derive(AnchorSerialize, AnchorDeserialize)]),
+            IdlSerialization::BorshU8 => quote!(#[custom_borsh(u8)]),
+            IdlSerialization::BorshU16 => quote!(#[custom_borsh(u16)]),
             IdlSerialization::Bytemuck => quote!(#[zero_copy]),
             IdlSerialization::BytemuckUnsafe => quote!(#[zero_copy(unsafe)]),
             _ => syn::Error::new(
@@ -190,14 +192,20 @@ pub fn convert_idl_type_def_to_ts(
             .into_compile_error(),
         };
 
-        let clone_attr = matches!(ty_def.serialization, IdlSerialization::Borsh)
-            .then(|| quote!(#[derive(Clone)]))
-            .unwrap_or_default();
+        let clone_attr = matches!(
+            ty_def.serialization,
+            IdlSerialization::Borsh | IdlSerialization::BorshU8 | IdlSerialization::BorshU16
+        )
+        .then(|| quote!(#[derive(Clone)]))
+        .unwrap_or_default();
 
-        let copy_attr = matches!(ty_def.serialization, IdlSerialization::Borsh)
-            .then(|| can_derive_copy(ty_def, ty_defs).then(|| quote!(#[derive(Copy)])))
-            .flatten()
-            .unwrap_or_default();
+        let copy_attr = matches!(
+            ty_def.serialization,
+            IdlSerialization::Borsh | IdlSerialization::BorshU8 | IdlSerialization::BorshU16
+        )
+        .then(|| can_derive_copy(ty_def, ty_defs).then(|| quote!(#[derive(Copy)])))
+        .flatten()
+        .unwrap_or_default();
 
         // `ser_attr` must be expanded first, as it may produce `repr(packed)`
         // This affects builtin derives so must be visible to them
