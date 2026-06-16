@@ -215,6 +215,35 @@ fn slab_realloc_shrink_refund_is_capped_by_available_lamports_above_new_floor() 
     );
 }
 
+#[test]
+fn slab_realloc_shrink_with_self_payer_preserves_lamports_and_still_resizes() {
+    let mut buf = setup_ledger(/*capacity*/ 4, /*len*/ 1);
+
+    let old_space = ITEMS_OFFSET + 4 * ITEM_SIZE;
+    let new_space = ITEMS_OFFSET + ITEM_SIZE;
+    let old_required = expected_min_lamports(old_space).unwrap();
+    let vault_balance = 1_000_000;
+
+    buf.set_lamports(old_required + vault_balance);
+
+    let payer_view = unsafe { buf.view() };
+    let view = unsafe { buf.view() };
+    let mut slab = unsafe { CounterLedger::load_mut(view) }.unwrap();
+
+    slab.realloc_account(new_space, payer_view, false).unwrap();
+
+    assert_eq!(
+        slab.view().lamports(),
+        old_required + vault_balance,
+        "when payer == account, shrinking should not burn lamports while refunding to self",
+    );
+    assert_eq!(
+        slab.current_space(),
+        new_space,
+        "self-payer shrink should still resize the account",
+    );
+}
+
 // -- `load_mut` rejects a buffer shrunk below ITEMS_OFFSET -----------
 
 #[test]

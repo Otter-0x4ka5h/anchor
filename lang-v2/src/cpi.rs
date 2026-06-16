@@ -4,7 +4,7 @@ pub use pinocchio::instruction::{InstructionAccount, InstructionView};
 #[cfg(feature = "const-rent")]
 use pinocchio::sysvars::rent::{ACCOUNT_STORAGE_OVERHEAD, DEFAULT_LAMPORTS_PER_BYTE};
 use {
-    crate::require,
+    crate::{require, traits::AccountViewCompat},
     pinocchio::{account::AccountView, address::Address},
     solana_program_error::ProgramError,
 };
@@ -589,21 +589,26 @@ pub fn realloc_account(
             current_lamports.saturating_sub(new_rent_minimum);
         let refund = reclaimable_rent.min(lamports_above_new_minimum);
         if refund > 0 {
-            let mut payer_mut = *payer;
-            // `checked_add` rather than `+`: overflow-checks is disabled in
-            // release builds, and this arithmetic is on user-supplied account
-            // lamports. The total SOL supply is bounded so overflow is
-            // unreachable in practice, but silent wrap would be a downgrade.
-            let new_payer_lamports = payer_mut
-                .lamports()
-                .checked_add(refund)
-                .ok_or(ProgramError::ArithmeticOverflow)?;
-            payer_mut.set_lamports(new_payer_lamports);
-            account.set_lamports(
-                current_lamports
-                    .checked_sub(refund)
-                    .ok_or(ProgramError::ArithmeticOverflow)?,
-            );
+            // When the payer aliases the resized account, the refund is a
+            // no-op transfer. Skip the lamport writes so we do not overwrite
+            // the first write with the second and accidentally burn lamports.
+            if payer.key() != account.key() {
+                let mut payer_mut = *payer;
+                // `checked_add` rather than `+`: overflow-checks is disabled in
+                // release builds, and this arithmetic is on user-supplied account
+                // lamports. The total SOL supply is bounded so overflow is
+                // unreachable in practice, but silent wrap would be a downgrade.
+                let new_payer_lamports = payer_mut
+                    .lamports()
+                    .checked_add(refund)
+                    .ok_or(ProgramError::ArithmeticOverflow)?;
+                payer_mut.set_lamports(new_payer_lamports);
+                account.set_lamports(
+                    current_lamports
+                        .checked_sub(refund)
+                        .ok_or(ProgramError::ArithmeticOverflow)?,
+                );
+            }
         }
     }
 
