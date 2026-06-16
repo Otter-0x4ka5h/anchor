@@ -4,7 +4,7 @@ pub use pinocchio::instruction::{InstructionAccount, InstructionView};
 #[cfg(feature = "const-rent")]
 use pinocchio::sysvars::rent::{ACCOUNT_STORAGE_OVERHEAD, DEFAULT_LAMPORTS_PER_BYTE};
 use {
-    crate::{require, traits::AccountViewCompat},
+    crate::require,
     pinocchio::{account::AccountView, address::Address},
     solana_program_error::ProgramError,
 };
@@ -592,7 +592,7 @@ pub fn realloc_account(
             // When the payer aliases the resized account, the refund is a
             // no-op transfer. Skip the lamport writes so we do not overwrite
             // the first write with the second and accidentally burn lamports.
-            if payer.key() != account.key() {
+            if payer.address() != account.address() {
                 let mut payer_mut = *payer;
                 // `checked_add` rather than `+`: overflow-checks is disabled in
                 // release builds, and this arithmetic is on user-supplied account
