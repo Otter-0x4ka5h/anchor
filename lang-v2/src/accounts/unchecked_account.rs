@@ -4,6 +4,10 @@ use {
     solana_program_error::ProgramError,
 };
 
+/// Escape hatch account wrapper with no owner/layout/discriminator validation.
+///
+/// Because the wrapper provides no lifecycle guarantees, it intentionally
+/// does not support Anchor's generic `#[account(close = ...)]` path.
 pub struct UncheckedAccount {
     view: AccountView,
 }

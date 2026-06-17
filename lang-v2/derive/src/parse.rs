@@ -642,6 +642,29 @@ pub fn extract_option_inner(ty: &Type) -> Option<&Type> {
     None
 }
 
+fn contains_unchecked_account(ty: &Type) -> bool {
+    match ty {
+        Type::Path(tp) => {
+            let Some(seg) = tp.path.segments.last() else {
+                return false;
+            };
+            if seg.ident == "UncheckedAccount" {
+                return true;
+            }
+            if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
+                return args.args.iter().any(|arg| match arg {
+                    syn::GenericArgument::Type(inner) => contains_unchecked_account(inner),
+                    _ => false,
+                });
+            }
+            false
+        }
+        Type::Paren(paren) => contains_unchecked_account(&paren.elem),
+        Type::Reference(reference) => contains_unchecked_account(&reference.elem),
+        _ => false,
+    }
+}
+
 pub struct AccountField {
     pub name: Ident,
     /// The field's original `syn::Type` — used by `impl_accounts` to build
@@ -1415,6 +1438,13 @@ pub fn parse_field(
         return Err(syn::Error::new(
             field_name.span(),
             "mut must be provided when using close",
+        ));
+    }
+    if attrs.close.is_some() && contains_unchecked_account(field_ty) {
+        return Err(syn::Error::new(
+            field_name.span(),
+            "`#[account(close = ...)]` is not supported on `UncheckedAccount`; use a typed \
+             account wrapper or close the raw account manually",
         ));
     }
     let associated_token = parse_associated_token_init(&attrs, field_names)?;
