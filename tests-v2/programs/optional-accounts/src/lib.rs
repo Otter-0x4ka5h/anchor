@@ -88,6 +88,17 @@ pub mod optional_accounts {
     pub fn optional_constraint(_ctx: &mut Context<OptionalConstraint>) -> Result<()> {
         Ok(())
     }
+
+    #[discrim = 10]
+    pub fn double_mut_optional(ctx: &mut Context<DoubleMutOptional>) -> Result<()> {
+        if let Some(a) = ctx.accounts.a.as_mut() {
+            a.value = a.value.saturating_add(1);
+        }
+        if let Some(b) = ctx.accounts.b.as_mut() {
+            b.value = b.value.saturating_add(1);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -167,4 +178,12 @@ pub struct OptionalClose {
 pub struct OptionalConstraint {
     #[account(constraint = data.value == 7)]
     pub data: Option<Account<Data>>,
+}
+
+#[derive(Accounts)]
+pub struct DoubleMutOptional {
+    #[account(mut)]
+    pub a: Option<Account<Data>>,
+    #[account(mut)]
+    pub b: Option<Account<Data>>,
 }
