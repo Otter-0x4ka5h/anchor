@@ -1185,14 +1185,7 @@ fn emit_init_body(
     is_optional: bool,
 ) -> syn::Result<TokenStream2> {
     let payer = attrs.payer.as_ref().expect("init requires payer");
-    // Fall back to `<T as Space>::INIT_SPACE` when `space` is omitted.
-    // SPL types (Mint, TokenAccount) impl Space = size_of<Self>() so
-    // `#[account(init, token::mint = ..., token::authority = ...)]` works
-    // without hardcoding magic numbers like `space = 165`.
-    let space = match attrs.space.as_ref() {
-        Some(expr) => quote! { #expr },
-        None => quote! { <#field_ty as anchor_lang_v2::Space>::INIT_SPACE },
-    };
+    let space = init_space_expr(field_ty, attrs);
     let owner = match attrs.owner.as_ref() {
         Some(expr) => quote! { #expr },
         None => quote! { *__program_id },
@@ -1288,6 +1281,17 @@ fn emit_init_body(
             __payer, &__target, #space, &__owner, &__init_params, __seeds, __payer_signer_seeds,
         )?
     })
+}
+
+fn init_space_expr(field_ty: &Type, attrs: &AccountAttrs) -> TokenStream2 {
+    // Fall back to `<T as Space>::INIT_SPACE` when `space` is omitted.
+    // SPL types (Mint, TokenAccount) impl Space = size_of<Self>() so
+    // `#[account(init, token::mint = ..., token::authority = ...)]` works
+    // without hardcoding magic numbers like `space = 165`.
+    match attrs.space.as_ref() {
+        Some(expr) => quote! { #expr },
+        None => quote! { <#field_ty as anchor_lang_v2::Space>::INIT_SPACE },
+    }
 }
 
 fn emit_associated_token_init_body(
@@ -1609,6 +1613,14 @@ pub fn parse_field(
                 wrap_init_body_with_constraints(inner_ty, &attrs, &init_body);
             quote! { Some({ #init_body_with_constraints }) }
         } else if attrs.is_init_if_needed {
+            let init_if_needed_space_check = {
+                let expected_space = init_space_expr(inner_ty, &attrs);
+                quote! {
+                    if __target.data_len() != #expected_space {
+                        return Err(anchor_lang_v2::ErrorCode::ConstraintSpace.into());
+                    }
+                }
+            };
             let init_body = if let Some(ref at) = associated_token {
                 emit_associated_token_init_body(
                     inner_ty,
@@ -1635,6 +1647,7 @@ pub fn parse_field(
                 if __target.data_len() > 0
                     && !__target.owned_by(&anchor_lang_v2::programs::System::id())
                 {
+                    #init_if_needed_space_check
                     // SAFETY: the bitvec duplicate-account check below ensures
                     // no other mutable reference to this account's data exists.
                     Some(unsafe {
@@ -1754,6 +1767,14 @@ pub fn parse_field(
         });
         quote! {}
     } else if attrs.is_init_if_needed {
+        let init_if_needed_space_check = {
+            let expected_space = init_space_expr(field_ty, &attrs);
+            quote! {
+                if __target.data_len() != #expected_space {
+                    return Err(anchor_lang_v2::ErrorCode::ConstraintSpace.into());
+                }
+            }
+        };
         let init_body = if let Some(ref at) = associated_token {
             emit_associated_token_init_body(
                 field_ty,
@@ -1786,6 +1807,7 @@ pub fn parse_field(
             let mut #field_name: #field_ty = {
                 let __target = __views[#offset_expr];
                 if #existed {
+                    #init_if_needed_space_check
                     // SAFETY: the bitvec duplicate-account check below ensures
                     // no other mutable reference to this account's data exists.
                     unsafe { <#field_ty as anchor_lang_v2::AnchorAccount>::load_mut(__target)? }

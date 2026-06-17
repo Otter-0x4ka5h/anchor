@@ -38,6 +38,7 @@ fn all_labeled_variants() -> Vec<(&'static str, ErrorCode)> {
             | ErrorCode::ConstraintAddress
             | ErrorCode::ConstraintClose
             | ErrorCode::ConstraintOwner
+            | ErrorCode::ConstraintSpace
             | ErrorCode::ConstraintRaw
             | ErrorCode::ConstraintExecutable
             | ErrorCode::ConstraintZero
@@ -65,6 +66,7 @@ fn all_labeled_variants() -> Vec<(&'static str, ErrorCode)> {
         ("ConstraintAddress", ErrorCode::ConstraintAddress),
         ("ConstraintClose", ErrorCode::ConstraintClose),
         ("ConstraintOwner", ErrorCode::ConstraintOwner),
+        ("ConstraintSpace", ErrorCode::ConstraintSpace),
         ("ConstraintRaw", ErrorCode::ConstraintRaw),
         ("ConstraintExecutable", ErrorCode::ConstraintExecutable),
         ("ConstraintZero", ErrorCode::ConstraintZero),
@@ -231,6 +233,11 @@ fn builtin_groupings_are_stable() {
         "ConstraintClose",
         ErrorCode::ConstraintClose.into(),
         Custom(2011),
+    );
+    check(
+        "ConstraintSpace",
+        ErrorCode::ConstraintSpace.into(),
+        InvalidAccountData,
     );
 
     // Grouped under InvalidInstructionData
