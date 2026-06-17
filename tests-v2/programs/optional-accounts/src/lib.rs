@@ -35,6 +35,9 @@ impl AnchorAccount for SpyAccount {
 
     unsafe fn load_mut(view: AccountView) -> Result<Self> {
         anchor_lang_v2::msg!("spy_load_mut");
+        if !view.is_writable() {
+            return Err(ErrorCode::ConstraintMut.into());
+        }
         Ok(Self { view })
     }
 
@@ -211,7 +214,7 @@ pub struct OptionalConstraint {
 #[derive(Accounts)]
 pub struct OptionalSpyMut {
     #[account(mut)]
-    pub first: Option<SpyAccount>,
+    pub a: Option<SpyAccount>,
     #[account(mut)]
-    pub second: Option<SpyAccount>,
+    pub b: Option<SpyAccount>,
 }
