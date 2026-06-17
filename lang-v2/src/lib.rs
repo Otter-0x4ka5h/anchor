@@ -341,7 +341,7 @@ impl From<ErrorCode> for solana_program_error::ProgramError {
             ErrorCode::ConstraintAddress => solana_program_error::ProgramError::Custom(2012),
             ErrorCode::ConstraintClose => solana_program_error::ProgramError::Custom(2011),
             ErrorCode::ConstraintOwner => solana_program_error::ProgramError::IllegalOwner,
-            ErrorCode::ConstraintSpace => solana_program_error::ProgramError::InvalidAccountData,
+            ErrorCode::ConstraintSpace => solana_program_error::ProgramError::Custom(2019),
             ErrorCode::ConstraintRaw => solana_program_error::ProgramError::Custom(2003),
             ErrorCode::ConstraintExecutable => solana_program_error::ProgramError::Custom(2007),
             ErrorCode::ConstraintZero => solana_program_error::ProgramError::Custom(2013),

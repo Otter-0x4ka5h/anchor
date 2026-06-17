@@ -116,7 +116,7 @@ fn no_two_variants_share_a_custom_code() {
     }
     // Snapshot — adding a new Custom variant forces a review of this number.
     assert_eq!(
-        custom_count, 15,
+        custom_count, 16,
         "Number of Custom error codes changed; update this snapshot after review"
     );
 }
@@ -234,10 +234,12 @@ fn builtin_groupings_are_stable() {
         ErrorCode::ConstraintClose.into(),
         Custom(2011),
     );
+
+    // Dedicated constraint custom code
     check(
         "ConstraintSpace",
         ErrorCode::ConstraintSpace.into(),
-        InvalidAccountData,
+        Custom(2019),
     );
 
     // Grouped under InvalidInstructionData
