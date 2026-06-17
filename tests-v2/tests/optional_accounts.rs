@@ -216,6 +216,42 @@ fn duplicate_optional_none_sentinels_skip_spy_load_mut() {
 }
 
 #[test]
+fn double_optional_none_sentinels_stay_silent() {
+    let (mut svm, payer) = setup();
+
+    send_instruction(
+        &mut svm,
+        program_id(),
+        vec![11],
+        vec![
+            AccountMeta::new(program_id(), false),
+            AccountMeta::new(program_id(), false),
+        ],
+        &payer,
+        &[],
+    )
+    .expect("duplicate None sentinels should stay silent across optional mut fields");
+}
+
+#[test]
+fn double_optional_duplicate_some_still_fails() {
+    let (mut svm, payer) = setup();
+    let data = init_required(&mut svm, &payer);
+
+    let result = call_raw(
+        &mut svm,
+        &payer,
+        11,
+        vec![AccountMeta::new(data, false), AccountMeta::new(data, false)],
+    );
+    let err = format!("{:?}", result.unwrap_err().err);
+    assert!(
+        err.contains("Duplicate") || err.contains("Custom("),
+        "duplicate Some alias should still fail, got: {err}"
+    );
+}
+
+#[test]
 fn optional_seed_bumps_are_some_only_for_some_accounts() {
     let (mut svm, payer) = setup();
     let data = init_required(&mut svm, &payer);

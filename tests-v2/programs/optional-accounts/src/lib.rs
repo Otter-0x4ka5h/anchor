@@ -130,6 +130,17 @@ pub mod optional_accounts {
     pub fn optional_spy_mut(_ctx: &mut Context<OptionalSpyMut>) -> Result<()> {
         Ok(())
     }
+
+    #[discrim = 11]
+    pub fn double_mut_optional(ctx: &mut Context<DoubleMutOptional>) -> Result<()> {
+        if let Some(a) = ctx.accounts.a.as_mut() {
+            a.value = a.value.saturating_add(1);
+        }
+        if let Some(b) = ctx.accounts.b.as_mut() {
+            b.value = b.value.saturating_add(1);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -217,4 +228,12 @@ pub struct OptionalSpyMut {
     pub a: Option<SpyAccount>,
     #[account(mut)]
     pub b: Option<SpyAccount>,
+}
+
+#[derive(Accounts)]
+pub struct DoubleMutOptional {
+    #[account(mut)]
+    pub a: Option<Account<Data>>,
+    #[account(mut)]
+    pub b: Option<Account<Data>>,
 }
