@@ -754,7 +754,7 @@ fn init_if_needed_rejects_existing_account_with_wrong_space() {
         ],
         &[],
     );
-    assert_err_contains(&result, "InvalidAccountData");
+    assert_err_contains(&result, "Custom(2019)");
     assert_eq!(
         read_value(&svm, &pda),
         Some(1),

@@ -403,7 +403,7 @@ fn init_if_needed_rejects_optional_existing_account_with_wrong_space() {
     );
     let err = format!("{:?}", result.unwrap_err().err);
     assert!(
-        err.contains("InvalidAccountData") || err.contains("Custom("),
+        err.contains("Custom(2019)"),
         "mismatched optional init_if_needed space should be rejected, got: {err}"
     );
     assert_eq!(
