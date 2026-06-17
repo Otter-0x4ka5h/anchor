@@ -1294,6 +1294,27 @@ fn init_space_expr(field_ty: &Type, attrs: &AccountAttrs) -> TokenStream2 {
     }
 }
 
+fn init_if_needed_space_check(
+    field_ty: &Type,
+    attrs: &AccountAttrs,
+    associated_token: Option<&AssociatedTokenInit>,
+) -> TokenStream2 {
+    // Exact-length reuse validation is meant for Anchor-managed account
+    // layouts. SPL-style init flows validate their own account shape and
+    // may legitimately reuse variable-sized accounts such as Token-2022
+    // ATAs or extension-bearing token accounts.
+    if associated_token.is_some() || !attrs.namespaced.is_empty() {
+        quote! {}
+    } else {
+        let expected_space = init_space_expr(field_ty, attrs);
+        quote! {
+            if __target.data_len() != #expected_space {
+                return Err(anchor_lang_v2::ErrorCode::ConstraintSpace.into());
+            }
+        }
+    }
+}
+
 fn emit_associated_token_init_body(
     field_ty: &Type,
     attrs: &AccountAttrs,
@@ -1613,14 +1634,8 @@ pub fn parse_field(
                 wrap_init_body_with_constraints(inner_ty, &attrs, &init_body);
             quote! { Some({ #init_body_with_constraints }) }
         } else if attrs.is_init_if_needed {
-            let init_if_needed_space_check = {
-                let expected_space = init_space_expr(inner_ty, &attrs);
-                quote! {
-                    if __target.data_len() != #expected_space {
-                        return Err(anchor_lang_v2::ErrorCode::ConstraintSpace.into());
-                    }
-                }
-            };
+            let init_if_needed_space_check =
+                init_if_needed_space_check(inner_ty, &attrs, associated_token.as_ref());
             let init_body = if let Some(ref at) = associated_token {
                 emit_associated_token_init_body(
                     inner_ty,
@@ -1767,14 +1782,8 @@ pub fn parse_field(
         });
         quote! {}
     } else if attrs.is_init_if_needed {
-        let init_if_needed_space_check = {
-            let expected_space = init_space_expr(field_ty, &attrs);
-            quote! {
-                if __target.data_len() != #expected_space {
-                    return Err(anchor_lang_v2::ErrorCode::ConstraintSpace.into());
-                }
-            }
-        };
+        let init_if_needed_space_check =
+            init_if_needed_space_check(field_ty, &attrs, associated_token.as_ref());
         let init_body = if let Some(ref at) = associated_token {
             emit_associated_token_init_body(
                 field_ty,
