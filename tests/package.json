@@ -64,6 +64,7 @@
     "swap",
     "system-accounts",
     "sysvars",
+    "signature-verification",
     "tictactoe",
     "typescript",
     "validator-clone",
