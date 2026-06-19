@@ -137,3 +137,6 @@ required-features = ["testing"]
 [[test]]
 name = "to_cpi_accounts_derive"
 required-features = ["testing"]
+
+[[test]]
+name = "pod_native_ops"
