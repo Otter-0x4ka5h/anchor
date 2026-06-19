@@ -569,6 +569,11 @@ pub fn realloc_account(
 ) -> Result<(), ProgramError> {
     use pinocchio::Resize;
 
+    require!(
+        !pinocchio::address::address_eq(payer.address(), account.address()),
+        ProgramError::InvalidArgument
+    );
+
     let old_space = account.data_len();
     let required = rent_exempt_lamports(new_space)?;
     let current_lamports = account.lamports();
@@ -635,6 +640,31 @@ mod const_rent_tests {
             rent_exempt_lamports(0).unwrap(),
             ACCOUNT_STORAGE_OVERHEAD * DEFAULT_LAMPORTS_PER_BYTE,
         );
+    }
+}
+
+#[cfg(all(test, feature = "testing"))]
+mod realloc_tests {
+    use {super::*, crate::testing::AccountBuffer};
+
+    const PROGRAM_ID: [u8; 32] = [0x42; 32];
+
+    #[test]
+    fn realloc_rejects_payer_equal_target_before_resize() {
+        let buf = AccountBuffer::<256>::new();
+        buf.init([0xAB; 32], PROGRAM_ID, 24, false, true, false);
+
+        let mut account = unsafe { buf.view() };
+        let payer = account;
+        let old_space = account.data_len();
+        let old_lamports = account.lamports();
+
+        let err = realloc_account(&mut account, 64, &payer, false)
+            .expect_err("realloc must reject using the target account as the payer");
+
+        assert_eq!(err, ProgramError::InvalidArgument);
+        assert_eq!(account.data_len(), old_space);
+        assert_eq!(account.lamports(), old_lamports);
     }
 }
 
