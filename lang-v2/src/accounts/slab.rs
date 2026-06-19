@@ -843,7 +843,7 @@ where
     ) -> pinocchio::ProgramResult {
         let mut view = *self.account();
         if new_space != view.data_len() {
-            if new_space < Self::ITEMS_OFFSET {
+            if new_space < Self::MIN_DATA_LEN {
                 return Err(ProgramError::AccountDataTooSmall);
             }
             crate::realloc_account(&mut view, new_space, &payer, zero)?;
