@@ -140,3 +140,4 @@ required-features = ["testing"]
 
 [[test]]
 name = "pod_native_ops"
+required-features = ["testing"]
