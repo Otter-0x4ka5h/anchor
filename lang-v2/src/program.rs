@@ -39,6 +39,9 @@ pub fn invoke_signed<'a, 'seeds>(
     signer_seeds: &'seeds [&'seeds [&'seeds [u8]]],
 ) -> ProgramResult {
     validate_handles(instruction, account_handles)?;
+    if signer_seeds.is_empty() {
+        validate_handle_signers(instruction, account_handles)?;
+    }
     validate_handle_borrows(instruction, account_handles)?;
 
     // SAFETY: Validation above proves every non-sentinel instruction account
@@ -124,6 +127,31 @@ pub(crate) fn validate_handles(
 
         if meta.is_writable {
             require!(handle.is_writable(), ProgramError::InvalidArgument);
+        }
+
+        handle_index += 1;
+    }
+
+    Ok(())
+}
+
+pub(crate) fn validate_handle_signers(
+    instruction: &Instruction,
+    account_handles: &[CpiHandle<'_>],
+) -> ProgramResult {
+    let mut handle_index = 0;
+
+    for meta in &instruction.accounts {
+        if is_optional_account_sentinel(instruction, meta) {
+            continue;
+        }
+
+        let Some(handle) = account_handles.get(handle_index) else {
+            return Err(ProgramError::NotEnoughAccountKeys);
+        };
+
+        if meta.is_signer {
+            require!(handle.is_signer(), ProgramError::MissingRequiredSignature);
         }
 
         handle_index += 1;
