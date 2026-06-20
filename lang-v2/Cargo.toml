@@ -137,3 +137,7 @@ required-features = ["testing"]
 [[test]]
 name = "to_cpi_accounts_derive"
 required-features = ["testing"]
+
+[[test]]
+name = "account_constraint_check_mutability"
+required-features = ["testing"]

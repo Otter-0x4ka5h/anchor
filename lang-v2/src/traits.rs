@@ -631,7 +631,15 @@ pub trait AccountConstraint<A> {
     }
 
     /// Runtime validation. Invoked on non-init fields and on the
-    /// already-exists branch of `init_if_needed`. Read-only.
+    /// already-exists branch of `init_if_needed`.
+    ///
+    /// This receives only `&A`, so it cannot obtain typed mutable
+    /// access through the wrapper itself. That is a convention rather
+    /// than an enforced capability fence, though: account wrapper types
+    /// still expose their raw `AccountView`, and `AccountView` is
+    /// copyable. Hooks that intentionally mutate state should prefer
+    /// `update`, `init`, or `exit`; `check` should be treated as a
+    /// validation hook, not as an immutability guarantee.
     #[inline(always)]
     fn check(_account: &A, _value: &Self::Value) -> core::result::Result<(), ProgramError> {
         Ok(())
