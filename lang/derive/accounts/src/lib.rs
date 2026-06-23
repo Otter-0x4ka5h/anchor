@@ -449,7 +449,7 @@ use {proc_macro::TokenStream, quote::ToTokens, syn::parse_macro_input};
 ///                 rent-exempt minimum will be transferred from the program account back into the <code>realloc::payer</code>.
 ///                 <br><br>
 ///                 Warning: do not use subtractive realloc on accounts that intentionally hold extra lamports, such as vaults. Those extra
-///                 lamports will also be transferred to the <code>realloc::payer</code>; the current v1 behavior does not limit refunds to rent savings alone.
+///                 lamports will also be transferred to the <code>realloc::payer</code>; refunds are not limited to rent savings alone.
 ///                 <br><br>
 ///                 The <code>realloc::zero</code> constraint is required in order to determine whether the new memory should be zero initialized after
 ///                 reallocation. Please read the documentation on the <code>AccountInfo::realloc</code> function linked above to understand the
