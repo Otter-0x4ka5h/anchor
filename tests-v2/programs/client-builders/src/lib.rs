@@ -18,6 +18,16 @@ pub struct UserState {
     pub value: u64,
 }
 
+#[account]
+pub struct Config {
+    pub program_id: Address,
+}
+
+#[account]
+pub struct DynamicProgramPda {
+    pub value: u64,
+}
+
 #[program]
 pub mod client_builders {
     use super::*;
@@ -63,6 +73,11 @@ pub mod client_builders {
     pub fn check_external_pda(_ctx: &mut Context<CheckExternalPda>) -> Result<()> {
         Ok(())
     }
+
+    #[discrim = 6]
+    pub fn check_dynamic_program_pda(_ctx: &mut Context<CheckDynamicProgramPda>) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -104,4 +119,11 @@ pub struct OptionalBuilderCase {
 pub struct CheckExternalPda {
     #[account(seeds = [b"external"], bump, seeds::program = OTHER_PROGRAM)]
     pub external_pda: UncheckedAccount,
+}
+
+#[derive(Accounts)]
+pub struct CheckDynamicProgramPda {
+    pub config: Account<Config>,
+    #[account(seeds = [b"other"], bump, seeds::program = config.program_id)]
+    pub dynamic_pda: Account<DynamicProgramPda>,
 }

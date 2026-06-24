@@ -1270,6 +1270,18 @@ fn impl_accounts(input: &DeriveInput) -> TokenStream2 {
                                 } else {
                                     quote! { &#program }
                                 }
+                            } else if idl::expr_references_local_binding(
+                                program,
+                                &raw_field_names,
+                                &ix_arg_names,
+                            ) {
+                                // The client-side resolved accounts struct only
+                                // carries sibling account ADDRESSES. If
+                                // `seeds::program` depends on sibling account
+                                // DATA (e.g. `config.program_id`), this PDA is
+                                // not auto-derivable off-chain.
+                                all_derivable = false;
+                                quote! {}
                             } else {
                                 quote! { &#program }
                             }
@@ -1515,6 +1527,12 @@ fn impl_accounts(input: &DeriveInput) -> TokenStream2 {
                         } else {
                             quote! { &#program }
                         }
+                    } else if idl::expr_references_local_binding(
+                        program,
+                        &raw_field_names,
+                        &ix_arg_names,
+                    ) {
+                        return None;
                     } else {
                         quote! { &#program }
                     }
