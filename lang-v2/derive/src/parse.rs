@@ -927,6 +927,11 @@ pub struct AccountField {
     pub deferred_load: Option<TokenStream2>,
     pub constraints: Vec<TokenStream2>,
     pub updates: Vec<TokenStream2>,
+    /// Duplicate-mutable-account check. Collected separately from
+    /// `constraints` so all mut-field dup checks can share a single outer
+    /// `if let Some(__dups) = __duplicates` gate — non-dup txs pay one
+    /// Option-tag branch regardless of field count.
+    pub dup_check: Option<TokenStream2>,
     pub exit: Option<TokenStream2>,
     pub has_bump: bool,
     /// True when the field type is `Option<T>` (optional account).
@@ -1909,6 +1914,7 @@ pub fn parse_field(
             deferred_load: None,
             constraints: vec![],
             updates: vec![],
+            dup_check: None,
             exit,
             has_bump: false,
             is_optional: false,
@@ -2805,6 +2811,7 @@ pub fn parse_field(
         deferred_load,
         constraints,
         updates,
+        dup_check,
         exit,
         has_bump,
         is_optional,
