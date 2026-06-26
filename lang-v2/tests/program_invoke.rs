@@ -7,7 +7,7 @@ use {
             program,
         },
         testing::{AccountBuffer, MIN_ACCOUNT_BUF},
-        Address, CpiContext, CpiHandle, ToCpiAccounts, ToCpiHandle, ToCpiHandleMut,
+        Address, CpiContext, CpiHandle, CpiHandleMut, ToCpiAccounts, ToCpiHandle, ToCpiHandleMut,
     },
     solana_program_error::ProgramError,
 };
@@ -17,6 +17,11 @@ const ID: Address = Address::new_from_array([7; 32]);
 #[derive(ToCpiAccounts)]
 struct ReadonlyCpi<'a> {
     account: CpiHandle<'a>,
+}
+
+#[derive(ToCpiAccounts)]
+struct WritableCpi<'a> {
+    account: CpiHandleMut<'a>,
 }
 
 #[derive(ToCpiAccounts)]
@@ -197,6 +202,48 @@ fn checked_invoke_rejects_live_borrow_for_writable_meta() {
     let handles = [CpiHandle::writable(&mut view)];
 
     let err = program::invoke(&ix, &handles).unwrap_err();
+
+    assert_eq!(err, ProgramError::AccountBorrowFailed);
+}
+
+#[test]
+fn cpi_context_invoke_rejects_live_borrow_for_writable_meta() {
+    let program = ID;
+    let buffer = account_view([1; 32], true);
+    let mut view = unsafe { buffer.view() };
+    let borrow_view = view;
+    let _borrow = borrow_view.try_borrow().unwrap();
+    let accounts = WritableCpi {
+        account: view.to_cpi_handle_mut(),
+    };
+
+    let err = CpiContext::new(&program, accounts)
+        .invoke(&[1, 2, 3])
+        .unwrap_err();
+
+    assert_eq!(err, ProgramError::AccountBorrowFailed);
+}
+
+#[test]
+fn invoke_ix_rejects_live_borrow_for_writable_meta() {
+    let program = ID;
+    let buffer = account_view([1; 32], true);
+    let mut view = unsafe { buffer.view() };
+    let address = *view.address();
+    let borrow_view = view;
+    let _borrow = borrow_view.try_borrow().unwrap();
+    let accounts = WritableCpi {
+        account: view.to_cpi_handle_mut(),
+    };
+    let ix = Instruction {
+        program_id: program,
+        accounts: vec![AccountMeta::new(address, false)],
+        data: vec![],
+    };
+
+    let err = CpiContext::new(&program, accounts)
+        .invoke_ix(ix)
+        .unwrap_err();
 
     assert_eq!(err, ProgramError::AccountBorrowFailed);
 }

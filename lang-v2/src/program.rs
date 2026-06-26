@@ -147,10 +147,12 @@ fn validate_handle_borrows(
             return Err(ProgramError::NotEnoughAccountKeys);
         };
 
-        if meta.is_writable {
-            handle.account_view().check_borrow_mut()?;
-        } else {
-            handle.account_view().check_borrow()?;
+        if handle.requires_borrow_check() {
+            if meta.is_writable {
+                handle.account_view().check_borrow_mut()?;
+            } else {
+                handle.account_view().check_borrow()?;
+            }
         }
 
         handle_index += 1;

@@ -32,7 +32,7 @@ pub mod caller {
             authority: ctx.accounts.authority.cpi_handle(),
         };
         let cpi_ctx = CpiContext::new(ctx.accounts.callee_program.address(), cpi_accounts);
-        callee::cpi::set_data(cpi_ctx, value);
+        callee::cpi::set_data(cpi_ctx, value)?;
         Ok(())
     }
 
@@ -44,7 +44,7 @@ pub mod caller {
             authority: ctx.accounts.authority.cpi_handle(),
         };
         let cpi_ctx = CpiContext::new(ctx.accounts.callee_program.address(), cpi_accounts);
-        callee::cpi::noop(cpi_ctx);
+        callee::cpi::noop(cpi_ctx)?;
         Ok(())
     }
 
@@ -57,7 +57,7 @@ pub mod caller {
             ctx.accounts.callee_program.address(),
             callee::cpi::accounts::Empty::new(),
         );
-        callee::cpi::empty(cpi_ctx);
+        callee::cpi::empty(cpi_ctx)?;
         Ok(())
     }
 
@@ -72,16 +72,15 @@ pub mod caller {
             spectator: ctx.accounts.spectator.cpi_handle(),
         };
         let cpi_ctx = CpiContext::new(ctx.accounts.callee_program.address(), cpi_accounts);
-        callee::cpi::touch(cpi_ctx, delta);
+        callee::cpi::touch(cpi_ctx, delta)?;
         Ok(())
     }
 }
 
 #[derive(Accounts)]
 pub struct ProxySetData {
-    /// Loaded as a Slab-backed Account — Slab sets borrow_state = 0,
-    /// which would fail pinocchio's checked invoke. Our CpiContext uses
-    /// invoke_signed_unchecked to bypass this.
+    /// Loaded as a typed Account so the CPI path exercises the v2 borrow
+    /// validation hooks before forwarding the writable handle downstream.
     #[account(mut)]
     pub callee_data: Account<CalleeData>,
     pub authority: Signer,

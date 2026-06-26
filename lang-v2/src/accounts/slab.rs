@@ -689,6 +689,11 @@ where
     const MIN_DATA_LEN: usize = Slab::<H, T>::MIN_DATA_LEN;
 
     #[inline(always)]
+    fn cpi_requires_borrow_check(&self) -> bool {
+        false
+    }
+
+    #[inline(always)]
     fn load(view: AccountView) -> Result<Self, ProgramError> {
         Self::from_ref(view)
     }

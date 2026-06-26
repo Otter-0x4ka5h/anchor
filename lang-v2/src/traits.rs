@@ -11,8 +11,9 @@ use {
 ///
 /// Obtained via [`AnchorAccount::cpi_handle`] (shared borrow) or by erasing a
 /// [`CpiHandleMut`] produced from [`AnchorAccount::cpi_handle_mut`].
-/// Pinocchio's `borrow_state` is never modified — CPI is routed through
-/// `invoke_signed_unchecked` by [`CpiContext::invoke`].
+/// Most handles also participate in raw `AccountView` borrow validation before
+/// CPI. Wrappers with their own borrow-state discipline (for example Slab) can
+/// opt out so checked CPI doesn't reject sound Rust-exclusive access.
 ///
 /// Deliberately does NOT implement `Deref<Target = AccountView>` to
 /// prevent accidental use with pinocchio's checked invoke builders.
@@ -20,6 +21,7 @@ use {
 pub struct CpiHandle<'a> {
     view: &'a AccountView,
     writable: bool,
+    borrow_check: bool,
 }
 
 /// Typed mutable CPI handle for API-facing CPI account structs.
@@ -29,22 +31,38 @@ pub struct CpiHandle<'a> {
 #[derive(Clone, Copy)]
 pub struct CpiHandleMut<'a> {
     view: &'a AccountView,
+    borrow_check: bool,
 }
 
 impl<'a> CpiHandle<'a> {
     #[inline(always)]
     pub fn readonly(view: &'a AccountView) -> Self {
+        Self::readonly_with_borrow_check(view, true)
+    }
+
+    #[inline(always)]
+    pub(crate) fn readonly_with_borrow_check(view: &'a AccountView, borrow_check: bool) -> Self {
         Self {
             view,
             writable: false,
+            borrow_check,
         }
     }
 
     #[inline(always)]
     pub fn writable(view: &'a mut AccountView) -> Self {
+        Self::writable_with_borrow_check(view, true)
+    }
+
+    #[inline(always)]
+    pub(crate) fn writable_with_borrow_check(
+        view: &'a AccountView,
+        borrow_check: bool,
+    ) -> Self {
         Self {
             view,
             writable: true,
+            borrow_check,
         }
     }
 
@@ -78,12 +96,22 @@ impl<'a> CpiHandle<'a> {
     pub(crate) fn account_view(&self) -> &'a AccountView {
         self.view
     }
+
+    #[inline(always)]
+    pub(crate) fn requires_borrow_check(&self) -> bool {
+        self.borrow_check
+    }
 }
 
 impl<'a> CpiHandleMut<'a> {
     #[inline(always)]
     pub fn writable(view: &'a mut AccountView) -> Self {
-        Self { view }
+        Self::with_borrow_check(view, true)
+    }
+
+    #[inline(always)]
+    pub(crate) fn with_borrow_check(view: &'a AccountView, borrow_check: bool) -> Self {
+        Self { view, borrow_check }
     }
 
     /// The account's on-chain address.
@@ -111,6 +139,7 @@ impl<'a> From<CpiHandleMut<'a>> for CpiHandle<'a> {
         Self {
             view: handle.view,
             writable: true,
+            borrow_check: handle.borrow_check,
         }
     }
 }
@@ -189,6 +218,18 @@ pub trait AnchorAccount: Deref<Target = Self::Data> + Sized {
         Ok(())
     }
 
+    /// Whether CPI handles derived from this wrapper should participate in the
+    /// raw `AccountView` borrow checks used by `program::invoke[_signed]`.
+    ///
+    /// Wrappers that keep live Rust references directly into account memory but
+    /// bypass pinocchio's borrow byte (for example Slab) override this to
+    /// return `false` and rely on their own `&self` / `&mut self` provenance.
+    #[doc(hidden)]
+    #[inline(always)]
+    fn cpi_requires_borrow_check(&self) -> bool {
+        true
+    }
+
     /// v1-compatible alias for the account address.
     #[cfg(feature = "compat")]
     #[inline(always)]
@@ -214,10 +255,7 @@ pub trait AnchorAccount: Deref<Target = Self::Data> + Sized {
     /// it is alive. The handle's `is_writable` flag is `false`.
     #[inline(always)]
     fn cpi_handle(&self) -> CpiHandle<'_> {
-        CpiHandle {
-            view: self.account(),
-            writable: false,
-        }
+        CpiHandle::readonly_with_borrow_check(self.account(), self.cpi_requires_borrow_check())
     }
 
     /// Obtain a writable CPI handle for this account.
@@ -242,9 +280,10 @@ pub trait AnchorAccount: Deref<Target = Self::Data> + Sized {
     #[inline(always)]
     fn try_cpi_handle_mut(&mut self) -> Result<CpiHandleMut<'_>, ProgramError> {
         require!(self.account().is_writable(), ProgramError::InvalidArgument);
-        Ok(CpiHandleMut {
-            view: self.account(),
-        })
+        Ok(CpiHandleMut::with_borrow_check(
+            self.account(),
+            self.cpi_requires_borrow_check(),
+        ))
     }
 }
 

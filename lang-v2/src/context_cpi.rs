@@ -8,7 +8,7 @@ use {
         address::Address,
         instruction::{InstructionAccount, InstructionView},
     },
-    solana_instruction::Instruction,
+    solana_instruction::{AccountMeta, Instruction},
     solana_program_error::{ProgramError, ProgramResult},
 };
 
@@ -71,10 +71,13 @@ impl<'a, T: ToCpiAccounts<'a>> CpiContext<'a, T> {
         self
     }
 
-    /// Invoke the CPI with the given instruction data. Collects accounts
-    /// from [`ToCpiAccounts`], appends remaining accounts, and calls
-    /// `invoke_signed_unchecked`.
-    pub fn invoke(&self, data: &[u8]) {
+    /// Invoke the CPI with the given instruction data.
+    ///
+    /// This routes through the checked [`crate::program::invoke_signed`] path
+    /// so handles that participate in raw `AccountView` borrow validation are
+    /// checked before the callee can invalidate them. Wrappers with their own
+    /// borrow-state discipline opt out at handle construction time.
+    pub fn invoke(&self, data: &[u8]) -> ProgramResult {
         let mut instruction_accounts = self.accounts.to_instruction_accounts();
         let mut handles = self.accounts.to_cpi_handles();
 
@@ -88,57 +91,22 @@ impl<'a, T: ToCpiAccounts<'a>> CpiContext<'a, T> {
             handles.push(*handle);
         }
 
-        let instruction = InstructionView {
-            program_id: self.program,
-            data,
-            accounts: &instruction_accounts,
+        let instruction = Instruction {
+            program_id: *self.program,
+            accounts: instruction_accounts
+                .iter()
+                .map(|account| {
+                    if account.is_writable {
+                        AccountMeta::new(*account.address, account.is_signer)
+                    } else {
+                        AccountMeta::new_readonly(*account.address, account.is_signer)
+                    }
+                })
+                .collect(),
+            data: data.to_vec(),
         };
 
-        // Convert signer seeds to pinocchio Signers.
-        // SAFETY: pinocchio::cpi::Seed is repr(C) { *const u8, u64, PhantomData }
-        // which has the same layout as &[u8] on SBF. This is verified by the
-        // static assertion in cpi.rs.
-        let signers: Vec<pinocchio::cpi::Signer> = self
-            .signer_seeds
-            .iter()
-            .map(|seeds| {
-                let cpi_seeds: &[pinocchio::cpi::Seed] = unsafe {
-                    core::slice::from_raw_parts(
-                        seeds.as_ptr() as *const pinocchio::cpi::Seed,
-                        seeds.len(),
-                    )
-                };
-                pinocchio::cpi::Signer::from(cpi_seeds)
-            })
-            .collect();
-
-        // Build CpiAccounts and invoke.
-        let n = handles.len();
-        let mut cpi_accounts: Vec<core::mem::MaybeUninit<pinocchio::cpi::CpiAccount>> =
-            Vec::with_capacity(n);
-        // SAFETY: MaybeUninit does not require initialization.
-        unsafe { cpi_accounts.set_len(n) };
-
-        for (handle, slot) in handles.iter().zip(cpi_accounts.iter_mut()) {
-            pinocchio::cpi::CpiAccount::init_from_account_view(handle.account_view(), slot);
-        }
-
-        // SAFETY:
-        // - All CpiAccounts initialized by init_from_account_view above.
-        // - CpiHandles hold Rust borrows preventing typed data access.
-        // - Mutable handles carry the borrow state established by their
-        //   account wrappers, blocking conflicting raw borrows on stale
-        //   AccountView copies.
-        unsafe {
-            pinocchio::cpi::invoke_signed_unchecked(
-                &instruction,
-                core::slice::from_raw_parts(
-                    cpi_accounts.as_ptr() as *const pinocchio::cpi::CpiAccount,
-                    n,
-                ),
-                &signers,
-            );
-        }
+        crate::program::invoke_signed(&instruction, &handles, self.signer_seeds)
     }
 
     /// Invoke a fully built instruction using this context's CPI handles.
@@ -154,13 +122,7 @@ impl<'a, T: ToCpiAccounts<'a>> CpiContext<'a, T> {
 
         let mut handles = self.accounts.to_cpi_handles();
         handles.extend(self.remaining_accounts.iter().copied());
-        crate::program::validate_handles(&ix, &handles)?;
-
-        // SAFETY: `CpiContext` already ties every handle to a Rust borrow of
-        // the caller's typed account. The account metas have been validated
-        // above; use unchecked CPI to preserve the Slab-backed borrow-state
-        // contract during invocation.
-        unsafe { crate::program::invoke_signed_unchecked(&ix, &handles, self.signer_seeds) }
+        crate::program::invoke_signed(&ix, &handles, self.signer_seeds)
     }
 }
 

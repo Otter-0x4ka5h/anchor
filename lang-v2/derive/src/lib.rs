@@ -4200,7 +4200,7 @@ fn process_handler(
                 },
             )
         } else {
-            (quote! {}, quote! {})
+            (quote! { -> anchor_lang_v2::Result<()> }, quote! { Ok(()) })
         };
         quote! {
             pub fn #fn_name #lt_decl(
@@ -4214,7 +4214,7 @@ fn process_handler(
                     super::instruction::#ix_struct_name #ix_lt_use_local
                     as anchor_lang_v2::InstructionData
                 >::data(&__ix);
-                __ctx.invoke(&__data);
+                __ctx.invoke(&__data)?;
                 #ret_value
             }
         }
@@ -5412,7 +5412,7 @@ pub fn emit_cpi(input: TokenStream) -> TokenStream {
                 ctx.program_id,
                 __AnchorEventCpiAccounts { event_authority: __event_authority },
                 __event_authority_signers,
-            ).invoke(&__ix_data);
+            ).invoke(&__ix_data)?;
         }
     })
 }
