@@ -36,10 +36,6 @@ impl<T: AnchorAccount> AnchorAccount for Box<T> {
         (**self).account()
     }
 
-    fn cpi_requires_borrow_check(&self) -> bool {
-        (**self).cpi_requires_borrow_check()
-    }
-
     fn exit(&mut self) -> pinocchio::ProgramResult {
         (**self).exit()
     }

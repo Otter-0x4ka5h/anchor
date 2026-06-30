@@ -689,11 +689,6 @@ where
     const MIN_DATA_LEN: usize = Slab::<H, T>::MIN_DATA_LEN;
 
     #[inline(always)]
-    fn cpi_requires_borrow_check(&self) -> bool {
-        false
-    }
-
-    #[inline(always)]
     fn load(view: AccountView) -> Result<Self, ProgramError> {
         Self::from_ref(view)
     }
@@ -715,6 +710,12 @@ where
         }
         Self::validate_tail(data)?;
         Ok(slab)
+    }
+
+    #[inline(always)]
+    fn try_cpi_handle_mut(&mut self) -> Result<crate::CpiHandleMut<'_>, ProgramError> {
+        require!(self.account().is_writable(), ProgramError::InvalidArgument);
+        Ok(crate::CpiHandleMut::without_borrow_check(self.account()))
     }
 
     /// Fast-path `load_mut` after `create_and_initialize`. Skips

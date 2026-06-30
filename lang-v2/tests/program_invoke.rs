@@ -246,6 +246,20 @@ fn checked_invoke_rejects_live_borrow_for_writable_meta() {
 }
 
 #[test]
+fn checked_invoke_rejects_live_mut_borrow_for_writable_meta() {
+    let buffer = account_view([1; 32], true);
+    let mut view = unsafe { buffer.view() };
+    let mut borrow_view = view;
+    let _borrow = borrow_view.try_borrow_mut().unwrap();
+    let ix = instruction(*view.address(), true);
+    let handles = [view.to_cpi_handle_mut().into()];
+
+    let err = program::invoke(&ix, &handles).unwrap_err();
+
+    assert_eq!(err, ProgramError::AccountBorrowFailed);
+}
+
+#[test]
 fn checked_invoke_accepts_mutable_slab_handle() {
     let buffer = slab_account_view([1; 32], true, 9);
     let view = unsafe { buffer.view() };
