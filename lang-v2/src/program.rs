@@ -132,7 +132,7 @@ pub(crate) fn validate_handles(
     Ok(())
 }
 
-fn validate_handle_borrows(
+pub(crate) fn validate_handle_borrows(
     instruction: &Instruction,
     account_handles: &[CpiHandle<'_>],
 ) -> ProgramResult {
