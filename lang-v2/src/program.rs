@@ -132,6 +132,32 @@ pub(crate) fn validate_handles(
     Ok(())
 }
 
+pub(crate) fn validate_instruction_account_borrows(
+    program_id: &crate::Address,
+    instruction_accounts: &[InstructionAccount<'_>],
+    account_handles: &[CpiHandle<'_>],
+) -> ProgramResult {
+    let mut handle_index = 0;
+
+    for account in instruction_accounts {
+        if !account.is_writable && !account.is_signer && address_eq(account.address, program_id) {
+            continue;
+        }
+
+        let Some(handle) = account_handles.get(handle_index) else {
+            return Err(ProgramError::NotEnoughAccountKeys);
+        };
+
+        if account.is_writable && handle.requires_borrow_check() {
+            handle.account_view().check_borrow_mut()?;
+        }
+
+        handle_index += 1;
+    }
+
+    Ok(())
+}
+
 pub(crate) fn validate_handle_borrows(
     instruction: &Instruction,
     account_handles: &[CpiHandle<'_>],
@@ -147,12 +173,8 @@ pub(crate) fn validate_handle_borrows(
             return Err(ProgramError::NotEnoughAccountKeys);
         };
 
-        if handle.requires_borrow_check() {
-            if meta.is_writable {
-                handle.account_view().check_borrow_mut()?;
-            } else {
-                handle.account_view().check_borrow()?;
-            }
+        if meta.is_writable && handle.requires_borrow_check() {
+            handle.account_view().check_borrow_mut()?;
         }
 
         handle_index += 1;

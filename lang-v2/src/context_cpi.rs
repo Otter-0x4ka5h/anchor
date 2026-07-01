@@ -8,7 +8,7 @@ use {
         address::Address,
         instruction::{InstructionAccount, InstructionView},
     },
-    solana_instruction::{AccountMeta, Instruction},
+    solana_instruction::Instruction,
     solana_program_error::{ProgramError, ProgramResult},
 };
 
@@ -72,8 +72,8 @@ impl<'a, T: ToCpiAccounts<'a>> CpiContext<'a, T> {
     }
 
     /// Invoke the CPI with the given instruction data. Collects accounts
-    /// from [`ToCpiAccounts`], appends remaining accounts, validates borrow
-    /// state, then calls `invoke_signed_unchecked`.
+    /// from [`ToCpiAccounts`], appends remaining accounts, validates writable
+    /// borrow state, then calls `invoke_signed_unchecked`.
     pub fn invoke(&self, data: &[u8]) -> ProgramResult {
         let mut instruction_accounts = self.accounts.to_instruction_accounts();
         let mut handles = self.accounts.to_cpi_handles();
@@ -88,24 +88,9 @@ impl<'a, T: ToCpiAccounts<'a>> CpiContext<'a, T> {
             handles.push(*handle);
         }
 
-        // Borrow validation only depends on account metas + program id, not
-        // on instruction data, so build a minimal Instruction for the check
-        // and keep the existing unchecked CPI path below intact.
-        crate::program::validate_handle_borrows(
-            &Instruction {
-                program_id: *self.program,
-                accounts: instruction_accounts
-                    .iter()
-                    .map(|account| {
-                        if account.is_writable {
-                            AccountMeta::new(*account.address, account.is_signer)
-                        } else {
-                            AccountMeta::new_readonly(*account.address, account.is_signer)
-                        }
-                    })
-                    .collect(),
-                data: Vec::new(),
-            },
+        crate::program::validate_instruction_account_borrows(
+            self.program,
+            &instruction_accounts,
             &handles,
         )?;
 

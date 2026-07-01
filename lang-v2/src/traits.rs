@@ -11,10 +11,10 @@ use {
 ///
 /// Obtained via [`AnchorAccount::cpi_handle`] (shared borrow) or by erasing a
 /// [`CpiHandleMut`] produced from [`AnchorAccount::cpi_handle_mut`].
-/// Most handles also participate in raw `AccountView` borrow validation before
-/// CPI. Mutable handles from wrappers with their own borrow-state discipline
-/// (for example Slab) can opt out so checked CPI doesn't reject sound
-/// Rust-exclusive access.
+/// Writable handles also participate in raw `AccountView` borrow validation
+/// before CPI. Wrappers with their own borrow-state discipline (for example
+/// Slab) can opt out so checked CPI doesn't reject sound Rust-exclusive
+/// access.
 ///
 /// Deliberately does NOT implement `Deref<Target = AccountView>` to
 /// prevent accidental use with pinocchio's checked invoke builders.
