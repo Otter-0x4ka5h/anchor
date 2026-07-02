@@ -207,6 +207,24 @@ pub enum ErrorCode {
     /// 2044 - A pausable extension authority constraint was violated
     #[msg("A pausable extension authority constraint was violated")]
     ConstraintMintPausableAuthority,
+    /// 2045 - Invalid Ed25519 program id for signature verification
+    #[msg("Invalid Ed25519 program id for signature verification")]
+    Ed25519InvalidProgram,
+    /// 2046 - Invalid Secp256k1 program id for signature verification
+    #[msg("Invalid Secp256k1 program id for signature verification")]
+    Secp256k1InvalidProgram,
+    /// 2047 - Instruction unexpectedly had account metas
+    #[msg("Instruction unexpectedly had account metas")]
+    InstructionHasAccounts,
+    /// 2048 - Message length exceeds the supported maximum
+    #[msg("Message length exceeds the supported maximum")]
+    MessageTooLong,
+    /// 2049 - Invalid Secp256k1 recovery id
+    #[msg("Invalid Secp256k1 recovery id")]
+    InvalidRecoveryId,
+    /// 2050 - Signature verification failed
+    #[msg("Signature verification failed")]
+    SignatureVerificationFailed,
 
     // Require
     /// 2500 - A require expression was violated
