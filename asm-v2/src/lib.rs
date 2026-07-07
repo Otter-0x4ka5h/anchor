@@ -344,4 +344,27 @@ mod tests {
 
         std::fs::remove_dir_all(dir).ok();
     }
+
+    #[test]
+    fn test_non_cyclic_nested_includes_are_expanded() {
+        let dir = temp_test_dir("acyclic");
+        let output = dir.join("combined.s");
+
+        std::fs::write(dir.join("entrypoint.s"), ".include \"a.s\"\nentry:\n").unwrap();
+        std::fs::write(dir.join("a.s"), ".include \"nested/b.s\"\na:\n").unwrap();
+        std::fs::create_dir_all(dir.join("nested")).unwrap();
+        std::fs::write(dir.join("nested").join("b.s"), "b:\n").unwrap();
+
+        build_to(&dir, &output);
+
+        let combined = std::fs::read_to_string(&output).unwrap();
+        assert!(combined.contains("# --- entrypoint.s ---"));
+        assert!(combined.contains("# --- a.s ---"));
+        assert!(combined.contains("# --- nested/b.s ---"));
+        assert!(combined.contains("entry:"));
+        assert!(combined.contains("a:"));
+        assert!(combined.contains("b:"));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
 }
