@@ -955,4 +955,24 @@ mod tests {
         assert!(result.contains(".equ Wide__SIZE, 32"));
         std::fs::remove_file(tmp).ok();
     }
+
+    #[test]
+    fn test_i128_uses_solana_alignment() {
+        let source = r#"
+            #[repr(C)]
+            pub struct SignedWide {
+                pub tag: u8,
+                pub value: i128,
+                pub bump: u8,
+            }
+        "#;
+        let tmp = std::env::temp_dir().join("anchor_asm_test_i128.rs");
+        std::fs::write(&tmp, source).unwrap();
+        let result = generate(&tmp);
+        assert!(result.contains(".equ SignedWide__tag, 0"));
+        assert!(result.contains(".equ SignedWide__value, 8"));
+        assert!(result.contains(".equ SignedWide__bump, 24"));
+        assert!(result.contains(".equ SignedWide__SIZE, 32"));
+        std::fs::remove_file(tmp).ok();
+    }
 }
