@@ -716,4 +716,20 @@ mod tests {
             .to_string()
             .contains("multiple `asm { ... }` blocks are not allowed"));
     }
+
+    #[test]
+    fn test_single_asm_block_is_accepted() {
+        let program = syn::parse_str::<AsmProgram>(
+            r#"
+            pub struct Helper;
+
+            asm { include_str!("asm/errors.s"), }
+            "#,
+        )
+        .unwrap();
+
+        let asm_tokens = proc_macro2::TokenStream::from_iter(program.asm_tokens);
+        assert_eq!(program.items.len(), 1);
+        assert_eq!(asm_tokens.to_string(), "include_str ! (\"asm/errors.s\") ,");
+    }
 }
