@@ -10,49 +10,80 @@
 //! enforces via bytemuck Pod). Fields must be primitive numeric types or
 //! fixed-size arrays of them — no generics, no references.
 
-use std::path::Path;
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 /// Parse `lib.rs` and generate `.equ` preamble for all `#[account]` structs.
 pub fn generate(lib_rs: &Path) -> String {
-    let source = std::fs::read_to_string(lib_rs)
-        .unwrap_or_else(|e| panic!("read {}: {e}", lib_rs.display()));
+    let root_dir = lib_rs.parent().unwrap_or_else(|| Path::new("."));
+    let mut visited = HashSet::new();
+    generate_file(lib_rs, root_dir, &mut visited)
+}
+
+fn generate_file(path: &Path, module_dir: &Path, visited: &mut HashSet<PathBuf>) -> String {
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if !visited.insert(canonical) {
+        return String::new();
+    }
+
+    let source = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let file = match syn::parse_file(&source) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("anchor-asm: warning: can't parse {}: {e}", lib_rs.display());
+            eprintln!("anchor-asm: warning: can't parse {}: {e}", path.display());
             return String::new();
         }
     };
 
     let mut out = String::new();
+    visit_items(&file.items, module_dir, visited, &mut out);
+    out
+}
 
-    for item in &file.items {
-        // Also check mod items for structs defined in submodules
-        // that are inlined with `mod foo { ... }`.
+fn visit_items(
+    items: &[syn::Item],
+    module_dir: &Path,
+    visited: &mut HashSet<PathBuf>,
+    out: &mut String,
+) {
+    for item in items {
         match item {
             syn::Item::Struct(s) if has_account_attr(s) => {
                 if let Some(block) = emit_struct(s) {
                     out.push_str(&block);
                 }
             }
-            syn::Item::Mod(m) => {
-                if let Some((_, items)) = &m.content {
-                    for item in items {
-                        if let syn::Item::Struct(s) = item {
-                            if has_account_attr(s) {
-                                if let Some(block) = emit_struct(s) {
-                                    out.push_str(&block);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            syn::Item::Mod(m) => visit_module(m, module_dir, visited, out),
             _ => {}
         }
     }
+}
 
-    out
+fn visit_module(
+    module: &syn::ItemMod,
+    module_dir: &Path,
+    visited: &mut HashSet<PathBuf>,
+    out: &mut String,
+) {
+    let child_dir = module_dir.join(module.ident.to_string());
+    if let Some((_, items)) = &module.content {
+        visit_items(items, &child_dir, visited, out);
+    } else if let Some(path) = resolve_module_file(module_dir, &module.ident.to_string()) {
+        out.push_str(&generate_file(&path, &child_dir, visited));
+    }
+}
+
+fn resolve_module_file(module_dir: &Path, module_name: &str) -> Option<PathBuf> {
+    let file = module_dir.join(format!("{module_name}.rs"));
+    if file.exists() {
+        return Some(file);
+    }
+
+    let mod_rs = module_dir.join(module_name).join("mod.rs");
+    mod_rs.exists().then_some(mod_rs)
 }
 
 /// Check if a struct should have assembly constants generated.
@@ -250,6 +281,18 @@ fn align_up(offset: usize, align: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_test_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("anchor-asm-v2-{name}-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
     #[test]
     fn test_simple_struct() {
@@ -380,5 +423,59 @@ mod tests {
         assert!(!result.contains("SplitAlignedPod__value"));
         assert!(!result.contains("SplitPackedPod__value"));
         std::fs::remove_file(tmp).ok();
+    }
+
+    #[test]
+    fn test_generate_recurses_inline_and_file_backed_modules() {
+        let dir = temp_test_dir("mods");
+        let lib_rs = dir.join("lib.rs");
+        let outer_dir = dir.join("outer");
+        std::fs::create_dir_all(&outer_dir).unwrap();
+
+        std::fs::write(
+            &lib_rs,
+            r#"
+            mod outer {
+                pub mod inline_leaf {
+                    #[account]
+                    pub struct NestedInline {
+                        pub value: u64,
+                    }
+                }
+
+                pub mod file_leaf;
+            }
+
+            mod state;
+            "#,
+        )
+        .unwrap();
+        std::fs::write(
+            outer_dir.join("file_leaf.rs"),
+            r#"
+            #[repr(C)]
+            pub struct NestedFile {
+                pub value: u64,
+            }
+            "#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("state.rs"),
+            r#"
+            #[account]
+            pub struct RootFile {
+                pub value: u64,
+            }
+            "#,
+        )
+        .unwrap();
+
+        let result = generate(&lib_rs);
+        assert!(result.contains(".equ NestedInline__value, 0"));
+        assert!(result.contains(".equ NestedFile__value, 0"));
+        assert!(result.contains(".equ RootFile__value, 0"));
+
+        std::fs::remove_dir_all(dir).ok();
     }
 }
