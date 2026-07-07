@@ -182,7 +182,10 @@ fn default_prefix(kind: &str) -> String {
 #[proc_macro]
 pub fn asm_program(input: TokenStream) -> TokenStream {
     let program = syn::parse_macro_input!(input as AsmProgram);
+    expand_asm_program(program).into()
+}
 
+fn expand_asm_program(program: AsmProgram) -> TokenStream2 {
     let mut rust_items = Vec::new();
     let mut const_operands: Vec<TokenStream2> = Vec::new();
 
@@ -190,26 +193,32 @@ pub fn asm_program(input: TokenStream) -> TokenStream {
         match item {
             AnnotatedItem::ErrorEnum { prefix, item } => {
                 rust_items.push(quote! { #item });
-                for (i, v) in item.variants.iter().enumerate() {
+                let enum_name = &item.ident;
+                for v in &item.variants {
                     let name = format_ident!(
                         "{}_{}",
                         prefix,
                         to_screaming_snake(&v.ident.to_string())
                     );
-                    let val = (i + 1) as i32;
-                    const_operands.push(quote! { #name = const #val, });
+                    let variant = &v.ident;
+                    const_operands.push(quote! {
+                        #name = const #enum_name::#variant as i32,
+                    });
                 }
             }
             AnnotatedItem::Discriminant { prefix, item } => {
                 rust_items.push(quote! { #item });
-                for (i, v) in item.variants.iter().enumerate() {
+                let enum_name = &item.ident;
+                for v in &item.variants {
                     let name = format_ident!(
                         "{}_{}",
                         prefix,
                         to_screaming_snake(&v.ident.to_string())
                     );
-                    let val = i as u32;
-                    const_operands.push(quote! { #name = const #val, });
+                    let variant = &v.ident;
+                    const_operands.push(quote! {
+                        #name = const #enum_name::#variant as u32,
+                    });
                 }
             }
             AnnotatedItem::Offsets { prefix, item } => {
@@ -298,7 +307,7 @@ pub fn asm_program(input: TokenStream) -> TokenStream {
         );
     };
 
-    expanded.into()
+    expanded
 }
 
 // ---------------------------------------------------------------------------
@@ -332,5 +341,35 @@ mod tests {
         assert_eq!(to_screaming_snake("RegisterMarket"), "REGISTER_MARKET");
         assert_eq!(to_screaming_snake("BaseVaultHasData"), "BASE_VAULT_HAS_DATA");
         assert_eq!(to_screaming_snake("UserHasData"), "USER_HAS_DATA");
+    }
+
+    #[test]
+    fn test_enum_constants_follow_rust_discriminants() {
+        let program = syn::parse_str::<AsmProgram>(
+            r#"
+            #[error_enum(prefix = "E")]
+            pub enum Errors {
+                Alpha = 7,
+                Beta,
+                Gamma = 11,
+            }
+
+            #[discriminant(prefix = "DISC")]
+            pub enum Disc {
+                Start = 3,
+                Next,
+            }
+
+            asm { "" }
+            "#,
+        )
+        .unwrap();
+
+        let expanded = expand_asm_program(program).to_string();
+        assert!(expanded.contains("E_ALPHA = const Errors :: Alpha as i32"));
+        assert!(expanded.contains("E_BETA = const Errors :: Beta as i32"));
+        assert!(expanded.contains("E_GAMMA = const Errors :: Gamma as i32"));
+        assert!(expanded.contains("DISC_START = const Disc :: Start as u32"));
+        assert!(expanded.contains("DISC_NEXT = const Disc :: Next as u32"));
     }
 }
