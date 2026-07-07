@@ -386,7 +386,7 @@ fn type_layout(ty: &syn::Type) -> Option<(usize, usize)> {
     }
 }
 
-/// Compute layout for `PodVec<T, MAX>`: `[len: 2 bytes][padding?][T; MAX]`.
+/// Compute layout for `PodVec<T, MAX>`: `[len: PodU16 (2 bytes, align 1)][padding?][T; MAX]`.
 fn pod_vec_layout(args: &syn::PathArguments) -> Option<(usize, usize)> {
     let syn::PathArguments::AngleBracketed(ab) = args else {
         return None;
