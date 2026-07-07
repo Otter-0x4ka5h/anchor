@@ -372,4 +372,52 @@ mod tests {
         assert!(expanded.contains("DISC_START = const Disc :: Start as u32"));
         assert!(expanded.contains("DISC_NEXT = const Disc :: Next as u32"));
     }
+
+    #[test]
+    fn test_error_enum_auto_increment_tracks_explicit_gaps() {
+        let program = syn::parse_str::<AsmProgram>(
+            r#"
+            #[error_enum(prefix = "ERR")]
+            pub enum Errors {
+                Alpha = 41,
+                Beta,
+                Gamma = 90,
+                Delta,
+            }
+
+            asm { "" }
+            "#,
+        )
+        .unwrap();
+
+        let expanded = expand_asm_program(program).to_string();
+        assert!(expanded.contains("ERR_ALPHA = const Errors :: Alpha as i32"));
+        assert!(expanded.contains("ERR_BETA = const Errors :: Beta as i32"));
+        assert!(expanded.contains("ERR_GAMMA = const Errors :: Gamma as i32"));
+        assert!(expanded.contains("ERR_DELTA = const Errors :: Delta as i32"));
+    }
+
+    #[test]
+    fn test_discriminant_auto_increment_tracks_explicit_gaps() {
+        let program = syn::parse_str::<AsmProgram>(
+            r#"
+            #[discriminant(prefix = "DISC")]
+            pub enum Instruction {
+                Init = 4,
+                Update,
+                Close = 12,
+                Sweep,
+            }
+
+            asm { "" }
+            "#,
+        )
+        .unwrap();
+
+        let expanded = expand_asm_program(program).to_string();
+        assert!(expanded.contains("DISC_INIT = const Instruction :: Init as u32"));
+        assert!(expanded.contains("DISC_UPDATE = const Instruction :: Update as u32"));
+        assert!(expanded.contains("DISC_CLOSE = const Instruction :: Close as u32"));
+        assert!(expanded.contains("DISC_SWEEP = const Instruction :: Sweep as u32"));
+    }
 }
