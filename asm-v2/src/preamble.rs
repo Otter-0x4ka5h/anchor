@@ -478,4 +478,29 @@ mod tests {
 
         std::fs::remove_dir_all(dir).ok();
     }
+
+    #[test]
+    fn test_generate_resolves_mod_rs_modules() {
+        let dir = temp_test_dir("mod-rs");
+        let lib_rs = dir.join("lib.rs");
+        let outer_dir = dir.join("outer");
+        std::fs::create_dir_all(&outer_dir).unwrap();
+
+        std::fs::write(&lib_rs, "mod outer;\n").unwrap();
+        std::fs::write(
+            outer_dir.join("mod.rs"),
+            r#"
+            #[repr(C)]
+            pub struct NestedFromModRs {
+                pub value: u64,
+            }
+            "#,
+        )
+        .unwrap();
+
+        let result = generate(&lib_rs);
+        assert!(result.contains(".equ NestedFromModRs__value, 0"));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
 }
