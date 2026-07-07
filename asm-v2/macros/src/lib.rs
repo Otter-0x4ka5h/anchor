@@ -333,6 +333,10 @@ mod tests {
         assert_eq!(to_screaming_snake("RegisterMarket"), "REGISTER_MARKET");
         assert_eq!(to_screaming_snake("BaseVaultHasData"), "BASE_VAULT_HAS_DATA");
         assert_eq!(to_screaming_snake("UserHasData"), "USER_HAS_DATA");
+    }
+
+    #[test]
+    fn test_screaming_snake_splits_digit_to_uppercase_boundaries() {
         assert_eq!(to_screaming_snake("Ipv4Addr"), "IPV4_ADDR");
     }
 }
