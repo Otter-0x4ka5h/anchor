@@ -288,6 +288,11 @@ mod tests {
                 pub value: u64,
             }
 
+            #[account(zero_copy)]
+            pub struct MacroArgs {
+                pub value: u64,
+            }
+
             #[repr(C)]
             pub struct PlainPod {
                 pub value: u64,
@@ -297,6 +302,16 @@ mod tests {
             pub struct PackedPod {
                 pub value: u64,
             }
+
+            #[repr(transparent)]
+            pub struct TransparentPod {
+                pub value: u64,
+            }
+
+            #[repr(C, packed)]
+            pub struct MixedReprPod {
+                pub value: u64,
+            }
         "#;
         let tmp = std::env::temp_dir().join("anchor_asm_test_attrs.rs");
         std::fs::write(&tmp, source).unwrap();
@@ -304,7 +319,10 @@ mod tests {
         assert!(result.contains(".equ ZeroCopy__value, 0"));
         assert!(result.contains(".equ PlainPod__value, 0"));
         assert!(!result.contains("BorshBacked__value"));
+        assert!(!result.contains("MacroArgs__value"));
         assert!(!result.contains("PackedPod__value"));
+        assert!(!result.contains("TransparentPod__value"));
+        assert!(!result.contains("MixedReprPod__value"));
         std::fs::remove_file(tmp).ok();
     }
 }
