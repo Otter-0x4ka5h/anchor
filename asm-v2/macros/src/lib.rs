@@ -312,6 +312,7 @@ fn to_screaming_snake(s: &str) -> String {
             let prev = s.chars().nth(i - 1).unwrap_or('_');
             let next = s.chars().nth(i + 1);
             if prev.is_lowercase()
+                || prev.is_ascii_digit()
                 || (prev.is_uppercase() && next.map_or(false, |n| n.is_lowercase()))
             {
                 result.push('_');
@@ -332,5 +333,6 @@ mod tests {
         assert_eq!(to_screaming_snake("RegisterMarket"), "REGISTER_MARKET");
         assert_eq!(to_screaming_snake("BaseVaultHasData"), "BASE_VAULT_HAS_DATA");
         assert_eq!(to_screaming_snake("UserHasData"), "USER_HAS_DATA");
+        assert_eq!(to_screaming_snake("Ipv4Addr"), "IPV4_ADDR");
     }
 }
