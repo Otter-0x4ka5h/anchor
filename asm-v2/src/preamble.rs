@@ -914,4 +914,24 @@ mod tests {
         assert!(result.contains(".equ Holder__SIZE, 8"));
         std::fs::remove_file(tmp).ok();
     }
+
+    #[test]
+    fn test_pod_vec_layout_stays_padding_free_for_align1_elements() {
+        let source = r#"
+            #[repr(C)]
+            pub struct ByteHolder {
+                pub prefix: u8,
+                pub values: PodVec<u8, 1>,
+                pub suffix: u8,
+            }
+        "#;
+        let tmp = std::env::temp_dir().join("anchor_asm_test_pod_vec_u8.rs");
+        std::fs::write(&tmp, source).unwrap();
+        let result = generate(&tmp);
+        assert!(result.contains(".equ ByteHolder__prefix, 0"));
+        assert!(result.contains(".equ ByteHolder__values, 1"));
+        assert!(result.contains(".equ ByteHolder__suffix, 4"));
+        assert!(result.contains(".equ ByteHolder__SIZE, 5"));
+        std::fs::remove_file(tmp).ok();
+    }
 }
