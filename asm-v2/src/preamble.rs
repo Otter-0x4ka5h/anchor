@@ -58,11 +58,30 @@ pub fn generate(lib_rs: &Path) -> String {
 /// Check if a struct should have assembly constants generated.
 /// Matches `#[account]` (anchor v2) or `#[repr(C)]` (plain Pod).
 fn has_account_attr(s: &syn::ItemStruct) -> bool {
-    s.attrs.iter().any(|attr| {
-        let path = attr.path();
-        let last = path.segments.last().map(|s| s.ident.to_string());
-        matches!(last.as_deref(), Some("account" | "repr"))
-    })
+    s.attrs
+        .iter()
+        .any(|attr| is_plain_account_attr(attr) || is_exact_repr_c(attr))
+}
+
+fn is_plain_account_attr(attr: &syn::Attribute) -> bool {
+    matches!(&attr.meta, syn::Meta::Path(path) if path.is_ident("account"))
+}
+
+fn is_exact_repr_c(attr: &syn::Attribute) -> bool {
+    let syn::Meta::List(list) = &attr.meta else {
+        return false;
+    };
+    if !attr.path().is_ident("repr") {
+        return false;
+    }
+
+    let Ok(args) =
+        list.parse_args_with(syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated)
+    else {
+        return false;
+    };
+
+    args.len() == 1 && matches!(args.first(), Some(syn::Meta::Path(path)) if path.is_ident("C"))
 }
 
 /// Emit `.equ` constants for a single struct.
@@ -253,6 +272,39 @@ mod tests {
         // Address is 32 bytes, align 1
         assert!(result.contains(".equ Config__admin, 0"));
         assert!(result.contains(".equ Config__bump, 32"));
+        std::fs::remove_file(tmp).ok();
+    }
+
+    #[test]
+    fn test_account_attr_must_be_plain_or_exact_repr_c() {
+        let source = r#"
+            #[account]
+            pub struct ZeroCopy {
+                pub value: u64,
+            }
+
+            #[account(borsh)]
+            pub struct BorshBacked {
+                pub value: u64,
+            }
+
+            #[repr(C)]
+            pub struct PlainPod {
+                pub value: u64,
+            }
+
+            #[repr(packed)]
+            pub struct PackedPod {
+                pub value: u64,
+            }
+        "#;
+        let tmp = std::env::temp_dir().join("anchor_asm_test_attrs.rs");
+        std::fs::write(&tmp, source).unwrap();
+        let result = generate(&tmp);
+        assert!(result.contains(".equ ZeroCopy__value, 0"));
+        assert!(result.contains(".equ PlainPod__value, 0"));
+        assert!(!result.contains("BorshBacked__value"));
+        assert!(!result.contains("PackedPod__value"));
         std::fs::remove_file(tmp).ok();
     }
 }
