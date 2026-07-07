@@ -362,7 +362,7 @@ fn type_layout(ty: &syn::Type) -> Option<(usize, usize)> {
                 "u16" | "i16" => Some((2, 2)),
                 "u32" | "i32" | "f32" => Some((4, 4)),
                 "u64" | "i64" | "f64" => Some((8, 8)),
-                "u128" | "i128" => Some((16, 16)),
+                "u128" | "i128" => Some((16, 8)),
                 // Anchor v2 Address = [u8; 32], alignment 1
                 "Address" | "Pubkey" => Some((32, 1)),
                 // PodBool = u8
@@ -896,6 +896,7 @@ mod tests {
     }
 
     #[test]
+#[test]
     fn test_pod_vec_layout_respects_element_alignment() {
         let source = r#"
             #[repr(C)]
@@ -932,6 +933,26 @@ mod tests {
         assert!(result.contains(".equ ByteHolder__values, 1"));
         assert!(result.contains(".equ ByteHolder__suffix, 4"));
         assert!(result.contains(".equ ByteHolder__SIZE, 5"));
+        std::fs::remove_file(tmp).ok();
+    }
+
+    #[test]
+    fn test_u128_uses_solana_alignment() {
+        let source = r#"
+            #[repr(C)]
+            pub struct Wide {
+                pub tag: u8,
+                pub value: u128,
+                pub bump: u8,
+            }
+        "#;
+        let tmp = std::env::temp_dir().join("anchor_asm_test_u128.rs");
+        std::fs::write(&tmp, source).unwrap();
+        let result = generate(&tmp);
+        assert!(result.contains(".equ Wide__tag, 0"));
+        assert!(result.contains(".equ Wide__value, 8"));
+        assert!(result.contains(".equ Wide__bump, 24"));
+        assert!(result.contains(".equ Wide__SIZE, 32"));
         std::fs::remove_file(tmp).ok();
     }
 }
