@@ -441,6 +441,12 @@ mod tests {
                     pub struct NestedInline {
                         pub value: u64,
                     }
+
+                    #[account]
+                    #[repr(packed)]
+                    pub struct NestedPacked {
+                        pub value: u64,
+                    }
                 }
 
                 pub mod file_leaf;
@@ -455,6 +461,11 @@ mod tests {
             r#"
             #[repr(C)]
             pub struct NestedFile {
+                pub value: u64,
+            }
+
+            #[account(borsh)]
+            pub struct NestedBorsh {
                 pub value: u64,
             }
             "#,
@@ -475,6 +486,8 @@ mod tests {
         assert!(result.contains(".equ NestedInline__value, 0"));
         assert!(result.contains(".equ NestedFile__value, 0"));
         assert!(result.contains(".equ RootFile__value, 0"));
+        assert!(!result.contains("NestedPacked__value"));
+        assert!(!result.contains("NestedBorsh__value"));
 
         std::fs::remove_dir_all(dir).ok();
     }
