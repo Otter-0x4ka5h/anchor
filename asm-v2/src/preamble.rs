@@ -63,15 +63,17 @@ fn has_account_attr(s: &syn::ItemStruct) -> bool {
         .iter()
         .filter(|attr| attr.path().is_ident("account"))
         .collect();
-    if !account_attrs.is_empty() {
-        return account_attrs.len() == 1 && is_plain_account_attr(account_attrs[0]);
-    }
-
     let repr_attrs: Vec<_> = s
         .attrs
         .iter()
         .filter(|attr| attr.path().is_ident("repr"))
         .collect();
+
+    if !account_attrs.is_empty() {
+        return account_attrs.len() == 1
+            && is_plain_account_attr(account_attrs[0])
+            && repr_attrs.is_empty();
+    }
     repr_attrs.len() == 1 && is_exact_repr_c(repr_attrs[0])
 }
 
@@ -311,6 +313,24 @@ mod tests {
                 pub value: u64,
             }
 
+            #[account]
+            #[repr(C)]
+            pub struct ZeroCopyWithUserReprC {
+                pub value: u64,
+            }
+
+            #[account]
+            #[repr(packed)]
+            pub struct ZeroCopyPacked {
+                pub value: u64,
+            }
+
+            #[account]
+            #[repr(align(8))]
+            pub struct ZeroCopyAligned {
+                pub value: u64,
+            }
+
             #[repr(C)]
             pub struct PlainPod {
                 pub value: u64,
@@ -351,6 +371,9 @@ mod tests {
         assert!(!result.contains("BorshBacked__value"));
         assert!(!result.contains("MacroArgs__value"));
         assert!(!result.contains("BorshReprC__value"));
+        assert!(!result.contains("ZeroCopyWithUserReprC__value"));
+        assert!(!result.contains("ZeroCopyPacked__value"));
+        assert!(!result.contains("ZeroCopyAligned__value"));
         assert!(!result.contains("PackedPod__value"));
         assert!(!result.contains("TransparentPod__value"));
         assert!(!result.contains("MixedReprPod__value"));
