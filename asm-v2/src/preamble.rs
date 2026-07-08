@@ -58,9 +58,21 @@ pub fn generate(lib_rs: &Path) -> String {
 /// Check if a struct should have assembly constants generated.
 /// Matches `#[account]` (anchor v2) or `#[repr(C)]` (plain Pod).
 fn has_account_attr(s: &syn::ItemStruct) -> bool {
-    s.attrs
+    let account_attrs: Vec<_> = s
+        .attrs
         .iter()
-        .any(|attr| is_plain_account_attr(attr) || is_exact_repr_c(attr))
+        .filter(|attr| attr.path().is_ident("account"))
+        .collect();
+    if !account_attrs.is_empty() {
+        return account_attrs.len() == 1 && is_plain_account_attr(account_attrs[0]);
+    }
+
+    let repr_attrs: Vec<_> = s
+        .attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("repr"))
+        .collect();
+    repr_attrs.len() == 1 && is_exact_repr_c(repr_attrs[0])
 }
 
 fn is_plain_account_attr(attr: &syn::Attribute) -> bool {
@@ -293,6 +305,12 @@ mod tests {
                 pub value: u64,
             }
 
+            #[account(borsh)]
+            #[repr(C)]
+            pub struct BorshReprC {
+                pub value: u64,
+            }
+
             #[repr(C)]
             pub struct PlainPod {
                 pub value: u64,
@@ -312,6 +330,18 @@ mod tests {
             pub struct MixedReprPod {
                 pub value: u64,
             }
+
+            #[repr(C)]
+            #[repr(align(8))]
+            pub struct SplitAlignedPod {
+                pub value: u64,
+            }
+
+            #[repr(C)]
+            #[repr(packed)]
+            pub struct SplitPackedPod {
+                pub value: u64,
+            }
         "#;
         let tmp = std::env::temp_dir().join("anchor_asm_test_attrs.rs");
         std::fs::write(&tmp, source).unwrap();
@@ -320,9 +350,12 @@ mod tests {
         assert!(result.contains(".equ PlainPod__value, 0"));
         assert!(!result.contains("BorshBacked__value"));
         assert!(!result.contains("MacroArgs__value"));
+        assert!(!result.contains("BorshReprC__value"));
         assert!(!result.contains("PackedPod__value"));
         assert!(!result.contains("TransparentPod__value"));
         assert!(!result.contains("MixedReprPod__value"));
+        assert!(!result.contains("SplitAlignedPod__value"));
+        assert!(!result.contains("SplitPackedPod__value"));
         std::fs::remove_file(tmp).ok();
     }
 }
