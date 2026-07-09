@@ -14,6 +14,7 @@ use std::{
     collections::HashSet,
     path::{Path, PathBuf},
 };
+use syn::{Meta, Token, punctuated::Punctuated};
 
 /// Parse `lib.rs` and generate `.equ` preamble for all `#[account]` structs.
 pub fn generate(lib_rs: &Path) -> String {
@@ -51,12 +52,12 @@ fn visit_items(
 ) {
     for item in items {
         match item {
-            syn::Item::Struct(s) if has_account_attr(s) => {
+            syn::Item::Struct(s) if cfg_enabled(&s.attrs) && has_account_attr(s) => {
                 if let Some(block) = emit_struct(s) {
                     out.push_str(&block);
                 }
             }
-            syn::Item::Mod(m) => visit_module(m, module_dir, visited, out),
+            syn::Item::Mod(m) if cfg_enabled(&m.attrs) => visit_module(m, module_dir, visited, out),
             _ => {}
         }
     }
@@ -71,12 +72,17 @@ fn visit_module(
     let child_dir = module_dir.join(module.ident.to_string());
     if let Some((_, items)) = &module.content {
         visit_items(items, &child_dir, visited, out);
-    } else if let Some(path) = resolve_module_file(module_dir, &module.ident.to_string()) {
+    } else if let Some(path) = resolve_module_file(module_dir, module) {
         out.push_str(&generate_file(&path, &child_dir, visited));
     }
 }
 
-fn resolve_module_file(module_dir: &Path, module_name: &str) -> Option<PathBuf> {
+fn resolve_module_file(module_dir: &Path, module: &syn::ItemMod) -> Option<PathBuf> {
+    if let Some(path) = module_path_attr(module_dir, module) {
+        return path.exists().then_some(path);
+    }
+
+    let module_name = module.ident.to_string();
     let file = module_dir.join(format!("{module_name}.rs"));
     if file.exists() {
         return Some(file);
@@ -84,6 +90,30 @@ fn resolve_module_file(module_dir: &Path, module_name: &str) -> Option<PathBuf> 
 
     let mod_rs = module_dir.join(module_name).join("mod.rs");
     mod_rs.exists().then_some(mod_rs)
+}
+
+fn module_path_attr(module_dir: &Path, module: &syn::ItemMod) -> Option<PathBuf> {
+    module
+        .attrs
+        .iter()
+        .find_map(|attr| {
+            let Meta::NameValue(nv) = &attr.meta else {
+                return None;
+            };
+            if !nv.path.is_ident("path") {
+                return None;
+            }
+            let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(path),
+                ..
+            }) = &nv.value
+            else {
+                return None;
+            };
+            Some(path.value())
+        })
+        .map(PathBuf::from)
+        .map(|path| if path.is_absolute() { path } else { module_dir.join(path) })
 }
 
 /// Check if a struct should have assembly constants generated.
@@ -129,6 +159,85 @@ fn is_exact_repr_c(attr: &syn::Attribute) -> bool {
     args.len() == 1 && matches!(args.first(), Some(syn::Meta::Path(path)) if path.is_ident("C"))
 }
 
+fn cfg_enabled(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().filter(|attr| attr.path().is_ident("cfg")).all(eval_cfg_attr)
+}
+
+fn eval_cfg_attr(attr: &syn::Attribute) -> bool {
+    let Ok(meta) = attr.parse_args::<Meta>() else {
+        return false;
+    };
+    eval_cfg_meta(&meta)
+}
+
+fn eval_cfg_meta(meta: &Meta) -> bool {
+    match meta {
+        Meta::Path(path) => path
+            .get_ident()
+            .map(|ident| cfg_flag_is_set(&ident.to_string()))
+            .unwrap_or(false),
+        Meta::NameValue(nv) => {
+            let Some(key) = nv.path.get_ident().map(|ident| ident.to_string()) else {
+                return false;
+            };
+            let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(value),
+                ..
+            }) = &nv.value
+            else {
+                return false;
+            };
+            cfg_key_matches(&key, &value.value())
+        }
+        Meta::List(list) if list.path.is_ident("all") => parse_cfg_list(list)
+            .map(|items| items.iter().all(eval_cfg_meta))
+            .unwrap_or(false),
+        Meta::List(list) if list.path.is_ident("any") => parse_cfg_list(list)
+            .map(|items| items.iter().any(eval_cfg_meta))
+            .unwrap_or(false),
+        Meta::List(list) if list.path.is_ident("not") => parse_cfg_list(list)
+            .map(|items| items.len() == 1 && !eval_cfg_meta(&items[0]))
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+fn parse_cfg_list(list: &syn::MetaList) -> Option<Vec<Meta>> {
+    list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)
+        .ok()
+        .map(|items| items.into_iter().collect())
+}
+
+fn cfg_flag_is_set(flag: &str) -> bool {
+    let env_key = format!("CARGO_CFG_{}", cfg_env_name(flag));
+    std::env::var_os(&env_key).is_some()
+}
+
+fn cfg_key_matches(key: &str, value: &str) -> bool {
+    if key == "feature" {
+        let feature_key = format!("CARGO_FEATURE_{}", cfg_env_name(value));
+        if std::env::var_os(&feature_key).is_some() {
+            return true;
+        }
+    }
+
+    let env_key = format!("CARGO_CFG_{}", cfg_env_name(key));
+    let Some(raw) = std::env::var_os(&env_key) else {
+        return false;
+    };
+    raw.to_string_lossy()
+        .split(',')
+        .any(|entry| entry == value)
+}
+
+fn cfg_env_name(value: &str) -> String {
+    value
+        .replace('-', "_")
+        .chars()
+        .flat_map(|ch| ch.to_uppercase())
+        .collect()
+}
+
 /// Emit `.equ` constants for a single struct.
 fn emit_struct(s: &syn::ItemStruct) -> Option<String> {
     let name = &s.ident;
@@ -150,6 +259,10 @@ fn emit_struct(s: &syn::ItemStruct) -> Option<String> {
     let mut max_align: usize = 1;
 
     for field in fields {
+        if !cfg_enabled(&field.attrs) {
+            continue;
+        }
+
         let field_name = field.ident.as_ref()?;
 
         // Skip fields starting with _ (padding).
@@ -281,7 +394,15 @@ fn align_up(offset: usize, align: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{
+        sync::{Mutex, OnceLock},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
 
     fn temp_test_dir(name: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -292,6 +413,23 @@ mod tests {
             std::env::temp_dir().join(format!("anchor-asm-v2-{name}-{}-{unique}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn with_env_var<F>(key: &str, value: Option<&str>, f: F)
+    where
+        F: FnOnce(),
+    {
+        let _guard = env_lock();
+        let previous = std::env::var_os(key);
+        match value {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
+        f();
+        match previous {
+            Some(value) => std::env::set_var(key, value),
+            None => std::env::remove_var(key),
+        }
     }
 
     #[test]
@@ -426,6 +564,39 @@ mod tests {
     }
 
     #[test]
+    fn test_generate_respects_cfg_gated_fields() {
+        let source = r#"
+            #[repr(C)]
+            pub struct CfgFieldLayout {
+                pub tag: u8,
+                #[cfg(feature = "asm_cfg_field")]
+                pub gated: u64,
+                pub bump: u8,
+            }
+        "#;
+        let tmp = std::env::temp_dir().join("anchor_asm_test_cfg_field.rs");
+        std::fs::write(&tmp, source).unwrap();
+
+        with_env_var("CARGO_FEATURE_ASM_CFG_FIELD", None, || {
+            let result = generate(&tmp);
+            assert!(result.contains(".equ CfgFieldLayout__tag, 0"));
+            assert!(result.contains(".equ CfgFieldLayout__bump, 1"));
+            assert!(result.contains(".equ CfgFieldLayout__SIZE, 2"));
+            assert!(!result.contains("CfgFieldLayout__gated"));
+        });
+
+        with_env_var("CARGO_FEATURE_ASM_CFG_FIELD", Some("1"), || {
+            let result = generate(&tmp);
+            assert!(result.contains(".equ CfgFieldLayout__tag, 0"));
+            assert!(result.contains(".equ CfgFieldLayout__gated, 8"));
+            assert!(result.contains(".equ CfgFieldLayout__bump, 16"));
+            assert!(result.contains(".equ CfgFieldLayout__SIZE, 24"));
+        });
+
+        std::fs::remove_file(tmp).ok();
+    }
+
+    #[test]
     fn test_generate_recurses_inline_and_file_backed_modules() {
         let dir = temp_test_dir("mods");
         let lib_rs = dir.join("lib.rs");
@@ -493,6 +664,38 @@ mod tests {
     }
 
     #[test]
+    fn test_generate_respects_cfg_on_nested_modules() {
+        let dir = temp_test_dir("cfg-mod");
+        let lib_rs = dir.join("lib.rs");
+
+        std::fs::write(
+            &lib_rs,
+            r#"
+            #[cfg(feature = "asm_cfg_module")]
+            mod gated {
+                #[account]
+                pub struct NestedEnabled {
+                    pub value: u64,
+                }
+            }
+            "#,
+        )
+        .unwrap();
+
+        with_env_var("CARGO_FEATURE_ASM_CFG_MODULE", None, || {
+            let result = generate(&lib_rs);
+            assert!(!result.contains("NestedEnabled__value"));
+        });
+
+        with_env_var("CARGO_FEATURE_ASM_CFG_MODULE", Some("1"), || {
+            let result = generate(&lib_rs);
+            assert!(result.contains(".equ NestedEnabled__value, 0"));
+        });
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn test_generate_resolves_mod_rs_modules() {
         let dir = temp_test_dir("mod-rs");
         let lib_rs = dir.join("lib.rs");
@@ -513,6 +716,31 @@ mod tests {
 
         let result = generate(&lib_rs);
         assert!(result.contains(".equ NestedFromModRs__value, 0"));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_generate_resolves_path_attr_modules() {
+        let dir = temp_test_dir("path-attr");
+        let lib_rs = dir.join("lib.rs");
+        let alt_dir = dir.join("alt");
+        std::fs::create_dir_all(&alt_dir).unwrap();
+
+        std::fs::write(&lib_rs, "#[path = \"alt/custom_state.rs\"] mod state;\n").unwrap();
+        std::fs::write(
+            alt_dir.join("custom_state.rs"),
+            r#"
+            #[repr(C)]
+            pub struct PathAttrState {
+                pub value: u64,
+            }
+            "#,
+        )
+        .unwrap();
+
+        let result = generate(&lib_rs);
+        assert!(result.contains(".equ PathAttrState__value, 0"));
 
         std::fs::remove_dir_all(dir).ok();
     }
