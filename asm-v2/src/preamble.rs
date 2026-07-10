@@ -40,12 +40,14 @@ fn generate_file(path: &Path, module_dir: &Path, visited: &mut HashSet<PathBuf>)
     };
 
     let mut out = String::new();
-    visit_items(&file.items, module_dir, visited, &mut out);
+    let source_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    visit_items(&file.items, source_dir, module_dir, visited, &mut out);
     out
 }
 
 fn visit_items(
     items: &[syn::Item],
+    source_dir: &Path,
     module_dir: &Path,
     visited: &mut HashSet<PathBuf>,
     out: &mut String,
@@ -57,7 +59,9 @@ fn visit_items(
                     out.push_str(&block);
                 }
             }
-            syn::Item::Mod(m) if cfg_enabled(&m.attrs) => visit_module(m, module_dir, visited, out),
+            syn::Item::Mod(m) if cfg_enabled(&m.attrs) => {
+                visit_module(m, source_dir, module_dir, visited, out)
+            }
             _ => {}
         }
     }
@@ -65,34 +69,64 @@ fn visit_items(
 
 fn visit_module(
     module: &syn::ItemMod,
+    source_dir: &Path,
     module_dir: &Path,
     visited: &mut HashSet<PathBuf>,
     out: &mut String,
 ) {
-    let child_dir = module_dir.join(module.ident.to_string());
     if let Some((_, items)) = &module.content {
-        visit_items(items, &child_dir, visited, out);
-    } else if let Some(path) = resolve_module_file(module_dir, module) {
+        let child_dir = inline_module_dir(source_dir, module_dir, module);
+        visit_items(items, &child_dir, &child_dir, visited, out);
+    } else if let Some((path, child_dir)) = resolve_module_file(source_dir, module_dir, module) {
         out.push_str(&generate_file(&path, &child_dir, visited));
     }
 }
 
-fn resolve_module_file(module_dir: &Path, module: &syn::ItemMod) -> Option<PathBuf> {
-    if let Some(path) = module_path_attr(module_dir, module) {
-        return path.exists().then_some(path);
+fn inline_module_dir(source_dir: &Path, module_dir: &Path, module: &syn::ItemMod) -> PathBuf {
+    module_path_attr(source_dir, module)
+        .map(|path| explicit_module_dir(&path))
+        .unwrap_or_else(|| module_dir.join(module.ident.to_string()))
+}
+
+fn resolve_module_file(
+    source_dir: &Path,
+    module_dir: &Path,
+    module: &syn::ItemMod,
+) -> Option<(PathBuf, PathBuf)> {
+    if let Some(path) = module_path_attr(source_dir, module) {
+        return (path.exists() && path.is_file()).then(|| {
+            let child_dir = explicit_module_dir(&path);
+            (path, child_dir)
+        });
     }
 
     let module_name = module.ident.to_string();
     let file = module_dir.join(format!("{module_name}.rs"));
     if file.exists() {
-        return Some(file);
+        return Some((file, module_dir.join(module_name)));
     }
 
     let mod_rs = module_dir.join(module_name).join("mod.rs");
-    mod_rs.exists().then_some(mod_rs)
+    if mod_rs.exists() {
+        let child_dir = mod_rs
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        Some((mod_rs, child_dir))
+    } else {
+        None
+    }
 }
 
-fn module_path_attr(module_dir: &Path, module: &syn::ItemMod) -> Option<PathBuf> {
+fn explicit_module_dir(path: &Path) -> PathBuf {
+    if path.is_dir() || path.extension().is_none() {
+        path.to_path_buf()
+    } else {
+        path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf()
+    }
+}
+
+fn module_path_attr(source_dir: &Path, module: &syn::ItemMod) -> Option<PathBuf> {
     module
         .attrs
         .iter()
@@ -113,7 +147,7 @@ fn module_path_attr(module_dir: &Path, module: &syn::ItemMod) -> Option<PathBuf>
             Some(path.value())
         })
         .map(PathBuf::from)
-        .map(|path| if path.is_absolute() { path } else { module_dir.join(path) })
+        .map(|path| if path.is_absolute() { path } else { source_dir.join(path) })
 }
 
 /// Check if a struct should have assembly constants generated.
@@ -741,6 +775,72 @@ mod tests {
 
         let result = generate(&lib_rs);
         assert!(result.contains(".equ PathAttrState__value, 0"));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_generate_resolves_path_attr_relative_to_non_mod_rs_declaring_file() {
+        let dir = temp_test_dir("path-attr-non-mod-rs");
+        let lib_rs = dir.join("lib.rs");
+
+        std::fs::write(&lib_rs, "mod state;\n").unwrap();
+        std::fs::write(
+            dir.join("state.rs"),
+            r#"
+            #[path = "custom.rs"]
+            mod child;
+            "#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("custom.rs"),
+            r#"
+            #[repr(C)]
+            pub struct CustomState {
+                pub value: u64,
+            }
+            "#,
+        )
+        .unwrap();
+
+        let result = generate(&lib_rs);
+        assert!(result.contains(".equ CustomState__value, 0"));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_generate_resolves_nested_path_attrs_inside_inline_path_modules() {
+        let dir = temp_test_dir("inline-path-attr");
+        let lib_rs = dir.join("lib.rs");
+        let thread_files_dir = dir.join("thread_files");
+        std::fs::create_dir_all(&thread_files_dir).unwrap();
+
+        std::fs::write(
+            &lib_rs,
+            r#"
+            #[path = "thread_files"]
+            mod thread {
+                #[path = "tls.rs"]
+                mod local_data;
+            }
+            "#,
+        )
+        .unwrap();
+        std::fs::write(
+            thread_files_dir.join("tls.rs"),
+            r#"
+            #[repr(C)]
+            pub struct InlinePathState {
+                pub value: u64,
+            }
+            "#,
+        )
+        .unwrap();
+
+        let result = generate(&lib_rs);
+        assert!(result.contains(".equ InlinePathState__value, 0"));
 
         std::fs::remove_dir_all(dir).ok();
     }
