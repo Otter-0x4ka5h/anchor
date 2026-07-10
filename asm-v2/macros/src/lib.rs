@@ -36,6 +36,9 @@ use syn::{
     Expr, Fields, Ident, Item, Lit, Meta,
 };
 
+/// Default first custom error code. Mirrors `anchor_lang_v2::error_code`.
+const DEFAULT_ERROR_CODE_OFFSET: u32 = 6000;
+
 // ---------------------------------------------------------------------------
 // asm_program! — the single entry point
 // ---------------------------------------------------------------------------
@@ -202,7 +205,7 @@ fn expand_asm_program(program: AsmProgram) -> TokenStream2 {
                     );
                     let variant = &v.ident;
                     const_operands.push(quote! {
-                        #name = const #enum_name::#variant as u32,
+                        #name = const (#enum_name::#variant as u32 + #DEFAULT_ERROR_CODE_OFFSET),
                     });
                 }
             }
@@ -366,9 +369,9 @@ mod tests {
         .unwrap();
 
         let expanded = expand_asm_program(program).to_string();
-        assert!(expanded.contains("E_ALPHA = const Errors :: Alpha as u32"));
-        assert!(expanded.contains("E_BETA = const Errors :: Beta as u32"));
-        assert!(expanded.contains("E_GAMMA = const Errors :: Gamma as u32"));
+        assert!(expanded.contains("E_ALPHA = const (Errors :: Alpha as u32 + 6000u32)"));
+        assert!(expanded.contains("E_BETA = const (Errors :: Beta as u32 + 6000u32)"));
+        assert!(expanded.contains("E_GAMMA = const (Errors :: Gamma as u32 + 6000u32)"));
         assert!(expanded.contains("DISC_START = const Disc :: Start as u32"));
         assert!(expanded.contains("DISC_NEXT = const Disc :: Next as u32"));
     }
@@ -391,10 +394,10 @@ mod tests {
         .unwrap();
 
         let expanded = expand_asm_program(program).to_string();
-        assert!(expanded.contains("ERR_ALPHA = const Errors :: Alpha as u32"));
-        assert!(expanded.contains("ERR_BETA = const Errors :: Beta as u32"));
-        assert!(expanded.contains("ERR_GAMMA = const Errors :: Gamma as u32"));
-        assert!(expanded.contains("ERR_DELTA = const Errors :: Delta as u32"));
+        assert!(expanded.contains("ERR_ALPHA = const (Errors :: Alpha as u32 + 6000u32)"));
+        assert!(expanded.contains("ERR_BETA = const (Errors :: Beta as u32 + 6000u32)"));
+        assert!(expanded.contains("ERR_GAMMA = const (Errors :: Gamma as u32 + 6000u32)"));
+        assert!(expanded.contains("ERR_DELTA = const (Errors :: Delta as u32 + 6000u32)"));
     }
 
     #[test]
@@ -414,9 +417,30 @@ mod tests {
         .unwrap();
 
         let expanded = expand_asm_program(program).to_string();
-        assert!(expanded.contains("ERR_SMALL = const Errors :: Small as u32"));
-        assert!(expanded.contains("ERR_LARGE = const Errors :: Large as u32"));
+        assert!(expanded.contains("ERR_SMALL = const (Errors :: Small as u32 + 6000u32)"));
+        assert!(expanded.contains("ERR_LARGE = const (Errors :: Large as u32 + 6000u32)"));
         assert!(!expanded.contains("Errors :: Large as i32"));
+    }
+
+    #[test]
+    fn test_error_enum_default_first_variant_is_not_success() {
+        let program = syn::parse_str::<AsmProgram>(
+            r#"
+            #[error_enum(prefix = "ERR")]
+            pub enum Errors {
+                InvalidSignature,
+                Unauthorized,
+            }
+
+            asm { "" }
+            "#,
+        )
+        .unwrap();
+
+        let expanded = expand_asm_program(program).to_string();
+        assert!(expanded.contains("ERR_INVALID_SIGNATURE = const (Errors :: InvalidSignature as u32 + 6000u32)"));
+        assert!(expanded.contains("ERR_UNAUTHORIZED = const (Errors :: Unauthorized as u32 + 6000u32)"));
+        assert!(!expanded.contains("ERR_INVALID_SIGNATURE = const Errors :: InvalidSignature as u32"));
     }
 
     #[test]
