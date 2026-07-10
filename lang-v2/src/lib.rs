@@ -337,7 +337,7 @@ impl From<ErrorCode> for solana_program_error::ProgramError {
             }
             ErrorCode::ConstraintSeeds => solana_program_error::ProgramError::InvalidSeeds,
             ErrorCode::ConstraintHasOne => solana_program_error::ProgramError::InvalidAccountData,
-            ErrorCode::ConstraintAddress => solana_program_error::ProgramError::InvalidAccountData,
+            ErrorCode::ConstraintAddress => solana_program_error::ProgramError::Custom(2012),
             ErrorCode::ConstraintClose => solana_program_error::ProgramError::InvalidAccountData,
             ErrorCode::ConstraintOwner => solana_program_error::ProgramError::IllegalOwner,
             ErrorCode::ConstraintRaw => solana_program_error::ProgramError::Custom(2003),

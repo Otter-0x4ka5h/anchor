@@ -6,8 +6,8 @@
 //! can't tell which constraint failed.
 //!
 //! Note: multiple variants mapping to the same *built-in*
-//! `ProgramError` (e.g., `ConstraintHasOne`, `ConstraintAddress`,
-//! `ConstraintClose` all → `InvalidAccountData`) is acceptable — those
+//! `ProgramError` (e.g., `ConstraintHasOne` and `ConstraintClose`
+//! both → `InvalidAccountData`) is acceptable — those
 //! are semantic groupings. The invariant is specifically "no two
 //! variants share a `Custom(u32)` code".
 //!
@@ -115,7 +115,7 @@ fn no_two_variants_share_a_custom_code() {
     }
     // Snapshot — adding a new Custom variant forces a review of this number.
     assert_eq!(
-        custom_count, 12,
+        custom_count, 13,
         "Number of Custom error codes changed; update this snapshot after review"
     );
 }
@@ -183,7 +183,7 @@ fn builtin_groupings_are_stable() {
         IncorrectProgramId,
     );
 
-    // Grouped under InvalidAccountData
+    // These stay grouped under InvalidAccountData.
     check(
         "ConstraintHasOne",
         ErrorCode::ConstraintHasOne.into(),
@@ -192,7 +192,7 @@ fn builtin_groupings_are_stable() {
     check(
         "ConstraintAddress",
         ErrorCode::ConstraintAddress.into(),
-        InvalidAccountData,
+        Custom(2012),
     );
     check(
         "ConstraintClose",
