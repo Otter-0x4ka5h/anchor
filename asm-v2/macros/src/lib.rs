@@ -202,7 +202,7 @@ fn expand_asm_program(program: AsmProgram) -> TokenStream2 {
                     );
                     let variant = &v.ident;
                     const_operands.push(quote! {
-                        #name = const #enum_name::#variant as i32,
+                        #name = const #enum_name::#variant as u32,
                     });
                 }
             }
@@ -366,9 +366,9 @@ mod tests {
         .unwrap();
 
         let expanded = expand_asm_program(program).to_string();
-        assert!(expanded.contains("E_ALPHA = const Errors :: Alpha as i32"));
-        assert!(expanded.contains("E_BETA = const Errors :: Beta as i32"));
-        assert!(expanded.contains("E_GAMMA = const Errors :: Gamma as i32"));
+        assert!(expanded.contains("E_ALPHA = const Errors :: Alpha as u32"));
+        assert!(expanded.contains("E_BETA = const Errors :: Beta as u32"));
+        assert!(expanded.contains("E_GAMMA = const Errors :: Gamma as u32"));
         assert!(expanded.contains("DISC_START = const Disc :: Start as u32"));
         assert!(expanded.contains("DISC_NEXT = const Disc :: Next as u32"));
     }
@@ -391,10 +391,32 @@ mod tests {
         .unwrap();
 
         let expanded = expand_asm_program(program).to_string();
-        assert!(expanded.contains("ERR_ALPHA = const Errors :: Alpha as i32"));
-        assert!(expanded.contains("ERR_BETA = const Errors :: Beta as i32"));
-        assert!(expanded.contains("ERR_GAMMA = const Errors :: Gamma as i32"));
-        assert!(expanded.contains("ERR_DELTA = const Errors :: Delta as i32"));
+        assert!(expanded.contains("ERR_ALPHA = const Errors :: Alpha as u32"));
+        assert!(expanded.contains("ERR_BETA = const Errors :: Beta as u32"));
+        assert!(expanded.contains("ERR_GAMMA = const Errors :: Gamma as u32"));
+        assert!(expanded.contains("ERR_DELTA = const Errors :: Delta as u32"));
+    }
+
+    #[test]
+    fn test_error_enum_preserves_u32_discriminants() {
+        let program = syn::parse_str::<AsmProgram>(
+            r#"
+            #[error_enum(prefix = "ERR")]
+            #[repr(u32)]
+            pub enum Errors {
+                Small = 7,
+                Large = 0x8000_0000,
+            }
+
+            asm { "" }
+            "#,
+        )
+        .unwrap();
+
+        let expanded = expand_asm_program(program).to_string();
+        assert!(expanded.contains("ERR_SMALL = const Errors :: Small as u32"));
+        assert!(expanded.contains("ERR_LARGE = const Errors :: Large as u32"));
+        assert!(!expanded.contains("Errors :: Large as i32"));
     }
 
     #[test]
