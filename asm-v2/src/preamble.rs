@@ -17,10 +17,21 @@ use std::{
 use syn::{Meta, Token, punctuated::Punctuated};
 
 /// Parse `lib.rs` and generate `.equ` preamble for all `#[account]` structs.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn generate(lib_rs: &Path) -> String {
+    generate_tracked(lib_rs).0
+}
+
+/// Like [`generate`], but also returns every Rust source file that was parsed
+/// while walking the module tree. Callers can use the returned paths to emit
+/// `cargo:rerun-if-changed=` directives.
+pub(crate) fn generate_tracked(lib_rs: &Path) -> (String, Vec<PathBuf>) {
     let root_dir = lib_rs.parent().unwrap_or_else(|| Path::new("."));
     let mut visited = HashSet::new();
-    generate_file(lib_rs, root_dir, &mut visited)
+    let output = generate_file(lib_rs, root_dir, &mut visited);
+    let mut visited_files: Vec<_> = visited.into_iter().collect();
+    visited_files.sort();
+    (output, visited_files)
 }
 
 fn generate_file(path: &Path, module_dir: &Path, visited: &mut HashSet<PathBuf>) -> String {
@@ -841,6 +852,44 @@ mod tests {
 
         let result = generate(&lib_rs);
         assert!(result.contains(".equ InlinePathState__value, 0"));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_generate_tracks_nested_module_dependencies() {
+        let dir = temp_test_dir("tracked-deps");
+        let lib_rs = dir.join("lib.rs");
+        let state_rs = dir.join("state.rs");
+        let custom_rs = dir.join("custom.rs");
+
+        std::fs::write(&lib_rs, "mod state;\n").unwrap();
+        std::fs::write(
+            &state_rs,
+            r#"
+            #[path = "custom.rs"]
+            mod child;
+            "#,
+        )
+        .unwrap();
+        std::fs::write(
+            &custom_rs,
+            r#"
+            #[repr(C)]
+            pub struct NestedTracked {
+                pub value: u64,
+            }
+            "#,
+        )
+        .unwrap();
+
+        let (result, visited_files) = generate_tracked(&lib_rs);
+        assert!(result.contains(".equ NestedTracked__value, 0"));
+
+        let canon = |path: &Path| std::fs::canonicalize(path).unwrap();
+        assert!(visited_files.contains(&canon(&lib_rs)));
+        assert!(visited_files.contains(&canon(&state_rs)));
+        assert!(visited_files.contains(&canon(&custom_rs)));
 
         std::fs::remove_dir_all(dir).ok();
     }
