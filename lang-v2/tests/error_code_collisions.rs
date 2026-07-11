@@ -5,11 +5,10 @@
 //! reporting ambiguous — a client decoding a `Custom(2003)` error
 //! can't tell which constraint failed.
 //!
-//! Note: multiple variants mapping to the same *built-in*
-//! `ProgramError` (e.g., `ConstraintHasOne`, `ConstraintAddress`,
-//! `ConstraintClose` all → `InvalidAccountData`) is acceptable — those
-//! are semantic groupings. The invariant is specifically "no two
-//! variants share a `Custom(u32)` code".
+//! Note: some variants intentionally map to built-in `ProgramError`s
+//! (for example `ConstraintSigner` → `MissingRequiredSignature`).
+//! The invariant is specifically "no two variants share a
+//! `Custom(u32)` code".
 //!
 //! Exhaustiveness: the helper below uses an `#[allow(dead_code)]`
 //! match on a fresh `ErrorCode` parameter with explicit arms for
@@ -115,7 +114,7 @@ fn no_two_variants_share_a_custom_code() {
     }
     // Snapshot — adding a new Custom variant forces a review of this number.
     assert_eq!(
-        custom_count, 12,
+        custom_count, 15,
         "Number of Custom error codes changed; update this snapshot after review"
     );
 }
@@ -183,21 +182,20 @@ fn builtin_groupings_are_stable() {
         IncorrectProgramId,
     );
 
-    // Grouped under InvalidAccountData
     check(
         "ConstraintHasOne",
         ErrorCode::ConstraintHasOne.into(),
-        InvalidAccountData,
+        Custom(2001),
     );
     check(
         "ConstraintAddress",
         ErrorCode::ConstraintAddress.into(),
-        InvalidAccountData,
+        Custom(2012),
     );
     check(
         "ConstraintClose",
         ErrorCode::ConstraintClose.into(),
-        InvalidAccountData,
+        Custom(2011),
     );
 
     // Grouped under InvalidInstructionData
