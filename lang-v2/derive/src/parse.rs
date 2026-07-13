@@ -132,6 +132,10 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
         namespaced: Vec::new(),
     };
 
+    let duplicate_singleton = |span: proc_macro2::Span, name: &str| -> syn::Error {
+        syn::Error::new(span, format!("`{name}` already provided"))
+    };
+
     for attr in attrs {
         if !attr.path().is_ident("account") {
             continue;
@@ -142,20 +146,50 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                 match ident.to_string().as_str() {
                     "mut" => result.is_mut = true,
                     "init" => {
+                        if result.is_init {
+                            return Err(duplicate_singleton(ident.span(), "init"));
+                        }
+                        if result.is_init_if_needed || result.is_zeroed {
+                            return Err(syn::Error::new(
+                                ident.span(),
+                                "only one of `init`, `init_if_needed`, and `zeroed` may be used",
+                            ));
+                        }
                         result.is_init = true;
                         result.is_mut = true;
                         result.init_span = Some(ident.span());
                     }
                     "init_if_needed" => {
+                        if result.is_init_if_needed {
+                            return Err(duplicate_singleton(ident.span(), "init_if_needed"));
+                        }
+                        if result.is_init || result.is_zeroed {
+                            return Err(syn::Error::new(
+                                ident.span(),
+                                "only one of `init`, `init_if_needed`, and `zeroed` may be used",
+                            ));
+                        }
                         result.is_init_if_needed = true;
                         result.is_mut = true;
                         result.init_if_needed_span = Some(ident.span());
                     }
                     "zeroed" => {
+                        if result.is_zeroed {
+                            return Err(duplicate_singleton(ident.span(), "zeroed"));
+                        }
+                        if result.is_init || result.is_init_if_needed {
+                            return Err(syn::Error::new(
+                                ident.span(),
+                                "only one of `init`, `init_if_needed`, and `zeroed` may be used",
+                            ));
+                        }
                         result.is_zeroed = true;
                         result.is_mut = true;
                     }
                     "bump" => {
+                        if result.bump.is_some() {
+                            return Err(duplicate_singleton(ident.span(), "bump"));
+                        }
                         if input.peek(Token![=]) {
                             input.parse::<Token![=]>()?;
                             result.bump = Some(Some(input.parse()?));
@@ -204,10 +238,19 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                             let key_ident: Ident = Ident::parse_any(&content)?;
                             content.parse::<Token![=]>()?;
                             let value: Expr = content.parse()?;
+                            let namespace = ns_ident.to_string();
                             let raw_key = key_ident.to_string();
+                            if result.namespaced.iter().any(|nc| {
+                                nc.is_update && nc.namespace == namespace && nc.raw_key == raw_key
+                            }) {
+                                return Err(syn::Error::new(
+                                    key_ident.span(),
+                                    format!("duplicate `{namespace}::{raw_key}` constraint"),
+                                ));
+                            }
                             let key = constraint_key_ident(&raw_key);
                             result.namespaced.push(NamespacedConstraint {
-                                namespace: ns_ident.to_string(),
+                                namespace,
                                 key,
                                 raw_key,
                                 value,
@@ -220,14 +263,23 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                     }
                     "payer" => {
                         input.parse::<Token![=]>()?;
+                        if result.payer.is_some() {
+                            return Err(duplicate_singleton(ident.span(), "payer"));
+                        }
                         result.payer = Some(input.parse()?);
                     }
                     "space" => {
                         input.parse::<Token![=]>()?;
+                        if result.space.is_some() {
+                            return Err(duplicate_singleton(ident.span(), "space"));
+                        }
                         result.space = Some(input.parse()?);
                     }
                     "seeds" if input.peek(Token![=]) => {
                         input.parse::<Token![=]>()?;
+                        if result.seeds.is_some() {
+                            return Err(duplicate_singleton(ident.span(), "seeds"));
+                        }
                         result.seeds = Some(input.parse()?);
                     }
                     // `seeds::program = expr` falls through to the
@@ -238,6 +290,16 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                         let keyword_span = ident.span();
                         input.parse::<Token![=]>()?;
                         let target: Ident = input.parse()?;
+                        if result
+                            .has_one
+                            .iter()
+                            .any(|(_, existing, _)| *existing == target)
+                        {
+                            return Err(syn::Error::new(
+                                target.span(),
+                                format!("duplicate `has_one = {target}` constraint"),
+                            ));
+                        }
                         let err = if input.peek(Token![@]) {
                             input.parse::<Token![@]>()?;
                             Some(input.parse()?)
@@ -248,6 +310,9 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                     }
                     "address" => {
                         input.parse::<Token![=]>()?;
+                        if result.address.is_some() {
+                            return Err(duplicate_singleton(ident.span(), "address"));
+                        }
                         result.address = Some(input.parse()?);
                         if input.peek(Token![@]) {
                             input.parse::<Token![@]>()?;
@@ -256,6 +321,9 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                     }
                     "owner" => {
                         input.parse::<Token![=]>()?;
+                        if result.owner.is_some() {
+                            return Err(duplicate_singleton(ident.span(), "owner"));
+                        }
                         result.owner = Some(input.parse()?);
                         if input.peek(Token![@]) {
                             input.parse::<Token![@]>()?;
@@ -264,12 +332,18 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                     }
                     "realloc" => {
                         input.parse::<Token![=]>()?;
+                        if result.realloc.is_some() {
+                            return Err(duplicate_singleton(ident.span(), "realloc"));
+                        }
                         result.realloc = Some(input.parse()?);
                         result.realloc_span = Some(ident.span());
                         result.is_mut = true;
                     }
                     "realloc_payer" => {
                         input.parse::<Token![=]>()?;
+                        if result.realloc_payer.is_some() {
+                            return Err(duplicate_singleton(ident.span(), "realloc_payer"));
+                        }
                         result.realloc_payer = Some(input.parse()?);
                     }
                     "realloc_zero" => {
@@ -279,6 +353,9 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                     }
                     "close" => {
                         input.parse::<Token![=]>()?;
+                        if result.close.is_some() {
+                            return Err(duplicate_singleton(ident.span(), "close"));
+                        }
                         result.close = Some(input.parse()?);
                     }
                     "constraint" => {
@@ -333,6 +410,12 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                                     ));
                                 }
                                 input.parse::<Token![=]>()?;
+                                if result.seeds_program.is_some() {
+                                    return Err(duplicate_singleton(
+                                        key_ident.span(),
+                                        "seeds::program",
+                                    ));
+                                }
                                 result.seeds_program = Some(input.parse()?);
                                 if !input.is_empty() {
                                     input.parse::<Token![,]>()?;
@@ -341,10 +424,19 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                             }
                             input.parse::<Token![=]>()?;
                             let value: Expr = input.parse()?;
+                            let namespace = ident.to_string();
                             let raw_key = key_ident.to_string();
+                            if result.namespaced.iter().any(|nc| {
+                                !nc.is_update && nc.namespace == namespace && nc.raw_key == raw_key
+                            }) {
+                                return Err(syn::Error::new(
+                                    key_ident.span(),
+                                    format!("duplicate `{namespace}::{raw_key}` constraint"),
+                                ));
+                            }
                             let key = constraint_key_ident(&raw_key);
                             result.namespaced.push(NamespacedConstraint {
-                                namespace: ident.to_string(),
+                                namespace,
                                 key,
                                 raw_key,
                                 value,
@@ -395,11 +487,68 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
         }
     }
 
+    if result.close.is_some() && (result.is_init || result.is_init_if_needed || result.is_zeroed) {
+        return Err(syn::Error::new(
+            result.close.as_ref().unwrap().span(),
+            "`close` cannot be used with `init`, `init_if_needed`, or `zeroed`",
+        ));
+    }
+
+    if result.realloc.is_some() && (result.is_init || result.is_init_if_needed || result.is_zeroed)
+    {
+        return Err(syn::Error::new(
+            result.realloc.as_ref().unwrap().span(),
+            "`realloc` cannot be used with `init`, `init_if_needed`, or `zeroed`",
+        ));
+    }
+
+    if result.payer.is_some() && !(result.is_init || result.is_init_if_needed) {
+        return Err(syn::Error::new(
+            result.payer.as_ref().unwrap().span(),
+            "`payer` requires `init` or `init_if_needed`",
+        ));
+    }
+
+    if result.space.is_some() && !(result.is_init || result.is_init_if_needed) {
+        return Err(syn::Error::new(
+            result.space.as_ref().unwrap().span(),
+            "`space` requires `init` or `init_if_needed`",
+        ));
+    }
+
+    if result.bump.is_some() && result.seeds.is_none() {
+        let span = match result.bump.as_ref().unwrap() {
+            Some(expr) => syn::spanned::Spanned::span(expr),
+            None => proc_macro2::Span::call_site(),
+        };
+        return Err(syn::Error::new(span, "`bump` requires `seeds`"));
+    }
+
+    if result.seeds.is_some() && result.bump.is_none() {
+        return Err(syn::Error::new(
+            result.seeds.as_ref().unwrap().span(),
+            "`seeds` requires `bump`",
+        ));
+    }
     if result.seeds_program.is_some() && result.seeds.is_none() {
         return Err(syn::Error::new(
             result.seeds_program.as_ref().unwrap().span(),
             "`seeds::program` requires `seeds`",
         ));
+    }
+    if let Some(program) = result.seeds_program.as_ref() {
+        if result.is_init_if_needed {
+            return Err(syn::Error::new(
+                syn::spanned::Spanned::span(program),
+                "`seeds::program` cannot be used with `init_if_needed`",
+            ));
+        }
+        if result.is_init {
+            return Err(syn::Error::new(
+                syn::spanned::Spanned::span(program),
+                "`seeds::program` cannot be used with `init`",
+            ));
+        }
     }
 
     if result.payer.is_none() {
@@ -425,7 +574,46 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
             "`realloc` requires `realloc_payer = <target>`",
         ));
     }
+    if result.realloc_payer.is_some() && result.realloc.is_none() {
+        return Err(syn::Error::new(
+            result.realloc_payer.as_ref().unwrap().span(),
+            "`realloc_payer` requires `realloc`",
+        ));
+    }
 
+    let has_init = result.is_init || result.is_init_if_needed;
+    let has_namespaced = |ns: &str, key: &str| {
+        result
+            .namespaced
+            .iter()
+            .any(|nc| !nc.is_update && nc.namespace == ns && nc.raw_key == key)
+    };
+    if has_init {
+        if has_namespaced("token", "mint") && !has_namespaced("token", "authority") {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "when initializing, `token::authority` must be provided if `token::mint` is",
+            ));
+        }
+        if has_namespaced("token", "authority") && !has_namespaced("token", "mint") {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "when initializing, `token::mint` must be provided if `token::authority` is",
+            ));
+        }
+        if has_namespaced("mint", "decimals") && !has_namespaced("mint", "authority") {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "when initializing, `mint::authority` must be provided if `mint::decimals` is",
+            ));
+        }
+        if has_namespaced("mint", "authority") && !has_namespaced("mint", "decimals") {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "when initializing, `mint::decimals` must be provided if `mint::authority` is",
+            ));
+        }
+    }
     Ok(result)
 }
 
