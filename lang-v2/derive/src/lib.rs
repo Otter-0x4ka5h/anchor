@@ -4464,7 +4464,7 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
                 if types.is_empty() || !types.iter().all(is_fixed_size_primitive) {
                     quote! { 0usize }
                 } else {
-                    quote! { core::mem::size_of::<(#(#types,)*)>() }
+                    quote! { 0usize #( + core::mem::size_of::<#types>() )* }
                 }
             })
             .collect();
