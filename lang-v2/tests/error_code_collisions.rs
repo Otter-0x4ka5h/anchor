@@ -181,6 +181,41 @@ fn builtin_groupings_are_stable() {
         ErrorCode::DeclaredProgramIdMismatch.into(),
         IncorrectProgramId,
     );
+    check(
+        "RequireViolated",
+        ErrorCode::RequireViolated.into(),
+        Custom(2500),
+    );
+    check(
+        "RequireEqViolated",
+        ErrorCode::RequireEqViolated.into(),
+        Custom(2501),
+    );
+    check(
+        "RequireKeysEqViolated",
+        ErrorCode::RequireKeysEqViolated.into(),
+        Custom(2502),
+    );
+    check(
+        "RequireNeqViolated",
+        ErrorCode::RequireNeqViolated.into(),
+        Custom(2503),
+    );
+    check(
+        "RequireKeysNeqViolated",
+        ErrorCode::RequireKeysNeqViolated.into(),
+        Custom(2504),
+    );
+    check(
+        "RequireGtViolated",
+        ErrorCode::RequireGtViolated.into(),
+        Custom(2505),
+    );
+    check(
+        "RequireGteViolated",
+        ErrorCode::RequireGteViolated.into(),
+        Custom(2506),
+    );
 
     check(
         "ConstraintHasOne",
