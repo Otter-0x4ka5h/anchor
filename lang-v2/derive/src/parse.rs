@@ -1052,6 +1052,7 @@ fn wrap_init_body_with_constraints(
         .map(|nc| {
             let ns = syn::Ident::new(&nc.namespace, proc_macro2::Span::call_site());
             let key = syn::Ident::new(&nc.key, proc_macro2::Span::call_site());
+            let value = &nc.value;
             let expected = if expr_as_known_field_ident(value, field_names).is_some() {
                 quote! { AsRef::as_ref(&#value) }
             } else {
