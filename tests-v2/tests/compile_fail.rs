@@ -661,6 +661,54 @@ pub struct Bad {
 }
 
 #[test]
+fn namespaced_constraints_accept_qualified_constants_as_values() {
+    CompileCase::new(
+        "namespaced_constraint_qualified_constant",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Default, wincode::SchemaRead, wincode::SchemaWrite)]
+pub struct Counter {
+    pub value: u64,
+}
+
+impl Owner for Counter {
+    const OWNER: Address = Address::from_str_const("11111111111111111111111111111111");
+}
+
+impl Discriminator for Counter {
+    const DISCRIMINATOR: &'static [u8] = &[1, 2, 3, 4, 5, 6, 7, 8];
+}
+
+pub mod counter_ns {
+    use super::*;
+
+    pub struct MinValueConstraint;
+
+    impl AccountConstraint<BorshAccount<Counter>> for MinValueConstraint {
+        type Value = u64;
+
+        fn check(_: &BorshAccount<Counter>, _: &u64) -> anchor_lang_v2::Result<()> {
+            Ok(())
+        }
+    }
+}
+
+mod limits {
+    pub const MIN: u64 = 7;
+}
+
+#[derive(Accounts)]
+pub struct Good {
+    #[account(counter_ns::min_value = limits::MIN)]
+    pub counter: BorshAccount<Counter>,
+}
+"#,
+    )
+    .expect_pass();
+}
+
+#[test]
 fn associated_token_rejects_unknown_constraint_key() {
     CompileCase::new(
         "associated_token_unknown_constraint_key",

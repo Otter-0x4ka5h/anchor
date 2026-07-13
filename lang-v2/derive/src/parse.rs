@@ -891,7 +891,6 @@ fn validate_init_constraint_refs(
 
     Ok(())
 }
-
 fn field_offset_expr(
     field_offsets: &[(String, TokenStream2)],
     ident: &Ident,
@@ -1053,7 +1052,6 @@ fn wrap_init_body_with_constraints(
         .map(|nc| {
             let ns = syn::Ident::new(&nc.namespace, proc_macro2::Span::call_site());
             let key = syn::Ident::new(&nc.key, proc_macro2::Span::call_site());
-            let value = &nc.value;
             let expected = if expr_as_known_field_ident(value, field_names).is_some() {
                 quote! { AsRef::as_ref(&#value) }
             } else {
