@@ -16,11 +16,13 @@ publish = false
 
 [dependencies]
 anchor-lang-v2 = {{ path = "{}" }}
+anchor-spl-v2 = {{ path = "{}" }}
 wincode = {{ version = "0.5", features = ["derive"] }}
 
 [workspace]
 "#,
-            manifest_dir.display()
+            manifest_dir.display(),
+            manifest_dir.parent().unwrap().join("spl-v2").display()
         ),
     )
     .unwrap();
@@ -397,6 +399,330 @@ pub struct Bad {
 }
 "#,
         &["optional accounts cannot be used as init payers"],
+    );
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
+fn account_attrs_reject_duplicate_singletons_and_conflicts() {
+    compile_fail_case(
+        "duplicate_owner_across_account_attrs",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(owner = System::id())]
+    #[account(owner = System::id())]
+    pub data: UncheckedAccount,
+}
+"#,
+        &["`owner` already provided"],
+    );
+
+    compile_fail_case(
+        "duplicate_has_one_target",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[account]
+pub struct Data {
+    pub authority: Address,
+}
+
+#[derive(Accounts)]
+pub struct Bad {
+    pub authority: UncheckedAccount,
+    #[account(has_one = authority, has_one = authority)]
+    pub data: Account<Data>,
+}
+"#,
+        &["duplicate `has_one = authority` constraint"],
+    );
+
+    compile_fail_case(
+        "init_and_zeroed_conflict",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[account]
+pub struct Data {
+    pub value: u64,
+}
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut)]
+    pub payer: Signer,
+    #[account(init, zeroed, payer = payer, space = 8 + core::mem::size_of::<Data>())]
+    pub data: Account<Data>,
+    pub system_program: Program<System>,
+}
+"#,
+        &["only one of `init`, `init_if_needed`, and `zeroed` may be used"],
+    );
+
+    compile_fail_case(
+        "init_and_close_conflict",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[account]
+pub struct Data {
+    pub value: u64,
+}
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut)]
+    pub payer: Signer,
+    #[account(mut)]
+    pub receiver: SystemAccount,
+    #[account(
+        init,
+        payer = payer,
+        space = 8 + core::mem::size_of::<Data>(),
+        close = receiver,
+    )]
+    pub data: Account<Data>,
+    pub system_program: Program<System>,
+}
+"#,
+        &["`close` cannot be used with `init`, `init_if_needed`, or `zeroed`"],
+    );
+
+    compile_fail_case(
+        "init_if_needed_and_realloc_conflict",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[account]
+pub struct Data {
+    pub value: u64,
+}
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut)]
+    pub payer: Signer,
+    #[account(
+        init_if_needed,
+        payer = payer,
+        space = 8 + core::mem::size_of::<Data>(),
+        realloc = 64,
+        realloc_payer = payer,
+        realloc_zero = false,
+    )]
+    pub data: Account<Data>,
+    pub system_program: Program<System>,
+}
+"#,
+        &["`realloc` cannot be used with `init`, `init_if_needed`, or `zeroed`"],
+    );
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
+fn account_attrs_enforce_local_dependency_pairs() {
+    compile_fail_case(
+        "payer_without_init",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(payer = payer)]
+    pub data: UncheckedAccount,
+    #[account(mut)]
+    pub payer: Signer,
+}
+"#,
+        &["`payer` requires `init` or `init_if_needed`"],
+    );
+
+    compile_fail_case(
+        "space_without_init",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(space = 16)]
+    pub data: UncheckedAccount,
+}
+"#,
+        &["`space` requires `init` or `init_if_needed`"],
+    );
+
+    compile_fail_case(
+        "bump_without_seeds",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(bump)]
+    pub data: UncheckedAccount,
+}
+"#,
+        &["`bump` requires `seeds`"],
+    );
+
+    compile_fail_case(
+        "seeds_without_bump",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(seeds = [b"data"])]
+    pub data: UncheckedAccount,
+}
+"#,
+        &["`seeds` requires `bump`"],
+    );
+
+    compile_fail_case(
+        "seeds_program_without_seeds",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+pub const OTHER_PROGRAM: Address =
+    Address::from_str_const("Gue5TpR6sstSyGhSvmVeH2TeKqBYYqmXpRCacB9jAk8u");
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(seeds::program = OTHER_PROGRAM)]
+    pub data: UncheckedAccount,
+}
+"#,
+        &["`seeds::program` requires `seeds`"],
+    );
+
+    compile_fail_case(
+        "realloc_payer_without_realloc",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(realloc_payer = payer)]
+    pub data: UncheckedAccount,
+    #[account(mut)]
+    pub payer: Signer,
+}
+"#,
+        &["`realloc_payer` requires `realloc`"],
+    );
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
+fn spl_init_constraints_require_pairs() {
+    compile_fail_case(
+        "init_token_requires_authority_with_mint",
+        r#"
+use anchor_lang_v2::prelude::*;
+use anchor_spl_v2::{
+    mint::{self},
+    token::{self},
+    token_interface::{Mint, TokenAccount, TokenInterface},
+};
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut)]
+    pub payer: Signer,
+    pub mint: InterfaceAccount<Mint>,
+    pub token_program: Interface<'static, TokenInterface>,
+    #[account(init, payer = payer, token::mint = mint)]
+    pub token_account: InterfaceAccount<TokenAccount>,
+    pub system_program: Program<System>,
+}
+"#,
+        &["when initializing, `token::authority` must be provided if `token::mint` is"],
+    );
+
+    compile_fail_case(
+        "init_token_requires_mint_with_authority",
+        r#"
+use anchor_lang_v2::prelude::*;
+use anchor_spl_v2::{
+    mint::{self},
+    token::{self},
+    token_interface::{TokenAccount, TokenInterface},
+};
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut)]
+    pub payer: Signer,
+    pub authority: UncheckedAccount,
+    pub token_program: Interface<'static, TokenInterface>,
+    #[account(init, payer = payer, token::authority = authority)]
+    pub token_account: InterfaceAccount<TokenAccount>,
+    pub system_program: Program<System>,
+}
+"#,
+        &["when initializing, `token::mint` must be provided if `token::authority` is"],
+    );
+
+    compile_fail_case(
+        "init_mint_requires_authority_with_decimals",
+        r#"
+use anchor_lang_v2::prelude::*;
+use anchor_spl_v2::{
+    mint::{self},
+    token::{self},
+    token_interface::Mint,
+};
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut)]
+    pub payer: Signer,
+    #[account(init, payer = payer, mint::decimals = 6)]
+    pub mint: InterfaceAccount<Mint>,
+    pub system_program: Program<System>,
+}
+"#,
+        &["when initializing, `mint::authority` must be provided if `mint::decimals` is"],
+    );
+
+    compile_fail_case(
+        "init_mint_requires_decimals_with_authority",
+        r#"
+use anchor_lang_v2::prelude::*;
+use anchor_spl_v2::{
+    mint::{self},
+    token::{self},
+    token_interface::Mint,
+};
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut)]
+    pub payer: Signer,
+    pub authority: UncheckedAccount,
+    #[account(init, payer = payer, mint::authority = authority)]
+    pub mint: InterfaceAccount<Mint>,
+    pub system_program: Program<System>,
+}
+"#,
+        &["when initializing, `mint::decimals` must be provided if `mint::authority` is"],
     );
 }
 
