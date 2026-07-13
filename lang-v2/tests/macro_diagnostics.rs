@@ -301,6 +301,81 @@ pub struct Bad {
     miri,
     ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
 )]
+fn init_and_init_if_needed_reject_seeds_program() {
+    compile_fail_case(
+        "init_seeds_program_rejected",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+pub const OTHER_PROGRAM: Address =
+    Address::from_str_const("Gue5TpR6sstSyGhSvmVeH2TeKqBYYqmXpRCacB9jAk8u");
+
+#[account]
+pub struct Data {
+    pub value: u64,
+}
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(
+        init,
+        payer = payer,
+        space = 8 + core::mem::size_of::<Data>(),
+        seeds = [b"data"],
+        bump,
+        seeds::program = OTHER_PROGRAM,
+    )]
+    pub data: Account<Data>,
+    #[account(mut)]
+    pub payer: Signer,
+    pub system_program: Program<System>,
+}
+"#,
+        &["`seeds::program` cannot be used with `init`"],
+    );
+
+    compile_fail_case(
+        "init_if_needed_seeds_program_rejected",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+pub const OTHER_PROGRAM: Address =
+    Address::from_str_const("Gue5TpR6sstSyGhSvmVeH2TeKqBYYqmXpRCacB9jAk8u");
+
+#[account]
+pub struct Data {
+    pub value: u64,
+}
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(
+        init_if_needed,
+        payer = payer,
+        space = 8 + core::mem::size_of::<Data>(),
+        seeds = [b"data"],
+        bump,
+        seeds::program = OTHER_PROGRAM,
+    )]
+    pub data: Account<Data>,
+    #[account(mut)]
+    pub payer: Signer,
+    pub system_program: Program<System>,
+}
+"#,
+        &["`seeds::program` cannot be used with `init_if_needed`"],
+    );
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
 fn optional_pda_init_payer_is_rejected() {
     compile_fail_case(
         "optional_pda_init_payer_is_rejected",

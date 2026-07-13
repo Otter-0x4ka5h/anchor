@@ -1314,6 +1314,20 @@ pub fn parse_field(
     let field_name = field.ident.as_ref().expect("named field");
     let field_ty = &field.ty;
     let attrs = parse_account_attrs(&field.attrs)?;
+    if attrs.seeds_program.is_some() {
+        if attrs.is_init {
+            return Err(syn::Error::new(
+                attrs.seeds_program.as_ref().unwrap().span(),
+                "`seeds::program` cannot be used with `init`",
+            ));
+        }
+        if attrs.is_init_if_needed {
+            return Err(syn::Error::new(
+                attrs.seeds_program.as_ref().unwrap().span(),
+                "`seeds::program` cannot be used with `init_if_needed`",
+            ));
+        }
+    }
     if attrs.close.is_some() && !attrs.is_mut {
         return Err(syn::Error::new(
             field_name.span(),
