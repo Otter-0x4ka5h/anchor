@@ -38,9 +38,6 @@ pub struct NamespacedConstraint {
     pub raw_key: String,
     /// The RHS expression.
     pub value: Expr,
-    /// True if the RHS is a simple ident (field reference → call .account()).
-    /// False if it's a literal or complex expression (pass directly).
-    pub is_field_ref: bool,
     /// True if parsed from inside an `update(...)` wrapper. Update
     /// entries dispatch through `AccountConstraint::update` instead of
     /// `check`, and skip the init-param thread-through.
@@ -197,7 +194,6 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                             content.parse::<Token![::]>()?;
                             let key_ident: Ident = Ident::parse_any(&content)?;
                             content.parse::<Token![=]>()?;
-                            let is_field_ref = content.peek(syn::Ident);
                             let value: Expr = content.parse()?;
                             let raw_key = key_ident.to_string();
                             let key = constraint_key_ident(&raw_key);
@@ -206,7 +202,6 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                                 key,
                                 raw_key,
                                 value,
-                                is_field_ref,
                                 is_update: true,
                             });
                             if !content.is_empty() {
@@ -335,9 +330,6 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                                 continue;
                             }
                             input.parse::<Token![=]>()?;
-                            // Peek to determine if RHS is a simple ident (field ref)
-                            // or a literal/expression (value).
-                            let is_field_ref = input.peek(syn::Ident);
                             let value: Expr = input.parse()?;
                             let raw_key = key_ident.to_string();
                             let key = constraint_key_ident(&raw_key);
@@ -346,7 +338,6 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                                 key,
                                 raw_key,
                                 value,
-                                is_field_ref,
                                 is_update: false,
                             });
                         } else {
@@ -447,6 +438,14 @@ fn expr_as_field_ident(expr: &Expr) -> Option<Ident> {
         return None;
     }
     Some(path.path.segments[0].ident.clone())
+}
+
+fn expr_as_known_field_ident(expr: &Expr, field_names: &[String]) -> Option<Ident> {
+    let ident = expr_as_field_ident(expr)?;
+    field_names
+        .iter()
+        .any(|field_name| field_name == &ident.to_string())
+        .then_some(ident)
 }
 
 fn field_offset_expr(
@@ -553,6 +552,7 @@ fn parse_associated_token_init(
 fn wrap_init_body_with_constraints(
     field_ty: &Type,
     attrs: &AccountAttrs,
+    field_names: &[String],
     init_body: &TokenStream2,
 ) -> TokenStream2 {
     let init_calls: Vec<TokenStream2> = attrs
@@ -563,10 +563,10 @@ fn wrap_init_body_with_constraints(
             let ns = syn::Ident::new(&nc.namespace, proc_macro2::Span::call_site());
             let key = syn::Ident::new(&nc.key, proc_macro2::Span::call_site());
             let value = &nc.value;
-            let expected = if nc.is_field_ref && (nc.namespace == "mint" || nc.namespace == "token")
-            {
+            let is_field_ref = expr_as_known_field_ident(value, field_names).is_some();
+            let expected = if is_field_ref && (nc.namespace == "mint" || nc.namespace == "token") {
                 quote! { anchor_lang_v2::AccountAddress::account_address(&#value) }
-            } else if nc.is_field_ref {
+            } else if is_field_ref {
                 quote! { AsRef::as_ref(&#value) }
             } else {
                 quote! { &#value }
@@ -1218,7 +1218,7 @@ fn emit_init_body(
         .map(|nc| {
             let key = Ident::new(&nc.raw_key, proc_macro2::Span::call_site());
             let value = &nc.value;
-            if nc.is_field_ref {
+            if expr_as_known_field_ident(value, field_names).is_some() {
                 quote! { __p.#key = Some(#value.account()); }
             } else {
                 quote! { __p.#key = Some(#value); }
@@ -1606,7 +1606,7 @@ pub fn parse_field(
                 )?
             };
             let init_body_with_constraints =
-                wrap_init_body_with_constraints(inner_ty, &attrs, &init_body);
+                wrap_init_body_with_constraints(inner_ty, &attrs, field_names, &init_body);
             quote! { Some({ #init_body_with_constraints }) }
         } else if attrs.is_init_if_needed {
             let init_body = if let Some(ref at) = associated_token {
@@ -1630,7 +1630,7 @@ pub fn parse_field(
                 )?
             };
             let init_body_with_constraints =
-                wrap_init_body_with_constraints(inner_ty, &attrs, &init_body);
+                wrap_init_body_with_constraints(inner_ty, &attrs, field_names, &init_body);
             quote! {
                 if __target.data_len() > 0
                     && !__target.owned_by(&anchor_lang_v2::programs::System::id())
@@ -1745,7 +1745,7 @@ pub fn parse_field(
             )?
         };
         let init_body_with_constraints =
-            wrap_init_body_with_constraints(field_ty, &attrs, &init_body);
+            wrap_init_body_with_constraints(field_ty, &attrs, field_names, &init_body);
         deferred_load = Some(quote! {
             let mut #field_name: #field_ty = {
                 let __target = __views[#offset_expr];
@@ -1775,7 +1775,7 @@ pub fn parse_field(
             )?
         };
         let init_body_with_constraints =
-            wrap_init_body_with_constraints(field_ty, &attrs, &init_body);
+            wrap_init_body_with_constraints(field_ty, &attrs, field_names, &init_body);
         let existed = init_if_needed_existed.as_ref().unwrap();
         deferred_load = Some(quote! {
             let #existed = {
@@ -2138,9 +2138,10 @@ pub fn parse_field(
         let ns = syn::Ident::new(&nc.namespace, proc_macro2::Span::call_site());
         let key = syn::Ident::new(&nc.key, proc_macro2::Span::call_site());
         let value = &nc.value;
-        let expected = if nc.is_field_ref && (nc.namespace == "mint" || nc.namespace == "token") {
+        let is_field_ref = expr_as_known_field_ident(value, field_names).is_some();
+        let expected = if is_field_ref && (nc.namespace == "mint" || nc.namespace == "token") {
             quote! { anchor_lang_v2::AccountAddress::account_address(&#value) }
-        } else if nc.is_field_ref {
+        } else if is_field_ref {
             quote! { AsRef::as_ref(&#value) }
         } else {
             quote! { &#value }
@@ -2228,10 +2229,10 @@ pub fn parse_field(
             let ns = syn::Ident::new(&nc.namespace, proc_macro2::Span::call_site());
             let key = syn::Ident::new(&nc.key, proc_macro2::Span::call_site());
             let value = &nc.value;
-            let expected = if nc.is_field_ref && (nc.namespace == "mint" || nc.namespace == "token")
-            {
+            let is_field_ref = expr_as_known_field_ident(value, field_names).is_some();
+            let expected = if is_field_ref && (nc.namespace == "mint" || nc.namespace == "token") {
                 quote! { anchor_lang_v2::AccountAddress::account_address(&self.#value) }
-            } else if nc.is_field_ref {
+            } else if is_field_ref {
                 quote! { AsRef::as_ref(&self.#value) }
             } else {
                 quote! { &#value }
@@ -2344,14 +2345,14 @@ pub fn parse_field(
                     let ns = syn::Ident::new(&nc.namespace, proc_macro2::Span::call_site());
                     let key = syn::Ident::new(&nc.key, proc_macro2::Span::call_site());
                     let value = &nc.value;
-                    let expected =
-                        if nc.is_field_ref && (nc.namespace == "mint" || nc.namespace == "token") {
-                            quote! { anchor_lang_v2::AccountAddress::account_address(&self.#value) }
-                        } else if nc.is_field_ref {
-                            quote! { AsRef::as_ref(&self.#value) }
-                        } else {
-                            quote! { &#value }
-                        };
+                    let is_field_ref = expr_as_known_field_ident(value, field_names).is_some();
+                    let expected = if is_field_ref && (nc.namespace == "mint" || nc.namespace == "token") {
+                        quote! { anchor_lang_v2::AccountAddress::account_address(&self.#value) }
+                    } else if is_field_ref {
+                        quote! { AsRef::as_ref(&self.#value) }
+                    } else {
+                        quote! { &#value }
+                    };
                     quote! {
                         <#ns::#key as anchor_lang_v2::AccountConstraint<_>>::exit(
                             __inner, #expected,
