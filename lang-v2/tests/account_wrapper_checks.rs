@@ -334,7 +334,7 @@ fn unchecked_account_close_constraint_fails_at_runtime() {
         CloseUnchecked::try_accounts(&Address::new_from_array(PROGRAM_ID), &views, None, 0, &[])
             .unwrap();
 
-    let err = expect_err(accounts.exit_accounts());
+    let err = expect_err(accounts.exit_accounts(&[]));
     assert_eq!(err, ProgramError::InvalidArgument);
 }
 
