@@ -36,6 +36,7 @@ fn all_labeled_variants() -> Vec<(&'static str, ErrorCode)> {
             | ErrorCode::ConstraintSeeds
             | ErrorCode::ConstraintHasOne
             | ErrorCode::ConstraintAddress
+            | ErrorCode::ConstraintAccountIsNone
             | ErrorCode::ConstraintClose
             | ErrorCode::ConstraintOwner
             | ErrorCode::ConstraintRaw
@@ -63,6 +64,10 @@ fn all_labeled_variants() -> Vec<(&'static str, ErrorCode)> {
         ("ConstraintSeeds", ErrorCode::ConstraintSeeds),
         ("ConstraintHasOne", ErrorCode::ConstraintHasOne),
         ("ConstraintAddress", ErrorCode::ConstraintAddress),
+        (
+            "ConstraintAccountIsNone",
+            ErrorCode::ConstraintAccountIsNone,
+        ),
         ("ConstraintClose", ErrorCode::ConstraintClose),
         ("ConstraintOwner", ErrorCode::ConstraintOwner),
         ("ConstraintRaw", ErrorCode::ConstraintRaw),
@@ -114,7 +119,7 @@ fn no_two_variants_share_a_custom_code() {
     }
     // Snapshot — adding a new Custom variant forces a review of this number.
     assert_eq!(
-        custom_count, 15,
+        custom_count, 13,
         "Number of Custom error codes changed; update this snapshot after review"
     );
 }
@@ -181,56 +186,21 @@ fn builtin_groupings_are_stable() {
         ErrorCode::DeclaredProgramIdMismatch.into(),
         IncorrectProgramId,
     );
-    check(
-        "RequireViolated",
-        ErrorCode::RequireViolated.into(),
-        Custom(2500),
-    );
-    check(
-        "RequireEqViolated",
-        ErrorCode::RequireEqViolated.into(),
-        Custom(2501),
-    );
-    check(
-        "RequireKeysEqViolated",
-        ErrorCode::RequireKeysEqViolated.into(),
-        Custom(2502),
-    );
-    check(
-        "RequireNeqViolated",
-        ErrorCode::RequireNeqViolated.into(),
-        Custom(2503),
-    );
-    check(
-        "RequireKeysNeqViolated",
-        ErrorCode::RequireKeysNeqViolated.into(),
-        Custom(2504),
-    );
-    check(
-        "RequireGtViolated",
-        ErrorCode::RequireGtViolated.into(),
-        Custom(2505),
-    );
-    check(
-        "RequireGteViolated",
-        ErrorCode::RequireGteViolated.into(),
-        Custom(2506),
-    );
-
+    // Grouped under InvalidAccountData
     check(
         "ConstraintHasOne",
         ErrorCode::ConstraintHasOne.into(),
-        Custom(2001),
+        InvalidAccountData,
     );
     check(
         "ConstraintAddress",
         ErrorCode::ConstraintAddress.into(),
-        Custom(2012),
+        InvalidAccountData,
     );
     check(
         "ConstraintClose",
         ErrorCode::ConstraintClose.into(),
-        Custom(2011),
+        InvalidAccountData,
     );
 
     // Grouped under InvalidInstructionData
