@@ -39,7 +39,9 @@ extern crate alloc;
 /// data type lands in `types[]` too.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` has no IDL type information",
-    note = "plain structs used as instruction arguments or nested fields need `#[derive(IdlType)]`; account and event types get this automatically from `#[account]` / `#[event]`"
+    note = "plain structs used as instruction arguments or nested fields need \
+            `#[derive(IdlType)]`; account and event types get this automatically from \
+            `#[account]` / `#[event]`"
 )]
 pub trait IdlAccountType {
     /// `{"name":"X","discriminator":[…]}` for the program-level `accounts[]`.
@@ -227,6 +229,7 @@ pub fn __idl_const_seed_json(value: impl AsRef<[u8]>) -> alloc::string::String {
     s
 }
 
+<<<<<<< HEAD
 pub fn __idl_const_seeds_json<I, B>(values: I) -> alloc::string::String
 where
     I: IntoIterator<Item = B>,
@@ -243,4 +246,26 @@ where
     }
     s.push(']');
     s
+}
+
+/// Quote and escape an arbitrary string as a JSON string literal.
+#[doc(hidden)]
+pub fn __idl_json_string(value: &str) -> alloc::string::String {
+    let mut out = alloc::string::String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0C}' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            ch if ch <= '\u{1F}' => out.push_str(&alloc::format!("\\u{:04x}", ch as u32)),
+            ch => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
 }
