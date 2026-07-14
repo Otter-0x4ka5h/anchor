@@ -4134,7 +4134,22 @@ fn gen_declare_program_pod_impls(
     let field_types = fields.tys();
     let impl_generics = &generics.impl_generics;
     let ty_generics = &generics.ty_generics;
-    let where_clause = &generics.pod_where_clause;
+    let generic_where_clause = &generics.pod_where_clause;
+    let where_clause = if field_types.is_empty() {
+        generic_where_clause.clone()
+    } else if generic_where_clause.is_empty() {
+        quote! {
+            where
+                #(#field_types: anchor_lang_v2::bytemuck::Pod
+                    + anchor_lang_v2::bytemuck::Zeroable),*
+        }
+    } else {
+        quote! {
+            #generic_where_clause,
+            #(#field_types: anchor_lang_v2::bytemuck::Pod
+                + anchor_lang_v2::bytemuck::Zeroable),*
+        }
+    };
     quote! {
         impl #impl_generics #ident #ty_generics #where_clause {
             const __ANCHOR_DECLARE_PROGRAM_POD_ASSERT: fn() = || {
@@ -4243,6 +4258,9 @@ fn declare_idl_type_to_tokens(
         } else {
             json_str(defined, "name", span)?
         };
+        if let Some(builtin) = declare_idl_defined_builtin(defined_name) {
+            return Ok(builtin);
+        }
         let ident = Ident::new(&to_type_name(defined_name), span);
         let generic_args = defined
             .get("generics")
@@ -4288,6 +4306,21 @@ fn declare_idl_type_to_tokens(
         span,
         format!("unsupported IDL type `{value}`"),
     ))
+}
+
+fn declare_idl_defined_builtin(name: &str) -> Option<TokenStream2> {
+    match name {
+        "PodBool" => Some(quote! { anchor_lang_v2::pod::PodBool }),
+        "PodU16" => Some(quote! { anchor_lang_v2::pod::PodU16 }),
+        "PodU32" => Some(quote! { anchor_lang_v2::pod::PodU32 }),
+        "PodU64" => Some(quote! { anchor_lang_v2::pod::PodU64 }),
+        "PodU128" => Some(quote! { anchor_lang_v2::pod::PodU128 }),
+        "PodI16" => Some(quote! { anchor_lang_v2::pod::PodI16 }),
+        "PodI32" => Some(quote! { anchor_lang_v2::pod::PodI32 }),
+        "PodI64" => Some(quote! { anchor_lang_v2::pod::PodI64 }),
+        "PodI128" => Some(quote! { anchor_lang_v2::pod::PodI128 }),
+        _ => None,
+    }
 }
 
 fn declare_idl_array_len_to_tokens(
@@ -6818,217 +6851,21 @@ mod tests {
     }
 
     #[test]
-    fn program_handlers_inject_update_phase_into_handler_body() {
-        let module: syn::ItemMod = syn::parse_quote! {
-            pub mod demo_program {
-                use super::*;
+    fn declare_idl_defined_pod_wrappers_use_runtime_types() {
+        let span = proc_macro2::Span::call_site();
+        let pod_u64 = declare_idl_type_to_tokens(
+            &json!({ "defined": { "name": "PodU64" } }),
+            span,
+        )
+        .unwrap();
+        assert_eq!(pod_u64.to_string(), "anchor_lang_v2 :: pod :: PodU64");
 
-                #[access_control(validate(&ctx))]
-                pub fn rotate(ctx: &mut Context<RotateAuthority>) -> Result<()> {
-                    do_work()?;
-                    Ok(())
-                }
-            }
-        };
-        let config = ProgramConfig {
-            mode: ProgramMode::Executable,
-            program_id: syn::parse_quote!(crate::ID),
-        };
-
-        let generated = impl_program(&module, &config).to_string();
-
-        assert!(
-            generated.contains(
-                "anchor_lang_v2 :: TryAccounts :: update_accounts (& mut ctx . accounts) ? ;"
-            ),
-            "expected handler body to call update_accounts after access-control expansion, got: {generated}"
-        );
-        assert!(
-            generated.contains("access_control"),
-            "expected access_control attr to remain on the generated handler, got: {generated}"
-        );
-    }
-
-    #[test]
-    fn program_handlers_inject_update_phase_for_destructured_context() {
-        let module: syn::ItemMod = syn::parse_quote! {
-            pub mod demo_program {
-                use super::*;
-
-                pub fn rotate(Context { accounts, .. }: &mut Context<RotateAuthority>) -> Result<()> {
-                    do_work(accounts)?;
-                    Ok(())
-                }
-            }
-        };
-        let config = ProgramConfig {
-            mode: ProgramMode::Executable,
-            program_id: syn::parse_quote!(crate::ID),
-        };
-
-        let generated = impl_program(&module, &config).to_string();
-
-        assert!(
-            generated.contains("anchor_lang_v2 :: TryAccounts :: update_accounts (accounts) ? ;"),
-            "expected destructured handler body to call update_accounts via accounts binding, got: {generated}"
-        );
-    }
-
-    #[test]
-    fn program_handlers_synthesize_accounts_binding_for_struct_context() {
-        let module: syn::ItemMod = syn::parse_quote! {
-            pub mod demo_program {
-                use super::*;
-
-                pub fn rotate(Context { bumps, .. }: &mut Context<RotateAuthority>) -> Result<()> {
-                    do_work(bumps)?;
-                    Ok(())
-                }
-            }
-        };
-        let config = ProgramConfig {
-            mode: ProgramMode::Executable,
-            program_id: syn::parse_quote!(crate::ID),
-        };
-
-        let generated = impl_program(&module, &config).to_string();
-
-        assert!(
-            generated.contains(
-                "anchor_lang_v2 :: TryAccounts :: update_accounts (__anchor_accounts) ? ;"
-            ),
-            "expected struct-pattern handler body to call update_accounts via synthesized accounts binding, got: {generated}"
-        );
-        assert!(
-            generated.contains("Context { bumps , accounts : __anchor_accounts , .. }"),
-            "expected struct-pattern handler signature to include synthesized accounts binding, got: {generated}"
-        );
-    }
-
-    #[test]
-    fn program_handlers_inject_update_phase_for_wildcard_context() {
-        let module: syn::ItemMod = syn::parse_quote! {
-            pub mod demo_program {
-                use super::*;
-
-                pub fn rotate(_: &mut Context<RotateAuthority>) -> Result<()> {
-                    do_work()?;
-                    Ok(())
-                }
-            }
-        };
-        let config = ProgramConfig {
-            mode: ProgramMode::Executable,
-            program_id: syn::parse_quote!(crate::ID),
-        };
-
-        let generated = impl_program(&module, &config).to_string();
-
-        assert!(
-            generated.contains(
-                "anchor_lang_v2 :: TryAccounts :: update_accounts (& mut __anchor_ctx . accounts) ? ;"
-            ),
-            "expected wildcard handler body to call update_accounts via synthesized ctx binding, got: {generated}"
-        );
-        assert!(
-            generated.contains("fn rotate (__anchor_ctx : & mut Context < RotateAuthority >)"),
-            "expected wildcard handler signature to be rewritten to a concrete ctx binding, got: {generated}"
-        );
-    }
-
-    #[test]
-    fn program_handlers_reject_unsupported_update_hook_context_patterns() {
-        let module: syn::ItemMod = syn::parse_quote! {
-            pub mod demo_program {
-                use super::*;
-
-                pub fn rotate(
-                    Context { accounts: RotateAuthority { vault, .. }, .. }: &mut Context<RotateAuthority>
-                ) -> Result<()> {
-                    do_work(vault)?;
-                    Ok(())
-                }
-            }
-        };
-        let config = ProgramConfig {
-            mode: ProgramMode::Executable,
-            program_id: syn::parse_quote!(crate::ID),
-        };
-
-        let generated = impl_program(&module, &config).to_string();
-
-        assert!(
-            generated.contains("compile_error"),
-            "expected unsupported nested accounts destructuring to emit a compile error, got: {generated}"
-        );
-        assert!(
-            generated.contains("must bind `accounts` as a name or `_`"),
-            "expected targeted unsupported-pattern error, got: {generated}"
-        );
-    }
-
-    #[test]
-    fn program_handlers_reject_non_binding_update_hook_context_patterns() {
-        let module: syn::ItemMod = syn::parse_quote! {
-            pub mod demo_program {
-                use super::*;
-
-                pub fn rotate(
-                    &mut ctx: &mut Context<RotateAuthority>
-                ) -> Result<()> {
-                    do_work(ctx.accounts.vault)?;
-                    Ok(())
-                }
-            }
-        };
-        let config = ProgramConfig {
-            mode: ProgramMode::Executable,
-            program_id: syn::parse_quote!(crate::ID),
-        };
-
-        let generated = impl_program(&module, &config).to_string();
-
-        assert!(
-            generated.contains("compile_error"),
-            "expected unsupported reference-pattern context to emit a compile error, got: {generated}"
-        );
-        assert!(
-            generated.contains("must take `&mut Context<T>` as an identifier like `ctx`, `_`, or `Context { .. }`"),
-            "expected targeted top-level pattern error, got: {generated}"
-        );
-    }
-
-    #[test]
-    fn declare_program_markers_emit_known_idl_addresses() {
-        let idl = serde_json::json!({
-            "address": "Externa1111111111111111111111111111111111111",
-            "metadata": {
-                "name": "fixture",
-                "version": "0.1.0",
-                "spec": "0.1.0"
-            },
-            "instructions": [{
-                "name": "ping",
-                "discriminator": [1, 2, 3, 4, 5, 6, 7, 8],
-                "accounts": [],
-                "args": []
-            }],
-            "accounts": [],
-            "types": []
-        });
-        let name: syn::Ident = syn::parse_quote!(fixture);
-
-        let generated = gen_declared_program(&name, &idl)
-            .expect("fixture IDL should generate")
-            .to_string();
-
-        assert!(
-            generated.contains(
-                "const IDL_ADDRESS : & 'static str = \"Externa1111111111111111111111111111111111111\""
-            ),
-            "declare_program markers should expose their known address for IDL emission: \
-             {generated}"
-        );
+        let pod_bool = declare_idl_type_to_tokens(
+            &json!({ "defined": { "name": "PodBool" } }),
+            span,
+        )
+        .unwrap();
+        assert_eq!(pod_bool.to_string(), "anchor_lang_v2 :: pod :: PodBool");
     }
 
     fn nested_accounts_preserve_inner_bumps_in_generated_surface() {

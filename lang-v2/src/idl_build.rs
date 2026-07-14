@@ -192,17 +192,29 @@ impl<T: IdlAccountType, const N: usize> IdlAccountType for [T; N] {
 }
 
 // `PodVec<T, MAX>` — the zero-copy bounded-capacity analog of `Vec<T>`.
-// Forward `__register_idl_deps` so a `#[account]` zero-copy type holding
-// a `PodVec<Inner, 16>` still pulls `Inner` into the IDL's `types[]`.
+// It contributes a generic type definition so downstream `declare_program!`
+// consumers can reconstruct the length prefix plus fixed-capacity backing
+// array, then recurses into the element type.
 #[doc(hidden)]
 impl<T, const MAX: usize> IdlAccountType for crate::pod::PodVec<T, MAX>
 where
     T: bytemuck::Pod + IdlAccountType,
 {
+    const __IDL_TYPE_DEF: Option<&'static str> = Some(
+        "{\"name\":\"PodVec\",\"generics\":[{\"kind\":\"type\",\"name\":\"T\"},\
+         {\"kind\":\"const\",\"name\":\"MAX\",\"type\":\"usize\"}],\
+         \"serialization\":\"bytemuck\",\"repr\":{\"kind\":\"c\"},\
+         \"type\":{\"kind\":\"struct\",\"fields\":[{\"name\":\"len\",\"type\":\"u16\"},\
+         {\"name\":\"data\",\"type\":{\"array\":[{\"generic\":\"T\"},{\"generic\":\"MAX\"}]}}]}}",
+    );
+
     fn __register_idl_deps(
         accounts: &mut alloc::vec::Vec<&'static str>,
         types: &mut alloc::vec::Vec<&'static str>,
     ) {
+        if let Some(t) = <Self as IdlAccountType>::__IDL_TYPE_DEF {
+            types.push(t);
+        }
         T::__register_idl_deps(accounts, types);
     }
 }
