@@ -17,14 +17,15 @@ use {
     proc_macro2::TokenStream as TokenStream2,
     quote::quote,
     serde_json::{json, Value},
-    syn::{visit::Visit, Expr, Lit, Type},
+    syn::{visit::Visit, Expr, Lit, Path, PathArguments, Type, TypePath},
 };
 
 /// Convert a Rust type to its IDL JSON representation (as a `serde_json`
 /// value ready to splice into a containing `Value`). See [`rust_type_to_idl`]
 /// for the stringified convenience wrapper.
 pub fn rust_type_to_idl_value(ty: &Type) -> Value {
-    type_str_to_idl_value(&quote!(#ty).to_string().replace(' ', ""))
+    syn_type_to_idl_value(ty)
+        .unwrap_or_else(|| type_str_to_idl_value(&quote!(#ty).to_string().replace(' ', "")))
 }
 
 /// String-returning convenience wrapper around [`rust_type_to_idl_value`].
@@ -67,8 +68,9 @@ fn type_str_to_idl_value(s: &str) -> Value {
             let inner = &s[1..s.len() - 1];
             if let Some((ty_part, n_part)) = inner.split_once(';') {
                 let ty_json = type_str_to_idl_value(ty_part);
-                // Const expressions that aren't plain integer literals fall
-                // through to 0 as a placeholder — matches the prior behavior.
+                // String fallback is kept only for unsupported `syn::Type`
+                // shapes; direct `Type::Array` lowering preserves non-literal
+                // lengths before we ever get here.
                 let size = n_part.trim().parse::<usize>().unwrap_or(0);
                 json!({ "array": [ty_json, size] })
             } else {
@@ -98,6 +100,161 @@ fn type_str_to_idl_value(s: &str) -> Value {
         }
         other => json!({ "defined": { "name": strip_type_generics(other) } }),
     }
+}
+
+fn syn_type_to_idl_value(ty: &Type) -> Option<Value> {
+    match ty {
+        Type::Reference(reference) => syn_type_to_idl_value(reference.elem.as_ref()),
+        Type::Group(group) => syn_type_to_idl_value(&group.elem),
+        Type::Paren(paren) => syn_type_to_idl_value(&paren.elem),
+        Type::Slice(slice) => {
+            let inner = if is_path_ident(slice.elem.as_ref(), "u8") {
+                Value::String("bytes".into())
+            } else {
+                json!({ "vec": rust_type_to_idl_value(slice.elem.as_ref()) })
+            };
+            Some(inner)
+        }
+        Type::Array(array) => Some(json!({
+            "array": [
+                rust_type_to_idl_value(array.elem.as_ref()),
+                syn_array_len_to_idl_value(&array.len),
+            ]
+        })),
+        Type::Path(type_path) => syn_path_type_to_idl_value(type_path),
+        _ => None,
+    }
+}
+
+fn syn_path_type_to_idl_value(type_path: &TypePath) -> Option<Value> {
+    if type_path.qself.is_some() {
+        return None;
+    }
+    let path = &type_path.path;
+    let segment = path.segments.last()?;
+    let ident = segment.ident.to_string();
+    match ident.as_str() {
+        "u8" | "u16" | "u32" | "u64" | "u128" | "i8" | "i16" | "i32" | "i64" | "i128" | "bool" => {
+            Some(Value::String(ident))
+        }
+        "PodU16" => Some(Value::String("u16".into())),
+        "PodU32" => Some(Value::String("u32".into())),
+        "PodU64" => Some(Value::String("u64".into())),
+        "PodU128" => Some(Value::String("u128".into())),
+        "PodI16" => Some(Value::String("i16".into())),
+        "PodI32" => Some(Value::String("i32".into())),
+        "PodI64" => Some(Value::String("i64".into())),
+        "PodI128" => Some(Value::String("i128".into())),
+        "PodBool" => Some(Value::String("bool".into())),
+        "String"
+            if path_is_builtin(
+                path,
+                &[
+                    &["String"],
+                    &["alloc", "string", "String"],
+                    &["std", "string", "String"],
+                ],
+            ) =>
+        {
+            Some(Value::String("string".into()))
+        }
+        "str" if path_is_builtin(path, &[&["str"]]) => Some(Value::String("string".into())),
+        "Pubkey" if path_is_builtin(path, &[&["Pubkey"]]) => Some(Value::String("pubkey".into())),
+        "Address"
+            if path_is_builtin(
+                path,
+                &[
+                    &["Address"],
+                    &["anchor_lang_v2", "prelude", "Address"],
+                    &["solana_address", "Address"],
+                ],
+            ) =>
+        {
+            Some(Value::String("pubkey".into()))
+        }
+        "Vec"
+            if path_is_builtin(
+                path,
+                &[&["Vec"], &["alloc", "vec", "Vec"], &["std", "vec", "Vec"]],
+            ) =>
+        {
+            let inner = first_type_arg(segment)?;
+            Some(json!({ "vec": rust_type_to_idl_value(inner) }))
+        }
+        "Option"
+            if path_is_builtin(
+                path,
+                &[
+                    &["Option"],
+                    &["core", "option", "Option"],
+                    &["std", "option", "Option"],
+                ],
+            ) =>
+        {
+            let inner = first_type_arg(segment)?;
+            Some(json!({ "option": rust_type_to_idl_value(inner) }))
+        }
+        "Box"
+            if path_is_builtin(
+                path,
+                &[
+                    &["Box"],
+                    &["alloc", "boxed", "Box"],
+                    &["std", "boxed", "Box"],
+                ],
+            ) =>
+        {
+            let inner = first_type_arg(segment)?;
+            Some(rust_type_to_idl_value(inner))
+        }
+        _ => None,
+    }
+}
+
+fn path_is_builtin(path: &Path, candidates: &[&[&str]]) -> bool {
+    candidates.iter().any(|candidate| {
+        path.segments.len() == candidate.len()
+            && path
+                .segments
+                .iter()
+                .map(|segment| segment.ident.to_string())
+                .eq(candidate.iter().copied().map(str::to_owned))
+    })
+}
+
+fn first_type_arg<'a>(segment: &'a syn::PathSegment) -> Option<&'a Type> {
+    let PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    args.args.iter().find_map(|arg| match arg {
+        syn::GenericArgument::Type(ty) => Some(ty),
+        _ => None,
+    })
+}
+
+fn is_path_ident(ty: &Type, ident: &str) -> bool {
+    matches!(ty, Type::Path(type_path) if type_path.qself.is_none()
+        && type_path.path.segments.len() == 1
+        && type_path.path.segments[0].ident == ident)
+}
+
+fn syn_array_len_to_idl_value(expr: &Expr) -> Value {
+    match expr {
+        Expr::Group(group) => syn_array_len_to_idl_value(&group.expr),
+        Expr::Paren(paren) => syn_array_len_to_idl_value(&paren.expr),
+        Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Int(len),
+            ..
+        }) => len
+            .base10_parse::<usize>()
+            .map(|len| json!(len))
+            .unwrap_or_else(|_| json!({ "generic": normalize_array_len_expr(expr) })),
+        _ => json!({ "generic": normalize_array_len_expr(expr) }),
+    }
+}
+
+fn normalize_array_len_expr(expr: &Expr) -> String {
+    quote!(#expr).to_string().replace(' ', "")
 }
 
 /// Drop the `<...>` suffix on a user-defined type name.
@@ -918,6 +1075,7 @@ pub fn pda_object_emission(seeds: &[SeedJson], program: Option<&SeedJson>) -> To
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     /// Pull the inner JSON string out of a `Static` seed for assertion.
     /// Panics if the seed was classified as `Runtime`.
@@ -956,6 +1114,36 @@ mod tests {
     fn string_literal_is_static_const_with_utf8_bytes() {
         let s = expect_static(classify(syn::parse_quote!("ab"), &[], &[]));
         assert_eq!(s, r#"{"kind":"const","value":[97,98]}"#);
+    }
+
+    #[test]
+    fn qualified_builtin_paths_lower_like_builtins() {
+        let vec_ty: Type = syn::parse_quote!(alloc::vec::Vec<alloc::string::String>);
+        assert_eq!(rust_type_to_idl_value(&vec_ty), json!({ "vec": "string" }));
+
+        let address_ty: Type = syn::parse_quote!(anchor_lang_v2::prelude::Address);
+        assert_eq!(rust_type_to_idl_value(&address_ty), json!("pubkey"));
+    }
+
+    #[test]
+    fn non_literal_array_lengths_are_preserved() {
+        let generic_len: Type = syn::parse_quote!([u8; N]);
+        assert_eq!(
+            rust_type_to_idl_value(&generic_len),
+            json!({ "array": ["u8", { "generic": "N" }] })
+        );
+
+        let path_len: Type = syn::parse_quote!([u8; limits::ITEMS]);
+        assert_eq!(
+            rust_type_to_idl_value(&path_len),
+            json!({ "array": ["u8", { "generic": "limits::ITEMS" }] })
+        );
+
+        let expr_len: Type = syn::parse_quote!([u8; 1 + 1]);
+        assert_eq!(
+            rust_type_to_idl_value(&expr_len),
+            json!({ "array": ["u8", { "generic": "1+1" }] })
+        );
     }
 
     #[test]

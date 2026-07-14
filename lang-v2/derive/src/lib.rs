@@ -3942,12 +3942,22 @@ fn declare_idl_array_len_to_tokens(
         return Ok(quote! { #len });
     }
     if let Some(generic) = value.get("generic").and_then(serde_json::Value::as_str) {
-        let ident = Ident::new(generic, span);
-        return Ok(quote! { #ident });
+        let expr: Expr = syn::parse_str(generic).map_err(|err| {
+            syn::Error::new(
+                span,
+                format!("failed to parse IDL array length `{generic}`: {err}"),
+            )
+        })?;
+        return Ok(quote! { #expr });
     }
     if let Some(generic) = value.as_str() {
-        let ident = Ident::new(generic, span);
-        return Ok(quote! { #ident });
+        let expr: Expr = syn::parse_str(generic).map_err(|err| {
+            syn::Error::new(
+                span,
+                format!("failed to parse IDL array length `{generic}`: {err}"),
+            )
+        })?;
+        return Ok(quote! { #expr });
     }
     Err(syn::Error::new(
         span,
@@ -6173,6 +6183,7 @@ fn to_camel_case(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn instruction_attrs_parse() {
@@ -6371,5 +6382,22 @@ mod tests {
                 .contains("`short` discriminator [1] is a prefix of `long` discriminator [1, 2]"),
             "expected targeted prefix diagnostic: {generated}"
         );
+    }
+
+    #[test]
+    fn declare_program_array_lengths_accept_generic_paths_and_exprs() {
+        let span = proc_macro2::Span::call_site();
+
+        let generic_tokens =
+            declare_idl_array_len_to_tokens(&json!({ "generic": "N" }), span).unwrap();
+        assert_eq!(generic_tokens.to_string(), "N");
+
+        let path_tokens =
+            declare_idl_array_len_to_tokens(&json!({ "generic": "limits::ITEMS" }), span).unwrap();
+        assert_eq!(path_tokens.to_string(), "limits :: ITEMS");
+
+        let expr_tokens =
+            declare_idl_array_len_to_tokens(&json!({ "generic": "1+1" }), span).unwrap();
+        assert_eq!(expr_tokens.to_string(), "1 + 1");
     }
 }
