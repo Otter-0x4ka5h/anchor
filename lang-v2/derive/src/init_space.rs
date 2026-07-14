@@ -11,8 +11,9 @@ use {
     quote::{quote, quote_spanned, ToTokens},
     std::collections::VecDeque,
     syn::{
-        parse::ParseStream, parse_macro_input, punctuated::Punctuated, token::Comma, Attribute,
-        DeriveInput, Expr, Field, Fields, GenericArgument, PathArguments, Type, TypeArray,
+        parse::ParseStream, parse_macro_input, punctuated::Punctuated, spanned::Spanned,
+        token::Comma, Attribute, DeriveInput, Expr, Field, Fields, GenericArgument, PathArguments,
+        Type, TypeArray,
     },
 };
 
@@ -22,10 +23,7 @@ pub fn expand(item: TokenStream) -> TokenStream {
     let name = input.ident;
 
     let process_struct_fields = |fields: Punctuated<Field, Comma>| {
-        let recurse = fields.into_iter().map(|f| {
-            let mut max_len_args = get_max_len_args(&f.attrs);
-            len_from_type(f.ty, &mut max_len_args)
-        });
+        let recurse = fields.into_iter().map(field_len_tokens);
 
         quote! {
             #[automatically_derived]
@@ -48,10 +46,7 @@ pub fn expand(item: TokenStream) -> TokenStream {
         },
         syn::Data::Enum(enm) => {
             let variants = enm.variants.into_iter().map(|v| {
-                let len = v.fields.into_iter().map(|f| {
-                    let mut max_len_args = get_max_len_args(&f.attrs);
-                    len_from_type(f.ty, &mut max_len_args)
-                });
+                let len = v.fields.into_iter().map(field_len_tokens);
 
                 quote! {
                     0 #(+ #len)*
@@ -79,6 +74,65 @@ pub fn expand(item: TokenStream) -> TokenStream {
     };
 
     TokenStream::from(expanded)
+}
+
+fn field_len_tokens(field: Field) -> TokenStream2 {
+    if let Some(err) = unsupported_wincode_attr_error(&field.attrs) {
+        return err.to_compile_error();
+    }
+
+    let mut max_len_args = get_max_len_args(&field.attrs);
+    len_from_type(field.ty, &mut max_len_args)
+}
+
+fn unsupported_wincode_attr_error(attributes: &[Attribute]) -> Option<syn::Error> {
+    for attr in attributes {
+        if !attr.path().is_ident("wincode") {
+            continue;
+        }
+
+        let mut unsupported = None;
+        let parse = attr.parse_nested_meta(|meta| {
+            let span = meta.path.span();
+            if meta.path.is_ident("skip") {
+                if meta.input.peek(syn::Token![=]) {
+                    let value = meta.value()?;
+                    let _ = value.parse::<Expr>()?;
+                }
+                unsupported = Some(("skip", span));
+            } else if meta.path.is_ident("with") {
+                if meta.input.peek(syn::Token![=]) {
+                    let value = meta.value()?;
+                    let _ = value.parse::<Expr>()?;
+                }
+                unsupported = Some(("with", span));
+            }
+            Ok(())
+        });
+
+        if let Err(err) = parse {
+            return Some(err);
+        }
+
+        if let Some((kind, span)) = unsupported {
+            let message = match kind {
+                "skip" => {
+                    "#[derive(InitSpace)] does not support `#[wincode(skip)]` fields because \
+                     wincode field overrides change the serialized layout; remove the override \
+                     or compute the account size manually"
+                }
+                "with" => {
+                    "#[derive(InitSpace)] does not support `#[wincode(with = ...)]` fields \
+                     because custom wincode codecs can change the serialized layout; remove the \
+                     override or compute the account size manually"
+                }
+                _ => unreachable!(),
+            };
+            return Some(syn::Error::new(span, message));
+        }
+    }
+
+    None
 }
 
 fn gen_max<T: Iterator<Item = TokenStream2>>(mut iter: T) -> TokenStream2 {

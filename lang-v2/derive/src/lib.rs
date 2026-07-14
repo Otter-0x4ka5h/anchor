@@ -5536,6 +5536,9 @@ pub fn constant(_attr: TokenStream, input: TokenStream) -> TokenStream {
 ///
 /// Variable-size fields (`String`, `Vec<T>`) require a `#[max_len(N)]` helper
 /// attribute to specify the reserved capacity.
+/// Fields using `#[wincode(skip)]` or `#[wincode(with = ...)]` are rejected:
+/// those overrides change the wire layout, so the derive cannot infer a safe
+/// `INIT_SPACE` constant.
 ///
 /// # Example
 ///
