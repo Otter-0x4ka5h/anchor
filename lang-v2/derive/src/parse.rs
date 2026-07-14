@@ -321,6 +321,12 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                             let key_ident = Ident::parse_any(input)?;
                             // seeds::program = expr — special case, stored separately
                             if ident == "seeds" && key_ident == "program" {
+                                if result.seeds_program.is_some() {
+                                    return Err(syn::Error::new(
+                                        key_ident.span(),
+                                        "`seeds::program` already provided",
+                                    ));
+                                }
                                 input.parse::<Token![=]>()?;
                                 result.seeds_program = Some(input.parse()?);
                                 if !input.is_empty() {
@@ -379,6 +385,13 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                  canonical bump (write `bump` without a value)",
             ));
         }
+    }
+
+    if result.seeds_program.is_some() && result.seeds.is_none() {
+        return Err(syn::Error::new(
+            result.seeds_program.as_ref().unwrap().span(),
+            "`seeds::program` requires `seeds`",
+        ));
     }
 
     Ok(result)

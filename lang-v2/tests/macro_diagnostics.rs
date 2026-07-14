@@ -376,6 +376,58 @@ pub struct Bad {
     miri,
     ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
 )]
+fn seeds_program_requires_seeds_and_rejects_duplicates() {
+    compile_fail_case(
+        "seeds_program_without_seeds",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+pub const OTHER_PROGRAM: Address =
+    Address::from_str_const("Gue5TpR6sstSyGhSvmVeH2TeKqBYYqmXpRCacB9jAk8u");
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(seeds::program = OTHER_PROGRAM)]
+    pub data: UncheckedAccount,
+}
+"#,
+        &["`seeds::program` requires `seeds`"],
+    );
+
+    compile_fail_case(
+        "duplicate_seeds_program_rejected",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+pub const OTHER_PROGRAM_A: Address =
+    Address::from_str_const("Gue5TpR6sstSyGhSvmVeH2TeKqBYYqmXpRCacB9jAk8u");
+pub const OTHER_PROGRAM_B: Address =
+    Address::from_str_const("HmbTQ4MSEFuTMdM7x5TW5tsanTzQKB8CS7QdQ8qJbYQL");
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(
+        seeds = [b"data"],
+        bump,
+        seeds::program = OTHER_PROGRAM_A,
+        seeds::program = OTHER_PROGRAM_B,
+    )]
+    pub data: UncheckedAccount,
+}
+"#,
+        &["`seeds::program` already provided"],
+    );
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
 fn optional_pda_init_payer_is_rejected() {
     compile_fail_case(
         "optional_pda_init_payer_is_rejected",
