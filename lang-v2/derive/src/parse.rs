@@ -131,6 +131,11 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
     let duplicate_singleton = |span: proc_macro2::Span, name: &str| -> syn::Error {
         syn::Error::new(span, format!("`{name}` already provided"))
     };
+    let mut saw_mut = false;
+    let mut saw_signer = false;
+    let mut saw_executable = false;
+    let mut saw_dup = false;
+    let mut saw_realloc_zero = false;
 
     for attr in attrs {
         if !attr.path().is_ident("account") {
@@ -140,7 +145,13 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
             while !input.is_empty() {
                 let ident = Ident::parse_any(input)?;
                 match ident.to_string().as_str() {
-                    "mut" => result.is_mut = true,
+                    "mut" => {
+                        if saw_mut {
+                            return Err(duplicate_singleton(ident.span(), "mut"));
+                        }
+                        saw_mut = true;
+                        result.is_mut = true;
+                    }
                     "init" => {
                         if result.is_init {
                             return Err(duplicate_singleton(ident.span(), "init"));
@@ -191,8 +202,20 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                             result.bump = Some(None);
                         }
                     }
-                    "signer" => result.is_signer = true,
-                    "executable" => result.is_executable = true,
+                    "signer" => {
+                        if saw_signer {
+                            return Err(duplicate_singleton(ident.span(), "signer"));
+                        }
+                        saw_signer = true;
+                        result.is_signer = true;
+                    }
+                    "executable" => {
+                        if saw_executable {
+                            return Err(duplicate_singleton(ident.span(), "executable"));
+                        }
+                        saw_executable = true;
+                        result.is_executable = true;
+                    }
                     "dup" => {
                         return Err(syn::Error::new(
                             ident.span(),
@@ -206,6 +229,10 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                         let inner: Ident = content.parse()?;
                         match inner.to_string().as_str() {
                             "dup" => {
+                                if saw_dup {
+                                    return Err(duplicate_singleton(inner.span(), "unsafe(dup)"));
+                                }
+                                saw_dup = true;
                                 result.is_dup = true;
                                 result.is_mut = true;
                             }
@@ -342,6 +369,10 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                         result.realloc_payer = Some(input.parse()?);
                     }
                     "realloc_zero" => {
+                        if saw_realloc_zero {
+                            return Err(duplicate_singleton(ident.span(), "realloc_zero"));
+                        }
+                        saw_realloc_zero = true;
                         input.parse::<Token![=]>()?;
                         let val: syn::LitBool = input.parse()?;
                         result.realloc_zero = val.value;

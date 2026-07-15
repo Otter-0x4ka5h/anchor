@@ -334,6 +334,86 @@ pub struct Bad {
 )]
 fn account_attrs_reject_duplicate_singletons_and_conflicts() {
     compile_fail_case(
+        "duplicate_mut_across_account_attrs",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut)]
+    #[account(mut)]
+    pub data: UncheckedAccount,
+}
+"#,
+        &["`mut` already provided"],
+    );
+
+    compile_fail_case(
+        "duplicate_signer_constraint",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(signer, signer)]
+    pub data: UncheckedAccount,
+}
+"#,
+        &["`signer` already provided"],
+    );
+
+    compile_fail_case(
+        "duplicate_executable_constraint",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(executable)]
+    #[account(executable)]
+    pub program: UncheckedAccount,
+}
+"#,
+        &["`executable` already provided"],
+    );
+
+    compile_fail_case(
+        "duplicate_unsafe_dup_constraint",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(unsafe(dup))]
+    #[account(unsafe(dup))]
+    pub data: UncheckedAccount,
+}
+"#,
+        &["`unsafe(dup)` already provided"],
+    );
+
+    compile_fail_case(
+        "duplicate_realloc_zero_constraint",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut, realloc = 16, realloc_payer = payer, realloc_zero = false, realloc_zero = false)]
+    pub data: BorshAccount<Inner>,
+    #[account(mut)]
+    pub payer: Signer,
+}
+
+#[derive(wincode::SchemaRead, wincode::SchemaWrite, Default)]
+pub struct Inner {
+    pub value: u64,
+}
+"#,
+        &["`realloc_zero` already provided"],
+    );
+
+    compile_fail_case(
         "duplicate_owner_across_account_attrs",
         r#"
 use anchor_lang_v2::prelude::*;
