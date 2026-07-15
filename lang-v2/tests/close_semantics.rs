@@ -191,7 +191,7 @@ fn close_scrubs_discriminator_even_after_release_borrow() {
     let mut buf = AccountBuffer::<256>::new();
     setup_vault_buf(&mut buf);
 
-    let mut dest_buf = AccountBuffer::<256>::new();
+    let dest_buf = AccountBuffer::<256>::new();
     dest_buf.init([0xDD; 32], PROGRAM_ID, 0, false, true, false);
 
     {
@@ -211,6 +211,30 @@ fn close_scrubs_discriminator_even_after_release_borrow() {
         &[u8::MAX; 8][..],
         "scrub must run regardless of borrow state — release_borrow + close is legal and must not \
          leave the discriminator intact",
+    );
+}
+
+#[test]
+fn second_borsh_close_after_manual_close_is_noop() {
+    let mut buf = AccountBuffer::<256>::new();
+    setup_vault_buf(&mut buf);
+
+    let dest_buf = AccountBuffer::<256>::new();
+    dest_buf.init([0xDD; 32], PROGRAM_ID, 0, false, true, false);
+    dest_buf.set_lamports(100);
+
+    let view = unsafe { buf.view() };
+    let dest_view = unsafe { dest_buf.view() };
+    let mut vault = unsafe { BorshAccount::<Vault>::load_mut(view) }.unwrap();
+
+    vault.close(dest_view).unwrap();
+    vault.close(dest_view).unwrap();
+
+    let dest_raw = unsafe { &*(dest_buf.raw() as *const RuntimeAccount) };
+    assert_eq!(
+        dest_raw.lamports,
+        100 + 1_000_000_000,
+        "second close should be a no-op once the lamports were already drained"
     );
 }
 
@@ -375,7 +399,7 @@ fn slab_close_scrubs_discriminator_to_closed_sentinel() {
     let mut buf = AccountBuffer::<256>::new();
     setup_counter_buf(&mut buf);
 
-    let mut dest_buf = AccountBuffer::<256>::new();
+    let dest_buf = AccountBuffer::<256>::new();
     dest_buf.init([0xDD; 32], PROGRAM_ID, 0, false, true, false);
 
     {
@@ -402,7 +426,7 @@ fn slab_close_flips_is_mutable_so_deref_mut_panics() {
     let mut buf = AccountBuffer::<256>::new();
     setup_counter_buf(&mut buf);
 
-    let mut dest_buf = AccountBuffer::<256>::new();
+    let dest_buf = AccountBuffer::<256>::new();
     dest_buf.init([0xDD; 32], PROGRAM_ID, 0, false, true, false);
     let view = unsafe { buf.view() };
     let dest_view = unsafe { dest_buf.view() };
@@ -416,11 +440,28 @@ fn slab_close_flips_is_mutable_so_deref_mut_panics() {
 }
 
 #[test]
+#[should_panic(expected = "Tried to mutate `Slab<H, T>` through a read-only load")]
+fn second_slab_close_after_manual_close_panics() {
+    let mut buf = AccountBuffer::<256>::new();
+    setup_counter_buf(&mut buf);
+
+    let dest_buf = AccountBuffer::<256>::new();
+    dest_buf.init([0xDD; 32], PROGRAM_ID, 0, false, true, false);
+
+    let view = unsafe { buf.view() };
+    let dest_view = unsafe { dest_buf.view() };
+    let mut counter = unsafe { Slab::<CounterHeader>::load_mut(view) }.unwrap();
+
+    counter.close(dest_view).unwrap();
+    counter.close(dest_view).unwrap();
+}
+
+#[test]
 fn slab_resurrected_account_reload_rejects_after_disc_scrub() {
     let mut buf = AccountBuffer::<256>::new();
     setup_counter_buf(&mut buf);
 
-    let mut dest_buf = AccountBuffer::<256>::new();
+    let dest_buf = AccountBuffer::<256>::new();
     dest_buf.init([0xDD; 32], PROGRAM_ID, 0, false, true, false);
 
     {
