@@ -5686,6 +5686,25 @@ fn parse_discrim_attr(handler: &syn::ItemFn) -> syn::Result<Option<DiscrimAttr>>
     Ok(None)
 }
 
+fn missing_context_accounts_type_error(span: proc_macro2::Span) -> syn::Error {
+    syn::Error::new(
+        span,
+        "missing accounts type: expected `Context<YourAccountsStruct>`",
+    )
+}
+
+fn bare_context_segment<'a>(ty: &'a Type) -> Option<&'a syn::PathSegment> {
+    let Type::Path(type_path) = ty else {
+        return None;
+    };
+    let segment = type_path.path.segments.last()?;
+    if segment.ident == "Context" && matches!(segment.arguments, syn::PathArguments::None) {
+        Some(segment)
+    } else {
+        None
+    }
+}
+
 fn extract_context_accounts_ident(arg: &FnArg) -> syn::Result<Ident> {
     let ty = match arg {
         FnArg::Typed(pt) => &*pt.ty,
@@ -5698,6 +5717,9 @@ fn extract_context_accounts_ident(arg: &FnArg) -> syn::Result<Ident> {
     };
 
     let Type::Reference(reference) = ty else {
+        if let Some(context_segment) = bare_context_segment(ty) {
+            return Err(missing_context_accounts_type_error(context_segment.span()));
+        }
         if let Type::Path(context_path) = ty {
             if let Some(context_segment) = context_path.path.segments.last() {
                 if context_segment.ident == "Context" {
@@ -5724,6 +5746,9 @@ fn extract_context_accounts_ident(arg: &FnArg) -> syn::Result<Ident> {
             "first parameter must be `ctx: &mut Context<T>`",
         ));
     };
+    if let Some(context_segment) = bare_context_segment(reference.elem.as_ref()) {
+        return Err(missing_context_accounts_type_error(context_segment.span()));
+    }
     if reference.mutability.is_none() {
         return Err(syn::Error::new(
             reference.span(),
@@ -5751,10 +5776,7 @@ fn extract_context_accounts_ident(arg: &FnArg) -> syn::Result<Ident> {
     }
 
     let syn::PathArguments::AngleBracketed(args) = &context_segment.arguments else {
-        return Err(syn::Error::new(
-            context_segment.span(),
-            "missing accounts type: expected `Context<YourAccountsStruct>`",
-        ));
+        return Err(missing_context_accounts_type_error(context_segment.span()));
     };
     if args.args.len() != 1 {
         return Err(syn::Error::new(
@@ -5861,6 +5883,34 @@ mod tests {
         assert!(
             wrapper.contains("impl < 'ix > __AnchorIxArgCoerce < 'ix > for ()"),
             "expected missing-#[instruction] fallback impl in wrapper: {wrapper}"
+        );
+    }
+
+    #[test]
+    fn bare_context_by_value_reports_missing_accounts_type_first() {
+        let arg: FnArg = syn::parse_quote! {
+            ctx: Context
+        };
+
+        let err = extract_context_accounts_ident(&arg).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "missing accounts type: expected `Context<YourAccountsStruct>`"
+        );
+    }
+
+    #[test]
+    fn bare_context_by_ref_reports_missing_accounts_type_first() {
+        let arg: FnArg = syn::parse_quote! {
+            ctx: &Context
+        };
+
+        let err = extract_context_accounts_ident(&arg).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            "missing accounts type: expected `Context<YourAccountsStruct>`"
         );
     }
 
