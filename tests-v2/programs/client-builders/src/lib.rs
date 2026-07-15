@@ -28,6 +28,17 @@ pub struct DynamicProgramPda {
     pub value: u64,
 }
 
+#[account]
+pub struct MacroProgramPda {
+    pub value: u64,
+}
+
+macro_rules! wrap_program_expr {
+    ($expr:expr) => {
+        $expr
+    };
+}
+
 #[program]
 pub mod client_builders {
     use super::*;
@@ -78,6 +89,11 @@ pub mod client_builders {
     pub fn check_dynamic_program_pda(_ctx: &mut Context<CheckDynamicProgramPda>) -> Result<()> {
         Ok(())
     }
+
+    #[discrim = 7]
+    pub fn check_macro_program_pda(_ctx: &mut Context<CheckMacroProgramPda>) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -126,4 +142,15 @@ pub struct CheckDynamicProgramPda {
     pub config: Account<Config>,
     #[account(seeds = [b"other"], bump, seeds::program = config.program_id)]
     pub dynamic_pda: Account<DynamicProgramPda>,
+}
+
+#[derive(Accounts)]
+pub struct CheckMacroProgramPda {
+    pub config: Account<Config>,
+    #[account(
+        seeds = [b"macro"],
+        bump,
+        seeds::program = wrap_program_expr!(config.program_id)
+    )]
+    pub macro_pda: Account<MacroProgramPda>,
 }

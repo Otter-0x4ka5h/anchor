@@ -651,7 +651,9 @@ pub fn classify_program_seed(
     let seed = classify_seed_inner(expr, field_names, ix_arg_names);
     match seed {
         SeedJson::Static(ref s) if s == r#"{"kind":"expr"}"# => {
-            if expr_references_local_binding(expr, field_names, ix_arg_names) {
+            if expr_contains_macro(expr)
+                || expr_references_local_binding(expr, field_names, ix_arg_names)
+            {
                 seed
             } else {
                 SeedJson::Runtime(quote! {
@@ -661,6 +663,22 @@ pub fn classify_program_seed(
         }
         _ => seed,
     }
+}
+
+pub fn expr_contains_macro(expr: &Expr) -> bool {
+    struct MacroFinder {
+        found: bool,
+    }
+
+    impl<'ast> Visit<'ast> for MacroFinder {
+        fn visit_expr_macro(&mut self, _expr: &'ast syn::ExprMacro) {
+            self.found = true;
+        }
+    }
+
+    let mut finder = MacroFinder { found: false };
+    finder.visit_expr(expr);
+    finder.found
 }
 
 pub fn expr_references_local_binding(
@@ -1100,6 +1118,18 @@ mod tests {
     }
 
     #[test]
+    fn macro_wrapped_local_field_program_seed_stays_opaque_expr() {
+        let fields = vec!["config".to_string()];
+        let args = Vec::new();
+        let s = expect_static(classify_program_seed(
+            &syn::parse_quote!(wrap!(config.program_id)),
+            &fields,
+            &args,
+        ));
+        assert_eq!(s, r#"{"kind":"expr"}"#);
+    }
+
+    #[test]
     fn local_binding_detector_sees_sibling_field_access() {
         let fields = vec!["config".to_string()];
         let args = Vec::new();
@@ -1113,6 +1143,14 @@ mod tests {
             &fields,
             &args,
         ));
+    }
+
+    #[test]
+    fn macro_detector_sees_expr_macro() {
+        assert!(expr_contains_macro(&syn::parse_quote!(wrap!(
+            config.program_id
+        ))));
+        assert!(!expr_contains_macro(&syn::parse_quote!(System::id())));
     }
 
     #[test]

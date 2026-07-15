@@ -69,6 +69,10 @@ fn dynamic_program_pda(program: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(&[b"other"], program).0
 }
 
+fn macro_program_pda(program: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[b"macro"], program).0
+}
+
 fn set_program_owned_account(svm: &mut LiteSVM, pubkey: Pubkey, data: Vec<u8>) {
     let account = solana_account::Account {
         lamports: 1_000_000,
@@ -90,6 +94,12 @@ fn config_account_data(program: &Pubkey) -> Vec<u8> {
 fn dynamic_program_pda_data() -> Vec<u8> {
     let mut data = vec![0u8; 16];
     data[..8].copy_from_slice(<client_builders::DynamicProgramPda as Discriminator>::DISCRIMINATOR);
+    data
+}
+
+fn macro_program_pda_data() -> Vec<u8> {
+    let mut data = vec![0u8; 16];
+    data[..8].copy_from_slice(<client_builders::MacroProgramPda as Discriminator>::DISCRIMINATOR);
     data
 }
 
@@ -161,6 +171,28 @@ fn seeds_program_from_account_data_uses_manual_client_account() {
     assert_eq!(ix.accounts[0].pubkey, config);
     assert_eq!(ix.accounts[1].pubkey, dynamic_pda);
     send_ix(&mut svm, ix, &payer, &[]).expect("dynamic seeds::program should validate");
+}
+
+#[test]
+fn macro_wrapped_seeds_program_from_account_data_uses_manual_client_account() {
+    let (mut svm, payer, _) = setup();
+    let config = Pubkey::new_unique();
+    let program = other_program();
+    let macro_pda = macro_program_pda(&program);
+
+    set_program_owned_account(&mut svm, config, config_account_data(&program));
+    set_program_owned_account(&mut svm, macro_pda, macro_program_pda_data());
+
+    // The proc macro cannot see through nested macros in `seeds::program`, so
+    // helper generation must conservatively fall back to the manual accounts
+    // struct instead of trying to auto-derive from address-only sibling inputs.
+    let ix = instruction::CheckMacroProgramPda {}
+        .to_instruction(accounts::CheckMacroProgramPda { config, macro_pda });
+
+    assert_eq!(ix.accounts[0].pubkey, config);
+    assert_eq!(ix.accounts[1].pubkey, macro_pda);
+    send_ix(&mut svm, ix, &payer, &[])
+        .expect("macro-wrapped dynamic seeds::program should validate");
 }
 
 #[test]

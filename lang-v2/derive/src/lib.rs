@@ -1270,6 +1270,14 @@ fn impl_accounts(input: &DeriveInput) -> TokenStream2 {
                                 } else {
                                     quote! { &#program }
                                 }
+                            } else if idl::expr_contains_macro(program) {
+                                // Nested macros are opaque to this proc macro.
+                                // A macro may expand to sibling account data
+                                // access (e.g. `wrap!(config.program_id)`),
+                                // which cannot be derived from the resolved
+                                // builder's address-only inputs.
+                                all_derivable = false;
+                                quote! {}
                             } else if idl::expr_references_local_binding(
                                 program,
                                 &raw_field_names,
@@ -1527,6 +1535,8 @@ fn impl_accounts(input: &DeriveInput) -> TokenStream2 {
                         } else {
                             quote! { &#program }
                         }
+                    } else if idl::expr_contains_macro(program) {
+                        return None;
                     } else if idl::expr_references_local_binding(
                         program,
                         &raw_field_names,
