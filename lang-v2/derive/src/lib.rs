@@ -11,7 +11,7 @@ mod pod_wrapper;
 
 use {
     proc_macro::TokenStream,
-    proc_macro2::TokenStream as TokenStream2,
+    proc_macro2::{Span, TokenStream as TokenStream2},
     quote::quote,
     syn::{
         parse::Parser, parse_macro_input, spanned::Spanned, Data, DeriveInput, Expr, Fields, FnArg,
@@ -61,6 +61,49 @@ struct SignerExpr {
 struct AccountMetaAttrs {
     skip: bool,
     duplicate_readonly: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum UnsupportedWincodeAttrKind {
+    Skip,
+    With,
+}
+
+pub(crate) fn find_unsupported_wincode_attr(
+    attrs: &[syn::Attribute],
+) -> syn::Result<Option<(UnsupportedWincodeAttrKind, Span)>> {
+    for attr in attrs {
+        if !attr.path().is_ident("wincode") {
+            continue;
+        }
+
+        let mut unsupported = None;
+        let parse = attr.parse_nested_meta(|meta| {
+            let span = meta.path.span();
+            if meta.path.is_ident("skip") {
+                if meta.input.peek(syn::Token![=]) {
+                    let value = meta.value()?;
+                    let _ = value.parse::<Expr>()?;
+                }
+                unsupported = Some((UnsupportedWincodeAttrKind::Skip, span));
+            } else if meta.path.is_ident("with") {
+                if meta.input.peek(syn::Token![=]) {
+                    let value = meta.value()?;
+                    let _ = value.parse::<Expr>()?;
+                }
+                unsupported = Some((UnsupportedWincodeAttrKind::With, span));
+            }
+            Ok(())
+        });
+
+        parse?;
+
+        if unsupported.is_some() {
+            return Ok(unsupported);
+        }
+    }
+
+    Ok(None)
 }
 
 fn impl_to_cpi_accounts(input: &DeriveInput) -> TokenStream2 {
@@ -3904,49 +3947,22 @@ fn unsupported_wincode_idl_attr_error(
     surface: &str,
     attrs: &[syn::Attribute],
 ) -> Option<syn::Error> {
-    for attr in attrs {
-        if !attr.path().is_ident("wincode") {
-            continue;
-        }
-
-        let mut unsupported = None;
-        let parse = attr.parse_nested_meta(|meta| {
-            let span = meta.path.span();
-            if meta.path.is_ident("skip") {
-                if meta.input.peek(syn::Token![=]) {
-                    let value = meta.value()?;
-                    let _ = value.parse::<Expr>()?;
-                }
-                unsupported = Some(("skip", span));
-            } else if meta.path.is_ident("with") {
-                if meta.input.peek(syn::Token![=]) {
-                    let value = meta.value()?;
-                    let _ = value.parse::<Expr>()?;
-                }
-                unsupported = Some(("with", span));
-            }
-            Ok(())
-        });
-
-        if let Err(err) = parse {
-            return Some(err);
-        }
-
-        if let Some((kind, span)) = unsupported {
-            let message = match kind {
-                "skip" => format!(
-                    "{surface} does not support `#[wincode(skip)]` fields because generated IDL would not match the serialized wire layout; remove the override or exclude this type from generated IDL"
-                ),
-                "with" => format!(
-                    "{surface} does not support `#[wincode(with = ...)]` fields because custom wincode codecs can change the serialized wire layout; remove the override or exclude this type from generated IDL"
-                ),
-                _ => unreachable!(),
-            };
-            return Some(syn::Error::new(span, message));
-        }
+    match find_unsupported_wincode_attr(attrs) {
+        Ok(Some((UnsupportedWincodeAttrKind::Skip, span))) => Some(syn::Error::new(
+            span,
+            format!(
+                "{surface} does not support `#[wincode(skip)]` fields because generated IDL would not match the serialized wire layout; remove the override or exclude this type from generated IDL"
+            ),
+        )),
+        Ok(Some((UnsupportedWincodeAttrKind::With, span))) => Some(syn::Error::new(
+            span,
+            format!(
+                "{surface} does not support `#[wincode(with = ...)]` fields because custom wincode codecs can change the serialized wire layout; remove the override or exclude this type from generated IDL"
+            ),
+        )),
+        Ok(None) => None,
+        Err(err) => Some(err),
     }
-
-    None
 }
 
 fn extract_result_return_type(output: &syn::ReturnType) -> syn::Result<Option<Type>> {
