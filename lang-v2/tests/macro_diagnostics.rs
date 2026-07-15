@@ -1,6 +1,15 @@
 use std::{fs, path::PathBuf, process::Command};
 
 fn compile_fail_case(name: &str, source: &str, snippets: &[&str]) {
+    compile_fail_case_with_forbidden(name, source, snippets, &[]);
+}
+
+fn compile_fail_case_with_forbidden(
+    name: &str,
+    source: &str,
+    snippets: &[&str],
+    forbidden_snippets: &[&str],
+) {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let crate_dir = manifest_dir.join("target/macro-diagnostics").join(name);
     let src_dir = crate_dir.join("src");
@@ -41,6 +50,12 @@ wincode = {{ version = "0.5", features = ["derive"] }}
         assert!(
             stderr.contains(snippet),
             "{name} stderr did not contain {snippet:?}\n\nstderr:\n{stderr}"
+        );
+    }
+    for forbidden in forbidden_snippets {
+        assert!(
+            !stderr.contains(forbidden),
+            "{name} stderr unexpectedly contained {forbidden:?}\n\nstderr:\n{stderr}"
         );
     }
 }
@@ -177,6 +192,53 @@ pub mod bad_discriminator {
 pub struct Noop {}
 "#,
         &["`#[discrim = ...]` value must be an integer literal or byte array literal"],
+    );
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
+fn bare_context_reports_missing_accounts_type_before_mutability() {
+    compile_fail_case_with_forbidden(
+        "bare_context_by_value",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+#[program]
+pub mod bare_context_by_value {
+    use super::*;
+
+    pub fn ix(_ctx: Context) -> Result<()> {
+        Ok(())
+    }
+}
+"#,
+        &["missing accounts type: expected `Context<YourAccountsStruct>`"],
+        &["handler context must be passed by mutable reference"],
+    );
+
+    compile_fail_case_with_forbidden(
+        "bare_context_by_ref",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+#[program]
+pub mod bare_context_by_ref {
+    use super::*;
+
+    pub fn ix(_ctx: &Context) -> Result<()> {
+        Ok(())
+    }
+}
+"#,
+        &["missing accounts type: expected `Context<YourAccountsStruct>`"],
+        &["handler context must be mutable"],
     );
 }
 
