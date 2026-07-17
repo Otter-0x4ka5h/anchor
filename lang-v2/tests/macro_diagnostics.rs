@@ -175,6 +175,24 @@ pub struct Bad {
     );
 
     compile_fail_case(
+        "init_space_wincode_skip_default_val",
+        r#"
+use anchor_lang_v2::InitSpace;
+
+#[derive(InitSpace, wincode::SchemaRead, wincode::SchemaWrite)]
+pub struct Bad {
+    #[wincode(skip(default_val = 9))]
+    pub skipped: u64,
+    pub kept: u8,
+}
+"#,
+        &[
+            "#[derive(InitSpace)] does not support `#[wincode(skip)]` fields",
+            "serialized layout",
+        ],
+    );
+
+    compile_fail_case(
         "init_space_wincode_with",
         r#"
 use anchor_lang_v2::InitSpace;

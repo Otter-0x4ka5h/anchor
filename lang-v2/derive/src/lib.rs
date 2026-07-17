@@ -84,6 +84,17 @@ pub(crate) fn find_unsupported_wincode_attr(
                 if meta.input.peek(syn::Token![=]) {
                     let value = meta.value()?;
                     let _ = value.parse::<Expr>()?;
+                } else if meta.input.peek(syn::token::Paren) {
+                    meta.parse_nested_meta(|nested| {
+                        if nested.path.is_ident("default") {
+                            return Ok(());
+                        }
+                        if nested.path.is_ident("default_val") {
+                            let value = nested.value()?;
+                            let _ = value.parse::<Expr>()?;
+                        }
+                        Ok(())
+                    })?;
                 }
                 unsupported = Some((UnsupportedWincodeAttrKind::Skip, span));
             } else if meta.path.is_ident("with") {
