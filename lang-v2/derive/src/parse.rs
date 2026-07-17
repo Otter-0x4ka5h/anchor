@@ -845,6 +845,7 @@ fn emit_constraint_expected_binding(
 fn validate_init_constraint_refs(
     field_name: &Ident,
     attrs: &AccountAttrs,
+    field_names: &[String],
     field_summaries: &[FieldSummary],
 ) -> syn::Result<()> {
     if !(attrs.is_init || attrs.is_init_if_needed) {
@@ -857,6 +858,22 @@ fn validate_init_constraint_refs(
         .expect("current field should exist in summaries");
 
     for nc in &attrs.namespaced {
+        if !nc.is_update
+            && matches!(
+                builtin_init_param_value_kind(&nc.namespace, &nc.raw_key),
+                Some(BuiltinInitParamValueKind::AccountView)
+            )
+            && expr_as_known_field_ident(&nc.value, field_names).is_none()
+        {
+            return Err(syn::Error::new(
+                nc.value.span(),
+                format!(
+                    "`{}::{}` init constraint requires a sibling account field reference",
+                    nc.namespace, nc.raw_key
+                ),
+            ));
+        }
+
         let Some(root) = expr_root_ident(&nc.value) else {
             continue;
         };
@@ -2144,7 +2161,7 @@ pub fn parse_field(
 ) -> syn::Result<AccountField> {
     let field_name = field.ident.as_ref().expect("named field");
     let field_ty = &field.ty;
-    validate_init_constraint_refs(field_name, attrs, field_summaries)?;
+    validate_init_constraint_refs(field_name, attrs, field_names, field_summaries)?;
     if attrs.close.is_some() && !attrs.is_mut {
         return Err(syn::Error::new(
             field_name.span(),
