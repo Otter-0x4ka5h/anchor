@@ -2187,6 +2187,7 @@ dependencies = [
  "pinocchio",
  "pinocchio-system",
  "solana-program-error 3.0.0",
+ "solana-pubkey 3.0.0",
  "wincode 0.5.4",
 ]
 

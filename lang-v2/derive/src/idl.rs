@@ -159,7 +159,11 @@ fn syn_path_type_to_idl_value(type_path: &TypePath) -> Option<Value> {
             Some(Value::String("string".into()))
         }
         "str" if path_is_builtin(path, &[&["str"]]) => Some(Value::String("string".into())),
-        "Pubkey" if path_is_builtin(path, &[&["Pubkey"]]) => Some(Value::String("pubkey".into())),
+        "Pubkey"
+            if path_is_builtin(path, &[&["Pubkey"], &["solana_pubkey", "Pubkey"]]) =>
+        {
+            Some(Value::String("pubkey".into()))
+        }
         "Address"
             if path_is_builtin(
                 path,

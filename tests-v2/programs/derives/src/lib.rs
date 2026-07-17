@@ -55,6 +55,11 @@ pub struct Profile {
     pub scores: alloc::vec::Vec<u64>,
 }
 
+#[derive(IdlType)]
+pub struct QualifiedPubkeyHolder {
+    pub authority: solana_pubkey::Pubkey,
+}
+
 // ---- #[event] -------------------------------------------------------------
 
 /// Default-mode event (wincode with a borsh-compatible wire format).
@@ -235,4 +240,18 @@ pub struct InitProfile {
     #[account(init, payer = payer, space = 8 + Profile::INIT_SPACE, seeds = [b"profile"], bump)]
     pub profile: BorshAccount<Profile>,
     pub system_program: Program<System>,
+}
+
+#[cfg(all(test, feature = "idl-build"))]
+mod idl_tests {
+    use super::*;
+
+    #[test]
+    fn qualified_pubkey_lowers_like_builtin_pubkey() {
+        let type_def = <QualifiedPubkeyHolder as IdlAccountType>::__IDL_TYPE_DEF
+            .expect("QualifiedPubkeyHolder should emit an IDL type");
+        assert!(type_def.contains("\"name\":\"QualifiedPubkeyHolder\""));
+        assert!(type_def.contains("\"name\":\"authority\""));
+        assert!(type_def.contains("\"type\":\"pubkey\""));
+    }
 }
