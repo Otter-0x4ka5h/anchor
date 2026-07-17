@@ -127,6 +127,20 @@ pub struct PodVecOnly {
     pub items: PodVec<PodU64, 4>,
 }
 
+#[account]
+#[repr(C, packed)]
+pub struct PackedProducer {
+    pub tag: u8,
+    pub wide: u64,
+}
+
+#[event(bytemuck)]
+#[repr(C, packed)]
+pub struct PackedSnapshot {
+    pub tag: u8,
+    pub wide: u64,
+}
+
 // ---- Handlers -------------------------------------------------------------
 
 #[program]
@@ -362,5 +376,23 @@ mod idl_tests {
         assert!(pod_vec_type.contains("\"serialization\":\"bytemuck\""));
         assert!(pod_vec_type.contains("\"repr\":{\"kind\":\"c\"}"));
         assert!(pod_vec_type.contains("\"fields\":[{\"name\":\"len\",\"type\":\"u16\"},{\"name\":\"data\",\"type\":{\"array\":[{\"generic\":\"T\"},{\"generic\":\"MAX\"}]}}]"));
+    }
+
+    #[test]
+    fn packed_bytemuck_idl_preserves_packed_repr() {
+        let type_def =
+            <PackedProducer as IdlAccountType>::__IDL_TYPE_DEF.expect("PackedProducer should emit an IDL type");
+        assert!(type_def.contains("\"name\":\"PackedProducer\""));
+        assert!(type_def.contains("\"serialization\":\"bytemuck\""));
+        assert!(type_def.contains("\"repr\":{\"kind\":\"c\",\"packed\":true}"));
+    }
+
+    #[test]
+    fn packed_bytemuck_event_idl_preserves_packed_repr() {
+        let type_def =
+            <PackedSnapshot as IdlAccountType>::__IDL_TYPE_DEF.expect("PackedSnapshot should emit an IDL type");
+        assert!(type_def.contains("\"name\":\"PackedSnapshot\""));
+        assert!(type_def.contains("\"serialization\":\"bytemuck\""));
+        assert!(type_def.contains("\"repr\":{\"kind\":\"c\",\"packed\":true}"));
     }
 }

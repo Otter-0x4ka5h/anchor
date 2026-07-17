@@ -2129,7 +2129,11 @@ pub fn account(attr: TokenStream, item: TokenStream) -> TokenStream {
     let type_kind = if is_borsh {
         idl::TypeKind::Borsh
     } else {
-        idl::TypeKind::BytemuckRepr
+        let repr = match idl::bytemuck_repr_from_attrs(attrs) {
+            Ok(repr) => repr,
+            Err(err) => return err.to_compile_error().into(),
+        };
+        idl::TypeKind::BytemuckRepr(repr)
     };
     let idl_account_entry = match idl::build_account_entry_string(&name_str, disc_bytes) {
         Some(s) => quote! { Some(#s) },
@@ -5698,7 +5702,13 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
     // `{serialization:"bytemuck",repr:{kind:"c"}}`.
     let type_kind = match mode {
         EventMode::Wincode => idl::TypeKind::Borsh,
-        EventMode::Bytemuck => idl::TypeKind::BytemuckRepr,
+        EventMode::Bytemuck => {
+            let repr = match idl::bytemuck_repr_from_attrs(attrs) {
+                Ok(repr) => repr,
+                Err(err) => return err.to_compile_error().into(),
+            };
+            idl::TypeKind::BytemuckRepr(repr)
+        }
     };
     let struct_docs = idl::extract_doc_lines(attrs);
     let idl_validation_tokens = if matches!(mode, EventMode::Wincode) {

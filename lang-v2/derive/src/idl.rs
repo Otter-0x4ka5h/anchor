@@ -17,7 +17,10 @@ use {
     proc_macro2::TokenStream as TokenStream2,
     quote::quote,
     serde_json::{json, Value},
-    syn::{visit::Visit, Expr, GenericParam, Generics, Lit, PathArguments, Type, TypePath},
+    syn::{
+        punctuated::Punctuated, visit::Visit, Expr, GenericParam, Generics, Lit, PathArguments,
+        Token, Type, TypePath,
+    },
 };
 
 const DYNAMIC_LEN_KEY: &str = "__anchor_private_const_len";
@@ -584,8 +587,37 @@ pub enum TypeKind {
     /// Default borsh layout. Spec `skip_serializing_if`s both fields at the
     /// default value, so nothing extra gets emitted.
     Borsh,
-    /// `bytemuck` Pod + `repr(C)`. Both fields show up in the JSON.
-    BytemuckRepr,
+    /// `bytemuck` Pod + `repr(C)` plus any layout modifiers preserved from
+    /// the source item's `#[repr(...)]` attributes.
+    BytemuckRepr(BytemuckRepr),
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct BytemuckRepr {
+    pub packed: bool,
+    pub align: Option<usize>,
+}
+
+pub fn bytemuck_repr_from_attrs(attrs: &[syn::Attribute]) -> syn::Result<BytemuckRepr> {
+    let mut repr = BytemuckRepr::default();
+
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident("repr")) {
+        let metas = attr.parse_args_with(Punctuated::<syn::Meta, Token![,]>::parse_terminated)?;
+        for meta in metas {
+            match meta {
+                syn::Meta::Path(path) if path.is_ident("packed") => {
+                    repr.packed = true;
+                }
+                syn::Meta::List(list) if list.path.is_ident("align") => {
+                    let align = list.parse_args::<syn::LitInt>()?;
+                    repr.align = Some(align.base10_parse()?);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    Ok(repr)
 }
 
 pub fn build_account_entry_string(name: &str, disc: &[u8]) -> Option<String> {
@@ -824,9 +856,17 @@ fn build_type_def_header(
     }
     match kind {
         TypeKind::Borsh => {}
-        TypeKind::BytemuckRepr => {
+        TypeKind::BytemuckRepr(repr) => {
             out.insert("serialization".into(), Value::String("bytemuck".into()));
-            out.insert("repr".into(), json!({ "kind": "c" }));
+            let mut repr_json = serde_json::Map::new();
+            repr_json.insert("kind".into(), Value::String("c".into()));
+            if repr.packed {
+                repr_json.insert("packed".into(), Value::Bool(true));
+            }
+            if let Some(align) = repr.align {
+                repr_json.insert("align".into(), json!(align));
+            }
+            out.insert("repr".into(), Value::Object(repr_json));
         }
     }
     out
