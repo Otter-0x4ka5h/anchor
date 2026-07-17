@@ -2403,6 +2403,8 @@ fn gen_declared_program(name: &Ident, idl: &serde_json::Value) -> syn::Result<To
     let type_reexports = type_idents
         .iter()
         .map(|ident| quote! { pub use super::#ident; });
+    let reserved_account_group_names: std::collections::BTreeSet<String> =
+        type_idents.iter().map(ToString::to_string).collect();
     let constants = gen_declare_program_constants(idl)?;
     let events = gen_declare_program_events(idl)?;
     let errors = gen_declare_program_errors(idl, name.span())?;
@@ -2426,6 +2428,7 @@ fn gen_declared_program(name: &Ident, idl: &serde_json::Value) -> syn::Result<To
         let generated_accounts_name = collect_declare_account_group(
             &accounts_name,
             accounts,
+            &reserved_account_group_names,
             &mut account_groups,
             &mut account_group_variants,
             name.span(),
@@ -2739,16 +2742,17 @@ fn declare_account_signature(
 
 fn next_declare_account_group_name(
     base_name: &str,
+    reserved_names: &std::collections::BTreeSet<String>,
     groups: &std::collections::BTreeMap<String, Vec<DeclareAccountField>>,
 ) -> String {
-    if !groups.contains_key(base_name) {
+    if !groups.contains_key(base_name) && !reserved_names.contains(base_name) {
         return base_name.to_string();
     }
 
     let mut suffix = 2usize;
     loop {
         let candidate = format!("{base_name}{suffix}");
-        if !groups.contains_key(&candidate) {
+        if !groups.contains_key(&candidate) && !reserved_names.contains(&candidate) {
             return candidate;
         }
         suffix += 1;
@@ -2758,6 +2762,7 @@ fn next_declare_account_group_name(
 fn collect_declare_account_group(
     group_name: &str,
     accounts: &[serde_json::Value],
+    reserved_names: &std::collections::BTreeSet<String>,
     groups: &mut std::collections::BTreeMap<String, Vec<DeclareAccountField>>,
     variants: &mut std::collections::BTreeMap<String, Vec<DeclareAccountGroupVariant>>,
     span: proc_macro2::Span,
@@ -2772,7 +2777,7 @@ fn collect_declare_account_group(
         return Ok(existing_name);
     }
 
-    let generated_name = next_declare_account_group_name(group_name, groups);
+    let generated_name = next_declare_account_group_name(group_name, reserved_names, groups);
     let mut fields = Vec::new();
     for account in accounts {
         let name = json_str(account, "name", span)?;
@@ -2782,8 +2787,14 @@ fn collect_declare_account_group(
             .and_then(serde_json::Value::as_array)
         {
             let nested_name = to_type_name(name);
-            let generated_nested_name =
-                collect_declare_account_group(&nested_name, nested, groups, variants, span)?;
+            let generated_nested_name = collect_declare_account_group(
+                &nested_name,
+                nested,
+                reserved_names,
+                groups,
+                variants,
+                span,
+            )?;
             let nested_ident = Ident::new(&generated_nested_name, span);
             fields.push(DeclareAccountField {
                 name: ident,
