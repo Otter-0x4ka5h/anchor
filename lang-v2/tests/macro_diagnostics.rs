@@ -846,6 +846,39 @@ pub struct Bad {
     miri,
     ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
 )]
+fn realloc_payer_cannot_be_optional() {
+    compile_fail_case(
+        "realloc_payer_optional_account_is_rejected",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+#[account]
+pub struct Data {
+    pub value: u64,
+}
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut, realloc = 16, realloc_payer = payer, realloc_zero = false)]
+    pub data: Account<Data>,
+    #[account(mut)]
+    pub payer: Option<SystemAccount>,
+}
+"#,
+        &[
+            "optional accounts cannot be used as realloc payers",
+            "realloc_payer",
+        ],
+    );
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
 fn pda_init_payer_must_be_system_account() {
     compile_fail_case(
         "pda_init_payer_must_be_system_account",
