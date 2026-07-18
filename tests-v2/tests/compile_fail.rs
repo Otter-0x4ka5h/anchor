@@ -908,6 +908,179 @@ pub struct Bad {
     .expect_fail(&["`mint::authority` init constraint requires a sibling account field reference"]);
 
     CompileCase::new(
+        "namespaced_constraint_init_const_freeze_authority_rejected",
+        r#"
+use anchor_lang_v2::prelude::*;
+use anchor_spl_v2::{
+    mint::Mint,
+    token::Token,
+};
+
+declare_id!("Con9ukTn9BRPXWcjS2UBbuN3NnCwy1hcaDNZ9Hb8QMNp");
+
+const AUTH: Address = anchor_lang_v2::address!("11111111111111111111111111111111");
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut)]
+    pub payer: Signer,
+    #[account(
+        init,
+        payer = payer,
+        mint::decimals = 6,
+        mint::authority = payer,
+        mint::freeze_authority = AUTH
+    )]
+    pub mint: Account<Mint>,
+    pub token_program: Program<Token>,
+    pub system_program: Program<System>,
+}
+"#,
+    )
+    .dep(format!(
+        "anchor-spl-v2 = {{ path = \"{}\", features = [\"guardrails\"] }}",
+        spl.display()
+    ))
+    .expect_fail(&[
+        "`mint::freeze_authority` init constraint requires a sibling account field reference",
+    ]);
+
+    CompileCase::new(
+        "namespaced_constraint_init_const_mint_token_program_rejected",
+        r#"
+use anchor_lang_v2::prelude::*;
+use anchor_spl_v2::{
+    mint::Mint,
+    token::Token,
+};
+
+declare_id!("Con9ukTn9BRPXWcjS2UBbuN3NnCwy1hcaDNZ9Hb8QMNp");
+
+const TOKEN_PROGRAM_ID: Address = anchor_lang_v2::address!("11111111111111111111111111111111");
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut)]
+    pub payer: Signer,
+    #[account(
+        init,
+        payer = payer,
+        mint::decimals = 6,
+        mint::authority = payer,
+        mint::token_program = TOKEN_PROGRAM_ID
+    )]
+    pub mint: Account<Mint>,
+    pub token_program: Program<Token>,
+    pub system_program: Program<System>,
+}
+"#,
+    )
+    .dep(format!(
+        "anchor-spl-v2 = {{ path = \"{}\", features = [\"guardrails\"] }}",
+        spl.display()
+    ))
+    .expect_fail(&[
+        "`mint::token_program` init constraint requires a sibling account field reference",
+    ]);
+
+    CompileCase::new(
+        "namespaced_constraint_init_const_token_mint_rejected",
+        r#"
+use anchor_lang_v2::prelude::*;
+use anchor_spl_v2::token::{Token, TokenAccount};
+
+declare_id!("Con9ukTn9BRPXWcjS2UBbuN3NnCwy1hcaDNZ9Hb8QMNp");
+
+const MINT: Address = anchor_lang_v2::address!("11111111111111111111111111111111");
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut)]
+    pub payer: Signer,
+    #[account(init, payer = payer, token::mint = MINT, token::authority = payer)]
+    pub token_account: Account<TokenAccount>,
+    pub token_program: Program<Token>,
+    pub system_program: Program<System>,
+}
+"#,
+    )
+    .dep(format!(
+        "anchor-spl-v2 = {{ path = \"{}\", features = [\"guardrails\"] }}",
+        spl.display()
+    ))
+    .expect_fail(&["`token::mint` init constraint requires a sibling account field reference"]);
+
+    CompileCase::new(
+        "namespaced_constraint_init_const_token_authority_rejected",
+        r#"
+use anchor_lang_v2::prelude::*;
+use anchor_spl_v2::{
+    mint::Mint,
+    token::{Token, TokenAccount},
+};
+
+declare_id!("Con9ukTn9BRPXWcjS2UBbuN3NnCwy1hcaDNZ9Hb8QMNp");
+
+const AUTH: Address = anchor_lang_v2::address!("11111111111111111111111111111111");
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut)]
+    pub payer: Signer,
+    pub mint: Account<Mint>,
+    #[account(init, payer = payer, token::mint = mint, token::authority = AUTH)]
+    pub token_account: Account<TokenAccount>,
+    pub token_program: Program<Token>,
+    pub system_program: Program<System>,
+}
+"#,
+    )
+    .dep(format!(
+        "anchor-spl-v2 = {{ path = \"{}\", features = [\"guardrails\"] }}",
+        spl.display()
+    ))
+    .expect_fail(&["`token::authority` init constraint requires a sibling account field reference"]);
+
+    CompileCase::new(
+        "namespaced_constraint_init_const_token_token_program_rejected",
+        r#"
+use anchor_lang_v2::prelude::*;
+use anchor_spl_v2::{
+    mint::Mint,
+    token::{Token, TokenAccount},
+};
+
+declare_id!("Con9ukTn9BRPXWcjS2UBbuN3NnCwy1hcaDNZ9Hb8QMNp");
+
+const TOKEN_PROGRAM_ID: Address = anchor_lang_v2::address!("11111111111111111111111111111111");
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut)]
+    pub payer: Signer,
+    pub mint: Account<Mint>,
+    #[account(
+        init,
+        payer = payer,
+        token::mint = mint,
+        token::authority = payer,
+        token::token_program = TOKEN_PROGRAM_ID
+    )]
+    pub token_account: Account<TokenAccount>,
+    pub token_program: Program<Token>,
+    pub system_program: Program<System>,
+}
+"#,
+    )
+    .dep(format!(
+        "anchor-spl-v2 = {{ path = \"{}\", features = [\"guardrails\"] }}",
+        spl.display()
+    ))
+    .expect_fail(&[
+        "`token::token_program` init constraint requires a sibling account field reference",
+    ]);
+
+    CompileCase::new(
         "namespaced_constraint_init_nested_field_authority_rejected",
         r#"
 use anchor_lang_v2::prelude::*;
