@@ -2395,6 +2395,68 @@ mod tests {
     }
 
     #[test]
+    fn explicit_bump_constraints_use_strict_pda_verifier() {
+        use syn::parse::Parser;
+
+        let field: syn::Field = syn::Field::parse_named
+            .parse2(quote::quote! {
+                #[account(seeds = [b"vault"], bump = user_bump)]
+                pub vault: Account<Vault>
+            })
+            .unwrap();
+        let parsed = parse_field(
+            &field,
+            &["vault".into()],
+            &[],
+            quote::quote!(0usize),
+            &[],
+            &[],
+        )
+        .unwrap();
+        let joined = parsed
+            .constraints
+            .iter()
+            .map(|t| t.to_string())
+            .collect::<String>();
+        assert!(
+            joined.contains("create_and_verify_program_address"),
+            "explicit bump checks must use the strict PDA verifier, got: {joined}"
+        );
+        assert!(
+            !joined.contains("anchor_lang_v2 :: verify_program_address"),
+            "explicit bump checks must not use the hash-only verifier, got: {joined}"
+        );
+    }
+
+    #[test]
+    fn explicit_payer_bumps_use_strict_pda_verifier() {
+        let payer = syn::Ident::new("payer", proc_macro2::Span::call_site());
+        let attrs: Vec<Attribute> = vec![syn::parse_quote!(
+            #[account(seeds = [b"payer"], bump = payer_bump)]
+        )];
+        let field_summaries = vec![FieldSummary {
+            name: payer.clone(),
+            ty: syn::parse_quote!(SystemAccount),
+            attrs: parse_account_attrs(&attrs).unwrap(),
+        }];
+        let binding = emit_payer_signer_seeds_binding(
+            &payer,
+            &["payer".into()],
+            &field_summaries,
+        )
+        .unwrap()
+        .to_string();
+        assert!(
+            binding.contains("create_and_verify_program_address"),
+            "explicit payer bumps must use the strict PDA verifier, got: {binding}"
+        );
+        assert!(
+            !binding.contains("anchor_lang_v2 :: verify_program_address"),
+            "explicit payer bumps must not use the hash-only verifier, got: {binding}"
+        );
+    }
+
+    #[test]
     fn init_with_explicit_bump_is_rejected() {
         // Mirrors Anchor v1: `init` requires the canonical bump (off-curve
         // guarantee), so caller-supplied bumps must be rejected at parse
