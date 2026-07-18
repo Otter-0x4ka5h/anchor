@@ -2404,6 +2404,40 @@ struct ProgramConfig {
     program_id: Expr,
 }
 
+fn event_authority_dispatch_check(precomputed_event_authority: Option<[u8; 32]>) -> TokenStream2 {
+    if let Some(address) = precomputed_event_authority {
+        let address_bytes = address.iter().map(|byte| quote! { #byte });
+        quote! {
+            const __EXPECTED_EVENT_AUTHORITY: anchor_lang_v2::Address =
+                anchor_lang_v2::Address::new_from_array([#(#address_bytes),*]);
+            if !anchor_lang_v2::address_eq(
+                __event_authority.address(),
+                &__EXPECTED_EVENT_AUTHORITY,
+            ) {
+                return anchor_lang_v2::Error::from(
+                    anchor_lang_v2::ErrorCode::ConstraintSeeds,
+                ).into();
+            }
+        }
+    } else {
+        quote! {
+            let (__expected_event_authority, _) =
+                anchor_lang_v2::find_program_address(
+                    &[b"__event_authority"],
+                    __program_id,
+                );
+            if !anchor_lang_v2::address_eq(
+                __event_authority.address(),
+                &__expected_event_authority,
+            ) {
+                return anchor_lang_v2::Error::from(
+                    anchor_lang_v2::ErrorCode::ConstraintSeeds,
+                ).into();
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 struct DiscrimAttr {
     bytes: Vec<u8>,
@@ -4877,6 +4911,37 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
         })
         .collect();
 
+    let precomputed_event_authority = crate::pda::discover_program_id().and_then(|program_id| {
+        crate::pda::precompute_pda(&[b"__event_authority"], &program_id).map(|(_, address)| address)
+    });
+    let event_authority_check = event_authority_dispatch_check(precomputed_event_authority);
+
+    let disc_parse = if use_byte_disc {
+        quote! {
+            const __MIN_IX_DATA_LEN: usize = #disc_size + #min_args_size_expr;
+            if __ix_data_len < __MIN_IX_DATA_LEN {
+                return anchor_lang_v2::Error::from(
+                    anchor_lang_v2::ErrorCode::InstructionFallbackNotFound,
+                ).into();
+            }
+            let __disc: u8 = *__ix_data_ptr;
+            let __ix_data: &[u8] =
+                ::core::slice::from_raw_parts(__ix_data_ptr.add(1), __ix_data_len - 1);
+        }
+    } else {
+        quote! {
+            if __ix_data_len < 8 {
+                return anchor_lang_v2::Error::from(
+                    anchor_lang_v2::ErrorCode::InstructionFallbackNotFound,
+                ).into();
+            }
+            let __disc: u64 = u64::from_le_bytes(
+                *(__ix_data_ptr as *const [u8; 8])
+            );
+            let __ix_data: &[u8] =
+                ::core::slice::from_raw_parts(__ix_data_ptr.add(8), __ix_data_len - 8);
+        }
+    };
     let event_cpi_dispatch = quote! {
         // Reserve the full event-CPI tag before user dispatch. A custom
         // 1-byte discriminator can overlap the first tag byte, but it
@@ -4898,19 +4963,7 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
                         anchor_lang_v2::ErrorCode::ConstraintSigner,
                     ).into();
                 }
-                let (__expected_event_authority, _) =
-                    anchor_lang_v2::find_program_address(
-                        &[b"__event_authority"],
-                        __program_id,
-                    );
-                if !anchor_lang_v2::address_eq(
-                    __event_authority.address(),
-                    &__expected_event_authority,
-                ) {
-                    return anchor_lang_v2::Error::from(
-                        anchor_lang_v2::ErrorCode::ConstraintSeeds,
-                    ).into();
-                }
+                #event_authority_check
                 return 0;
             }
         }
