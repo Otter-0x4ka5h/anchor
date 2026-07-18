@@ -6505,4 +6505,36 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("invalid IDL array generic"));
     }
+
+    #[test]
+    fn program_handlers_inject_update_phase_into_handler_body() {
+        let module: syn::ItemMod = syn::parse_quote! {
+            pub mod demo_program {
+                use super::*;
+
+                #[access_control(validate(&ctx))]
+                pub fn rotate(ctx: &mut Context<RotateAuthority>) -> Result<()> {
+                    do_work()?;
+                    Ok(())
+                }
+            }
+        };
+        let config = ProgramConfig {
+            mode: ProgramMode::Executable,
+            program_id: syn::parse_quote!(crate::ID),
+        };
+
+        let generated = impl_program(&module, &config).to_string();
+
+        assert!(
+            generated.contains(
+                "anchor_lang_v2 :: TryAccounts :: update_accounts (& mut ctx . accounts) ? ;"
+            ),
+            "expected handler body to call update_accounts after access-control expansion, got: {generated}"
+        );
+        assert!(
+            generated.contains("access_control"),
+            "expected access_control attr to remain on the generated handler, got: {generated}"
+        );
+    }
 }
