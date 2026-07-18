@@ -6425,4 +6425,35 @@ mod tests {
             "expected targeted prefix diagnostic: {generated}"
         );
     }
+
+    fn event_authority_dispatch_uses_precomputed_const_when_available() {
+        let generated = event_authority_dispatch_check(Some([7; 32])).to_string();
+
+        assert!(
+            generated.contains("const __EXPECTED_EVENT_AUTHORITY"),
+            "expected precomputed const path: {generated}"
+        );
+        assert!(
+            generated.contains("Address :: new_from_array"),
+            "expected embedded address bytes: {generated}"
+        );
+        assert!(
+            !generated.contains("find_program_address"),
+            "precomputed path should not call find_program_address: {generated}"
+        );
+    }
+
+    #[test]
+    fn event_authority_dispatch_falls_back_to_runtime_find() {
+        let generated = event_authority_dispatch_check(None).to_string();
+
+        assert!(
+            generated.contains("find_program_address"),
+            "fallback path should still derive the event authority at runtime: {generated}"
+        );
+        assert!(
+            !generated.contains("const __EXPECTED_EVENT_AUTHORITY"),
+            "fallback path should not emit the precomputed constant: {generated}"
+        );
+    }
 }
