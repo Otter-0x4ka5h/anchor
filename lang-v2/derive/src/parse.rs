@@ -651,6 +651,7 @@ pub struct AccountField {
     pub load: TokenStream2,
     pub deferred_load: Option<TokenStream2>,
     pub constraints: Vec<TokenStream2>,
+    pub update: Option<TokenStream2>,
     /// Duplicate-mutable-account check. Collected separately from
     /// `constraints` so all mut-field dup checks can share a single outer
     /// `if let Some(__dups) = __duplicates` gate — non-dup txs pay one
@@ -1473,6 +1474,9 @@ pub fn parse_field(
             load,
             deferred_load: None,
             constraints: vec![],
+            update: Some(quote! {
+                self.#field_name.0.update_accounts()?;
+            }),
             dup_check: None,
             exit,
             has_bump: false,
@@ -1741,6 +1745,7 @@ pub fn parse_field(
 
     // --- Constraints ---
     let mut constraints = Vec::new();
+    let mut updates = Vec::new();
 
     // Writable check is now owned by `AnchorAccount::load_mut` (default
     // impl in `lang-v2/src/traits.rs`), so the derive no longer emits a
@@ -2064,12 +2069,20 @@ pub fn parse_field(
             let update_target = if is_optional {
                 quote! { #field_name }
             } else {
-                quote! { &mut #field_name }
+                quote! { &mut self.#field_name }
             };
-            // `update(...)` — fires regardless of init state.
-            constraints.push(quote! {
+            let update_expected =
+                if nc.is_field_ref && (nc.namespace == "mint" || nc.namespace == "token") {
+                    quote! { anchor_lang_v2::AccountAddress::account_address(&self.#value) }
+                } else if nc.is_field_ref {
+                    quote! { AsRef::as_ref(&self.#value) }
+                } else {
+                    quote! { &#value }
+                };
+            // `update(...)` runs after validation + access-control.
+            updates.push(quote! {
                 <#ns::#key as anchor_lang_v2::AccountConstraint<_>>::update(
-                    #update_target, #expected,
+                    #update_target, #update_expected,
                 )?;
             });
             continue;
@@ -2220,7 +2233,7 @@ pub fn parse_field(
     // Mutable fields use `ref mut` so constraint bodies that need `&mut self`
     // (e.g. BorshAccount::release_borrow in the realloc path) can work.
     // Read-only methods still resolve via auto-deref from `&mut T` to `&T`.
-    let (constraints, exit) = if is_optional {
+    let (constraints, update, exit) = if is_optional {
         let constraints = constraints
             .into_iter()
             .map(|c| {
@@ -2249,6 +2262,16 @@ pub fn parse_field(
                 }
             })
             .collect();
+        let update = if updates.is_empty() {
+            None
+        } else {
+            Some(quote! {
+                if let Some(ref mut #field_name) = self.#field_name {
+                    let _ = &#field_name;
+                    #(#updates)*
+                }
+            })
+        };
         let exit = exit.map(|e| {
             // `e` was built against `self.#field_name` (e.g.
             // `AnchorAccount::exit(&mut self.#field_name)`). For optional
@@ -2307,9 +2330,14 @@ pub fn parse_field(
                 }
             }
         });
-        (constraints, exit)
+        (constraints, update, exit)
     } else {
-        (constraints, exit)
+        let update = if updates.is_empty() {
+            None
+        } else {
+            Some(quote! { #(#updates)* })
+        };
+        (constraints, update, exit)
     };
 
     let contributes_mut_bit = attrs.is_mut && !attrs.is_dup && !is_optional;
@@ -2324,6 +2352,7 @@ pub fn parse_field(
         load,
         deferred_load,
         constraints,
+        update,
         dup_check,
         exit,
         has_bump,
