@@ -1020,7 +1020,7 @@ fn emit_payer_signer_seeds_binding(
                     return Err(anchor_lang_v2::ErrorCode::ConstraintSeeds.into());
                 }
                 let __payer_bump: u8 = #bump_expr;
-                anchor_lang_v2::verify_program_address(
+                anchor_lang_v2::create_and_verify_program_address(
                     &[#(#seed_refs),* , &[__payer_bump]],
                     __program_id,
                     __payer.address(),
@@ -1062,7 +1062,7 @@ fn emit_payer_signer_seeds_binding(
             let __payer_seed_count = __payer_seed_ref.len();
             __payer_seed_buf[..__payer_seed_count].copy_from_slice(__payer_seed_ref);
             __payer_seed_buf[__payer_seed_count] = &__payer_bump_bytes;
-            anchor_lang_v2::verify_program_address(
+            anchor_lang_v2::create_and_verify_program_address(
                 &__payer_seed_buf[..__payer_seed_count + 1],
                 __program_id,
                 __payer.address(),
@@ -1769,7 +1769,7 @@ pub fn parse_field(
                         {
                             #(#seed_bindings)*
                             let __bump_val: u8 = #bump_expr;
-                            anchor_lang_v2::verify_program_address(
+                            anchor_lang_v2::create_and_verify_program_address(
                                 &[#(#seed_refs),* , &[__bump_val]],
                                 #pda_program,
                                 #field_name.account().address(),
@@ -1822,7 +1822,7 @@ pub fn parse_field(
                             let __n = __seed_ref.len();
                             __seed_buf[..__n].copy_from_slice(__seed_ref);
                             __seed_buf[__n] = &__bump_bytes;
-                            anchor_lang_v2::verify_program_address(
+                            anchor_lang_v2::create_and_verify_program_address(
                                 &__seed_buf[..__n + 1],
                                 #pda_program,
                                 #field_name.account().address(),

@@ -178,7 +178,8 @@ pub use {
     context::{Bumps, Context, MutMask},
     context_cpi::{unchecked_invoke_signed_fixed, CpiContext},
     cpi::{
-        create_account, create_account_signed, create_program_address,
+        create_account, create_account_signed, create_and_verify_program_address,
+        create_program_address,
         find_and_verify_program_address, find_and_verify_program_address_skip_curve,
         find_program_address, verify_program_address,
     },

@@ -274,6 +274,26 @@ pub fn verify_program_address(
     }
 }
 
+/// Strictly verify that `expected` matches the PDA derived from `seeds`.
+///
+/// Unlike [`verify_program_address`], this re-runs the full
+/// [`create_program_address`] validation path so the derived address must be
+/// off-curve and the seed tuple must satisfy the runtime's PDA shape rules.
+/// Use this when the bump byte is caller-controlled.
+#[inline(always)]
+pub fn create_and_verify_program_address(
+    seeds: &[&[u8]],
+    program_id: &Address,
+    expected: &Address,
+) -> Result<(), ProgramError> {
+    let computed = create_program_address(seeds, program_id)?;
+    if pinocchio::address::address_eq(&computed, expected) {
+        Ok(())
+    } else {
+        Err(ProgramError::InvalidSeeds)
+    }
+}
+
 /// Like [`find_and_verify_program_address`] but skips `sol_curve_validate_point`.
 ///
 /// Safe when the account was signed for (`MIN_DATA_LEN > 0` or `init`):
