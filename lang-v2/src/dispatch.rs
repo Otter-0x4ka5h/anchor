@@ -57,6 +57,8 @@ pub trait TryAccounts: Bumps + Sized {
         ix_data: &'ix [u8],
     ) -> Result<(Self, Self::Bumps, Self::IxArgs<'ix>), ProgramError>;
 
+    fn update_accounts(&mut self) -> Result<(), ProgramError>;
+
     fn exit_accounts<'ix>(&mut self, ix_data: &'ix [u8]) -> Result<(), ProgramError>;
 }
 

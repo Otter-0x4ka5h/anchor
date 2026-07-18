@@ -1013,7 +1013,7 @@ fn impl_accounts(input: &DeriveInput) -> TokenStream2 {
         .filter_map(|f| f.deferred_load.as_ref())
         .collect();
     let constraints: Vec<_> = fields.iter().flat_map(|f| &f.constraints).collect();
-    let updates: Vec<_> = fields.iter().flat_map(|f| &f.updates).collect();
+    let updates: Vec<_> = fields.iter().filter_map(|f| f.update.as_ref()).collect();
     let exits: Vec<_> = fields.iter().filter_map(|f| f.exit.as_ref()).collect();
     // Bumps fields. Optional accounts get `Option<u8>` so the default
     // (`None`) maps cleanly to the sentinel-`None` load path; the seeds
@@ -1881,8 +1881,13 @@ fn impl_accounts(input: &DeriveInput) -> TokenStream2 {
                 #(#loads)*
                 #(#deferred_loads)*
                 #(#constraints)*
-                #(#updates)*
                 Ok((Self { #(#field_names),* }, __bumps, #ix_args_return))
+            }
+
+            #[inline(always)]
+            fn update_accounts(&mut self) -> anchor_lang_v2::Result<()> {
+                #(#updates)*
+                Ok(())
             }
 
             //
@@ -5003,6 +5008,17 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
                     true
                 }
             });
+            if let Some(syn::FnArg::Typed(pt)) = func.sig.inputs.first() {
+                if let syn::Pat::Ident(pi) = &*pt.pat {
+                    let ctx_ident = &pi.ident;
+                    func.block.stmts.insert(
+                        0,
+                        syn::parse_quote! {
+                            anchor_lang_v2::TryAccounts::update_accounts(&mut #ctx_ident.accounts)?;
+                        },
+                    );
+                }
+            }
             func
         })
         .collect();
