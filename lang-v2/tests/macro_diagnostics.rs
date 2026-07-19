@@ -623,6 +623,93 @@ pub mod qualified_paths {
     miri,
     ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
 )]
+fn seeds_preserve_nontrivial_as_ref_receivers() {
+    compile_pass_case(
+        "seed_nontrivial_as_ref",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+#[derive(SchemaRead, SchemaWrite)]
+pub struct SeedBuf(Vec<u8>);
+
+impl SeedBuf {
+    pub fn as_ref(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+}
+
+#[account(borsh)]
+pub struct Config {
+    pub seed: SeedBuf,
+}
+
+#[derive(Accounts)]
+pub struct Good {
+    pub config: BorshAccount<Config>,
+    #[account(seeds = [config.seed.as_ref()], bump)]
+    pub target: UncheckedAccount,
+}
+"#,
+    );
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
+fn init_opaque_seed_expressions_keep_bump_bytes_alive() {
+    compile_pass_case(
+        "init_opaque_seed_expr",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+#[account(borsh)]
+pub struct Data {
+    pub value: u64,
+}
+
+pub struct SeedBundle<'a>([&'a [u8]; 1]);
+
+impl<'a> SeedBundle<'a> {
+    pub fn for_payer(payer: &'a [u8]) -> Self {
+        Self([payer])
+    }
+}
+
+impl<'a> AsRef<[&'a [u8]]> for SeedBundle<'a> {
+    fn as_ref(&self) -> &[&'a [u8]] {
+        &self.0
+    }
+}
+
+#[derive(Accounts)]
+pub struct Good {
+    #[account(mut)]
+    pub payer: Signer,
+    #[account(
+        init,
+        payer = payer,
+        space = 8 + core::mem::size_of::<Data>(),
+        seeds = SeedBundle::for_payer(payer.address().as_ref()),
+        bump
+    )]
+    pub data: BorshAccount<Data>,
+    pub system_program: Program<System>,
+}
+"#,
+    );
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
 fn init_payer_must_be_mutable() {
     compile_fail_case(
         "init_payer_must_be_mutable",
