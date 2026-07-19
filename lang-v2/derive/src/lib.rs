@@ -1,6 +1,7 @@
 extern crate proc_macro;
 
 mod access_control;
+mod cfg_eval;
 mod constant;
 mod error_code;
 mod idl;
@@ -657,6 +658,16 @@ fn nested_client_accounts_type(ty: &Type) -> Option<TokenStream2> {
 
 fn idl_field_ty(field: &parse::AccountField) -> Option<&Type> {
     field.idl_field_ty.as_ref()
+}
+
+fn cfg_filtered_fields(fields: &syn::Fields) -> syn::Fields {
+    cfg_eval::filter_fields(fields)
+}
+
+fn cfg_filtered_variants(
+    variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
+) -> syn::punctuated::Punctuated<syn::Variant, syn::token::Comma> {
+    cfg_eval::filter_variants(variants)
 }
 
 fn client_meta_signer_expr(field: &parse::AccountField) -> TokenStream2 {
@@ -1887,6 +1898,7 @@ pub fn account(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .into()
         }
     };
+    let idl_fields = cfg_filtered_fields(fields);
 
     use sha2::Digest;
     let hash = sha2::Sha256::digest(format!("account:{name_str}").as_bytes());
@@ -1911,7 +1923,7 @@ pub fn account(attr: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         idl::TypeKind::BytemuckRepr
     };
-    let idl_type_strings = if let Fields::Named(named) = fields {
+    let idl_type_strings = if let Fields::Named(named) = &idl_fields {
         idl::build_type_strings(&name_str, disc_bytes, &struct_docs, &named.named, type_kind)
     } else {
         idl::build_type_strings(
@@ -1933,7 +1945,7 @@ pub fn account(attr: TokenStream, item: TokenStream) -> TokenStream {
     // IDL's `types[]` array even when the user never wrote `#[account]` on
     // them (e.g. a plain `#[derive(IdlType)] struct Inner` embedded in this
     // account's body).
-    let idl_field_tys: Vec<&Type> = match fields {
+    let idl_field_tys: Vec<&Type> = match &idl_fields {
         Fields::Named(named) => named.named.iter().map(|f| &f.ty).collect(),
         Fields::Unnamed(unnamed) => unnamed.unnamed.iter().map(|f| &f.ty).collect(),
         Fields::Unit => Vec::new(),
@@ -2016,7 +2028,7 @@ pub fn account(attr: TokenStream, item: TokenStream) -> TokenStream {
             quote! {},
         )
     } else {
-        let field_types: Vec<_> = if let Fields::Named(named) = fields {
+        let field_types: Vec<_> = if let Fields::Named(named) = &idl_fields {
             named.named.iter().map(|f| &f.ty).collect()
         } else {
             vec![]
@@ -2028,21 +2040,21 @@ pub fn account(attr: TokenStream, item: TokenStream) -> TokenStream {
         // Intentionally avoids recommending `#[account(borsh)]` — borsh is a
         // per-instruction serialization cost, rarely what the user actually
         // wants. The fix is almost always a Pod-compatible alternative.
-        let field_diagnostics: Vec<proc_macro2::TokenStream> = if let Fields::Named(named) = fields
-        {
-            named
-                .named
-                .iter()
-                .filter_map(|f| {
-                    let fname = f.ident.as_ref()?.to_string();
-                    let msg = diagnose_non_pod_field(&f.ty, &fname, &name_str)?;
-                    let span = f.ty.span();
-                    Some(quote::quote_spanned!(span=> const _: () = { compile_error!(#msg); };))
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let field_diagnostics: Vec<proc_macro2::TokenStream> =
+            if let Fields::Named(named) = &idl_fields {
+                named
+                    .named
+                    .iter()
+                    .filter_map(|f| {
+                        let fname = f.ident.as_ref()?.to_string();
+                        let msg = diagnose_non_pod_field(&f.ty, &fname, &name_str)?;
+                        let span = f.ty.span();
+                        Some(quote::quote_spanned!(span=> const _: () = { compile_error!(#msg); };))
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
         (
             quote! { #[derive(Clone, Copy)] #[repr(C)] },
@@ -2188,14 +2200,15 @@ pub fn derive_idl_type(input: TokenStream) -> TokenStream {
     // `IdlType` is layout-agnostic — users opt into Pod separately via
     // their own `bytemuck::Pod` derive if they need zero-copy. Forcing a
     // `"bytemuck"` tag here would lie in the IDL for non-Pod types.
-    let (idl_type_strings, field_tys) = match &input.data {
+    let (idl_type_strings, field_tys): (_, Vec<Type>) = match &input.data {
         Data::Struct(data) => {
+            let filtered_fields = cfg_filtered_fields(&data.fields);
             if let Err(err) =
-                reject_wincode_idl_overrides_in_fields("`#[derive(IdlType)]`", &data.fields)
+                reject_wincode_idl_overrides_in_fields("`#[derive(IdlType)]`", &filtered_fields)
             {
                 return err.to_compile_error().into();
             }
-            let strings = match &data.fields {
+            let strings = match &filtered_fields {
                 Fields::Named(named) => idl::build_type_strings(
                     &name_str,
                     &empty_disc,
@@ -2220,16 +2233,17 @@ pub fn derive_idl_type(input: TokenStream) -> TokenStream {
             // Walk fields for the transitive dep registration. Tuple structs
             // still contribute their field types; unit structs have no inner
             // fields to recurse into.
-            let field_tys: Vec<&Type> = match &data.fields {
-                Fields::Named(named) => named.named.iter().map(|f| &f.ty).collect(),
-                Fields::Unnamed(unnamed) => unnamed.unnamed.iter().map(|f| &f.ty).collect(),
+            let field_tys: Vec<Type> = match &filtered_fields {
+                Fields::Named(named) => named.named.iter().map(|f| f.ty.clone()).collect(),
+                Fields::Unnamed(unnamed) => unnamed.unnamed.iter().map(|f| f.ty.clone()).collect(),
                 Fields::Unit => Vec::new(),
             };
             (strings, field_tys)
         }
         Data::Enum(data) => {
+            let filtered_variants = cfg_filtered_variants(&data.variants);
             if let Err(err) =
-                reject_wincode_idl_overrides_in_variants("`#[derive(IdlType)]`", &data.variants)
+                reject_wincode_idl_overrides_in_variants("`#[derive(IdlType)]`", &filtered_variants)
             {
                 return err.to_compile_error().into();
             }
@@ -2237,18 +2251,21 @@ pub fn derive_idl_type(input: TokenStream) -> TokenStream {
                 &name_str,
                 &empty_disc,
                 &docs,
-                &data.variants,
+                &filtered_variants,
                 idl::TypeKind::Borsh,
             );
             // Every variant's fields contribute dependent types for the
             // transitive walker — a `Foo::Bar(Inner)` variant needs to pull
             // `Inner` into `types[]` just like a struct field would.
-            let field_tys: Vec<&Type> = data
-                .variants
+            let field_tys: Vec<Type> = filtered_variants
                 .iter()
                 .flat_map(|v| match &v.fields {
-                    Fields::Named(named) => named.named.iter().map(|f| &f.ty).collect::<Vec<_>>(),
-                    Fields::Unnamed(unnamed) => unnamed.unnamed.iter().map(|f| &f.ty).collect(),
+                    Fields::Named(named) => {
+                        named.named.iter().map(|f| f.ty.clone()).collect::<Vec<_>>()
+                    }
+                    Fields::Unnamed(unnamed) => {
+                        unnamed.unnamed.iter().map(|f| f.ty.clone()).collect()
+                    }
                     Fields::Unit => Vec::new(),
                 })
                 .collect();
@@ -4598,7 +4615,9 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
     let mut other_items = Vec::new();
     for item in content {
         if let syn::Item::Fn(func) = item {
-            if matches!(&func.vis, syn::Visibility::Public(_)) {
+            if matches!(&func.vis, syn::Visibility::Public(_))
+                && cfg_eval::cfg_attrs_match(&func.attrs)
+            {
                 handlers.push(func);
                 continue;
             }
@@ -5250,6 +5269,7 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .into()
         }
     };
+    let idl_fields = cfg_filtered_fields(fields);
 
     use sha2::Digest;
     let hash = sha2::Sha256::digest(format!("event:{name_str}").as_bytes());
@@ -5274,11 +5294,11 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
     let struct_docs = idl::extract_doc_lines(attrs);
     if matches!(mode, EventMode::Wincode) {
-        if let Err(err) = reject_wincode_idl_overrides_in_fields("`#[event]`", fields) {
+        if let Err(err) = reject_wincode_idl_overrides_in_fields("`#[event]`", &idl_fields) {
             return err.to_compile_error().into();
         }
     }
-    let event_type_strings = if let Fields::Named(named) = fields {
+    let event_type_strings = if let Fields::Named(named) = &idl_fields {
         idl::build_type_strings(&name_str, disc_bytes, &struct_docs, &named.named, type_kind)
     } else {
         idl::build_type_strings(
@@ -5299,7 +5319,7 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
     // `type_def_json` into the types accumulator via its `__IDL_TYPE_DEF`
     // const; field-type deps fan out from there so plain user structs
     // referenced by `pub inner: Inner` land in `types[]` too.
-    let idl_field_tys: Vec<&Type> = match fields {
+    let idl_field_tys: Vec<&Type> = match &idl_fields {
         Fields::Named(named) => named.named.iter().map(|f| &f.ty).collect(),
         Fields::Unnamed(unnamed) => unnamed.unnamed.iter().map(|f| &f.ty).collect(),
         Fields::Unit => Vec::new(),
@@ -5410,7 +5430,7 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
             #idl_event_print
         }),
         EventMode::Bytemuck => {
-            let field_types: Vec<_> = fields.iter().map(|f| &f.ty).collect();
+            let field_types: Vec<_> = idl_fields.iter().map(|f| &f.ty).collect();
 
             // Targeted diagnostics for common non-Pod field types. Fires
             // *before* the generic `assert_pod::<T>` bound so users hit a
@@ -5419,7 +5439,7 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
             // `#[account]` zero-copy codegen. Borsh mode is suggested here
             // because (unlike `#[account]`) events have a correct dynamic
             // fallback — see `diagnose_non_pod_event_field`.
-            let field_diagnostics: Vec<_> = fields
+            let field_diagnostics: Vec<_> = idl_fields
                 .iter()
                 .filter_map(|field| {
                     let field_name = field

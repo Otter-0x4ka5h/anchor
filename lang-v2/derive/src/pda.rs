@@ -52,6 +52,9 @@ fn try_discover_program_id() -> Option<[u8; 32]> {
 
     for item in &file.items {
         if let syn::Item::Macro(item_macro) = item {
+            if !crate::cfg_eval::cfg_attrs_match(&item_macro.attrs) {
+                continue;
+            }
             let last = item_macro.mac.path.segments.last()?;
             if last.ident != "declare_id" {
                 continue;
@@ -181,6 +184,8 @@ pub(crate) fn precompute_pda(seeds: &[&[u8]], program_id: &[u8; 32]) -> Option<(
 mod tests {
     use super::*;
 
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Known-value test: `find_program_address(&[b""], DHvAxn78...)` must
     /// return bump = 253. Verified against cargo-expand output of the
     /// anchor-v2-testing `CheckEmptySeedPda` struct, which uses exactly
@@ -253,4 +258,51 @@ mod tests {
             "precompute_pda must reject literal seeds that runtime PDA derivation would reject"
         );
     }
-}
+
+    #[test]
+     fn discover_program_id_ignores_cfg_disabled_declarations() {
+         let _guard = ENV_LOCK.lock().unwrap();
+         let original_manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR");
+        let disabled_feature = "CARGO_FEATURE_DISABLED";
+        let temp_root = std::env::temp_dir().join(format!(
+            "anchor-derive-pda-cfg-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let src_dir = temp_root.join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(
+            src_dir.join("lib.rs"),
+            r#"
+#[cfg(feature = "disabled")]
+declare_id!("11111111111111111111111111111111");
+
+declare_id!("So11111111111111111111111111111111111111112");
+"#,
+        )
+        .unwrap();
+
+        std::env::set_var("CARGO_MANIFEST_DIR", &temp_root);
+        std::env::remove_var(disabled_feature);
+        CACHED_PROGRAM_ID.with(|cell| *cell.borrow_mut() = None);
+
+        let discovered = discover_program_id().expect("expected enabled declare_id! to be used");
+        let expected = bs58::decode("So11111111111111111111111111111111111111112")
+            .into_vec()
+            .expect("valid base58");
+        let mut expected_arr = [0_u8; 32];
+        expected_arr.copy_from_slice(&expected);
+        assert_eq!(discovered, expected_arr);
+
+        CACHED_PROGRAM_ID.with(|cell| *cell.borrow_mut() = None);
+        if let Some(value) = original_manifest_dir {
+            std::env::set_var("CARGO_MANIFEST_DIR", value);
+         } else {
+             std::env::remove_var("CARGO_MANIFEST_DIR");
+         }
+         let _ = std::fs::remove_dir_all(&temp_root);
+     }
+ }
