@@ -868,7 +868,7 @@ fn validate_init_constraint_refs(
             return Err(syn::Error::new(
                 nc.value.span(),
                 format!(
-                    "`{}::{}` init constraint requires a sibling account field reference",
+                    "SPL init constraint `{}::{}` needs an AccountView, not a pubkey. Use a sibling account field of your Accounts struct instead of a const or field access",
                     nc.namespace, nc.raw_key
                 ),
             ));
