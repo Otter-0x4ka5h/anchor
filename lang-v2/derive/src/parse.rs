@@ -2340,6 +2340,35 @@ mod tests {
     }
 
     #[test]
+    fn seeds_program_without_seeds_is_rejected() {
+        let attrs: Vec<Attribute> = vec![syn::parse_quote!(
+            #[account(seeds::program = other_program.key())]
+        )];
+        let err = match parse_account_attrs(&attrs) {
+            Ok(_) => panic!("seeds::program without seeds must be rejected"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("seeds must be provided before seeds::program"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn empty_seed_array_with_seeds_program_is_accepted() {
+        let attrs: Vec<Attribute> = vec![syn::parse_quote!(
+            #[account(seeds = [], seeds::program = other_program.key())]
+        )];
+        let parsed = parse_account_attrs(&attrs).expect("empty seeds array remains valid");
+        let Expr::Array(arr) = parsed.seeds.expect("seed array should be preserved") else {
+            panic!("expected parsed seeds to stay as an array expression");
+        };
+        assert!(arr.elems.is_empty());
+        assert!(parsed.seeds_program.is_some());
+    }
+
+    #[test]
     fn close_does_not_imply_mutability() {
         let attrs: Vec<Attribute> = vec![syn::parse_quote!(
             #[account(close = receiver)]
