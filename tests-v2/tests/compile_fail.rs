@@ -760,6 +760,42 @@ pub fn use_declared_types(
 }
 
 #[test]
+fn declare_program_mixed_object_field_shapes_fail_cleanly() {
+    CompileCase::new(
+        "declare_program_mixed_object_field_shapes",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+declare_program!(bad);
+"#,
+    )
+    .file(
+        "idls/bad.json",
+        r#"{
+  "address": "11111111111111111111111111111111",
+  "metadata": { "name": "bad", "version": "0.1.0", "spec": "0.1.0" },
+  "instructions": [],
+  "types": [
+    {
+      "name": "MixedFields",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bytes",
+            "type": { "vec": "u8" }
+          },
+          { "option": "bool" }
+        ]
+      }
+    }
+  ]
+}"#,
+    )
+    .expect_fail(&["failed to parse IDL", "IdlDefinedFields"]);
+}
+
+#[test]
 fn declare_program_non_returning_cpi_has_no_return_wrapper() {
     CompileCase::new(
         "declare_program_non_return_wrapper",
