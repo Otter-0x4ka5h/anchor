@@ -2782,6 +2782,8 @@ fn gen_declared_program(
                 pub struct #marker_name;
 
                 impl anchor_lang_v2::Id for #marker_name {
+                    const IDL_ADDRESS: &'static str = #address_lit;
+
                     fn id() -> anchor_lang_v2::Address {
                         super::ID
                     }
@@ -6654,6 +6656,26 @@ mod tests {
     }
 
     #[test]
+    fn nested_accounts_register_idl_deps_through_nested_wrapper() {
+        let input: syn::DeriveInput = syn::parse_quote! {
+            pub struct Outer {
+                pub nested: anchor_lang_v2::Nested<Inner>,
+            }
+        };
+
+        let generated = impl_accounts(&input).to_string();
+
+        assert!(
+            generated.contains(
+                "< anchor_lang_v2 :: Nested < Inner > as anchor_lang_v2 :: IdlAccountType > \
+                 :: __register_idl_deps"
+            ),
+            "nested accounts should forward IDL dep registration through the Nested wrapper: \
+             {generated}"
+        );
+    }
+
+    #[test]
     fn event_authority_dispatch_uses_precomputed_const_when_available() {
         let generated = event_authority_dispatch_check(Some([7; 32])).to_string();
 
@@ -6876,6 +6898,39 @@ mod tests {
         assert!(
             generated.contains("must take `&mut Context<T>` as an identifier like `ctx`, `_`, or `Context { .. }`"),
             "expected targeted top-level pattern error, got: {generated}"
+        );
+    }
+
+    #[test]
+    fn declare_program_markers_emit_known_idl_addresses() {
+        let idl = serde_json::json!({
+            "address": "Externa1111111111111111111111111111111111111",
+            "metadata": {
+                "name": "fixture",
+                "version": "0.1.0",
+                "spec": "0.1.0"
+            },
+            "instructions": [{
+                "name": "ping",
+                "discriminator": [1, 2, 3, 4, 5, 6, 7, 8],
+                "accounts": [],
+                "args": []
+            }],
+            "accounts": [],
+            "types": []
+        });
+        let name: syn::Ident = syn::parse_quote!(fixture);
+
+        let generated = gen_declared_program(&name, &idl)
+            .expect("fixture IDL should generate")
+            .to_string();
+
+        assert!(
+            generated.contains(
+                "const IDL_ADDRESS : & 'static str = \"Externa1111111111111111111111111111111111111\""
+            ),
+            "declare_program markers should expose their known address for IDL emission: \
+             {generated}"
         );
     }
 }
