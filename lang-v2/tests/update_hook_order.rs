@@ -5,9 +5,13 @@ use {
         wincode::{SchemaRead, SchemaWrite},
         AccountConstraint, Accounts, AnchorAccount, Discriminator, ErrorCode, Owner, TryAccounts,
     },
+    core::{mem::size_of, ptr},
     pinocchio::address::Address,
+    pinocchio::account::{MAX_PERMITTED_DATA_INCREASE, RuntimeAccount},
     solana_program_error::ProgramError,
 };
+
+anchor_lang_v2::declare_id!("11111111111111111111111111111111");
 
 const PROGRAM_ID: [u8; 32] = [0x42; 32];
 const OLD_AUTHORITY: [u8; 32] = [0x10; 32];
@@ -52,6 +56,18 @@ struct RotateAuthority {
     new_authority: UncheckedAccount,
 }
 
+#[anchor_lang_v2::program]
+mod demo_program {
+    use super::*;
+
+    pub fn rotate(ctx: &mut anchor_lang_v2::Context<RotateAuthority>) -> anchor_lang_v2::Result<()> {
+        if ctx.accounts.vault.current_authority.to_bytes() != NEW_AUTHORITY {
+            return Err(anchor_lang_v2::ErrorCode::ConstraintAddress.into());
+        }
+        Ok(())
+    }
+}
+
 fn expect_err<T>(result: Result<T, ProgramError>) -> ProgramError {
     match result {
         Ok(_) => panic!("expected Err, got Ok"),
@@ -84,6 +100,54 @@ fn unchecked_account(address: [u8; 32]) -> AccountBuffer<128> {
 fn read_vault_authority(buf: &AccountBuffer<128>) -> [u8; 32] {
     let data = buf.read_data();
     data[8..40].try_into().unwrap()
+}
+
+fn build_dispatch_input<const N: usize>(accounts: &[&AccountBuffer<N>]) -> Vec<u64> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&(accounts.len() as u64).to_le_bytes());
+
+    for account in accounts {
+        while bytes.len() % 8 != 0 {
+            bytes.push(0);
+        }
+
+        let raw = account.raw();
+        let header = unsafe {
+            core::slice::from_raw_parts(raw as *const u8, size_of::<RuntimeAccount>())
+        };
+        bytes.extend_from_slice(header);
+        bytes.extend_from_slice(account.read_data());
+        bytes.extend(core::iter::repeat_n(0u8, MAX_PERMITTED_DATA_INCREASE));
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+    }
+
+    let mut backing = vec![0u64; bytes.len().div_ceil(8)];
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), backing.as_mut_ptr() as *mut u8, bytes.len());
+    }
+    backing
+}
+
+fn read_vault_authority_from_dispatch_input(input: &[u64]) -> [u8; 32] {
+    unsafe {
+        let account = input.as_ptr().cast::<u8>().add(size_of::<u64>()) as *const RuntimeAccount;
+        let data_len = (*account).data_len as usize;
+        let data = core::slice::from_raw_parts(
+            (account as *const u8).add(size_of::<RuntimeAccount>()),
+            data_len,
+        );
+        data[8..40].try_into().unwrap()
+    }
+}
+
+fn build_rotate_ix_data() -> Vec<u8> {
+    let ix = crate::instruction::Rotate {};
+    let data = <crate::instruction::Rotate as anchor_lang_v2::InstructionData>::data(&ix);
+    let mut buf = Vec::with_capacity(size_of::<u64>() + data.len() + 32);
+    buf.extend_from_slice(&(data.len() as u64).to_le_bytes());
+    buf.extend_from_slice(&data);
+    buf.extend_from_slice(&crate::ID.to_bytes());
+    buf
 }
 
 #[test]
@@ -148,4 +212,26 @@ fn try_accounts_still_runs_updates_for_direct_callers() {
             .expect("direct callers should still receive updated accounts");
 
     assert_eq!(accounts.vault.current_authority.to_bytes(), NEW_AUTHORITY);
+}
+
+#[test]
+fn generated_dispatch_runs_update_phase_before_user_handler() {
+    let vault = vault_account(OLD_AUTHORITY);
+    let current = signer_account(OLD_AUTHORITY, true);
+    let replacement = unchecked_account(NEW_AUTHORITY);
+    let mut input = build_dispatch_input(&[&vault, &current, &replacement]);
+    let ix_buf = build_rotate_ix_data();
+
+    let result =
+        unsafe { crate::__anchor_dispatch(input.as_mut_ptr() as *mut u8, ix_buf.as_ptr().add(8)) };
+
+    assert_eq!(
+        result, 0,
+        "generated dispatch must run updates before the user handler observes accounts"
+    );
+    assert_eq!(
+        read_vault_authority_from_dispatch_input(&input),
+        NEW_AUTHORITY,
+        "generated dispatch must persist update-phase mutations when exit_accounts runs"
+    );
 }
