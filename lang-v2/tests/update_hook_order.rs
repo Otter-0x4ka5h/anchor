@@ -116,9 +116,14 @@ fn update_accounts_runs_after_validation_and_persists_on_exit() {
         replacement.view()
     }];
 
-    let (mut accounts, _, _) =
-        RotateAuthority::try_accounts(&Address::new_from_array(PROGRAM_ID), &views, None, 0, &[])
-            .expect("authority check should pass before updates");
+    let (mut accounts, _, _) = <RotateAuthority as TryAccounts>::validate_accounts(
+        &Address::new_from_array(PROGRAM_ID),
+        &views,
+        None,
+        0,
+        &[],
+    )
+    .expect("authority check should pass before updates");
 
     assert_eq!(accounts.vault.current_authority.to_bytes(), OLD_AUTHORITY);
 
@@ -127,4 +132,20 @@ fn update_accounts_runs_after_validation_and_persists_on_exit() {
 
     accounts.exit_accounts().unwrap();
     assert_eq!(read_vault_authority(&vault), NEW_AUTHORITY);
+}
+
+#[test]
+fn try_accounts_still_runs_updates_for_direct_callers() {
+    let vault = vault_account(OLD_AUTHORITY);
+    let current = signer_account(OLD_AUTHORITY, true);
+    let replacement = unchecked_account(NEW_AUTHORITY);
+    let views = [unsafe { vault.view() }, unsafe { current.view() }, unsafe {
+        replacement.view()
+    }];
+
+    let (accounts, _, _) =
+        RotateAuthority::try_accounts(&Address::new_from_array(PROGRAM_ID), &views, None, 0, &[])
+            .expect("direct callers should still receive updated accounts");
+
+    assert_eq!(accounts.vault.current_authority.to_bytes(), NEW_AUTHORITY);
 }
