@@ -62,7 +62,7 @@ use anchor_lang_v2::prelude::*;
 
 declare_id!("11111111111111111111111111111111");
 
-#[derive(SchemaRead, SchemaWrite)]
+#[derive(anchor_lang_v2::wincode::SchemaRead, anchor_lang_v2::wincode::SchemaWrite)]
 pub struct SeedBuf(Vec<u8>);
 
 impl SeedBuf {
@@ -71,22 +71,22 @@ impl SeedBuf {
     }
 }
 
-#[derive(SchemaRead, SchemaWrite)]
-pub struct Config {
+#[derive(anchor_lang_v2::wincode::SchemaRead, anchor_lang_v2::wincode::SchemaWrite)]
+pub struct SeedConfig {
     pub seed: SeedBuf,
 }
 
-impl Owner for Config {
+impl Owner for SeedConfig {
     const OWNER: Address = crate::ID;
 }
 
-impl Discriminator for Config {
+impl Discriminator for SeedConfig {
     const DISCRIMINATOR: &'static [u8] = &[0x63, 0x66, 0x67, 0x2d, 0x73, 0x65, 0x65, 0x64];
 }
 
 #[derive(Accounts)]
 pub struct Good {
-    pub config: BorshAccount<Config>,
+    pub config: BorshAccount<SeedConfig>,
     #[account(seeds = [config.seed.as_ref()], bump)]
     pub target: UncheckedAccount,
 }
@@ -107,7 +107,7 @@ use anchor_lang_v2::prelude::*;
 
 declare_id!("11111111111111111111111111111111");
 
-#[derive(SchemaRead, SchemaWrite)]
+#[derive(anchor_lang_v2::wincode::SchemaRead, anchor_lang_v2::wincode::SchemaWrite)]
 pub struct Data {
     pub value: u64,
 }
