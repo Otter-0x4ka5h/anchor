@@ -268,7 +268,8 @@ pub fn build_accounts_emission(fields: &[AccountsJsonField<'_>]) -> TokenStream2
             if let Some(ty) = f.field_ty {
                 let addr_json_expr = if let Some(address_expr) = f.address_override_expr {
                     quote! {
-                        let __addr: anchor_lang_v2::Address = #address_expr;
+                        let __addr: anchor_lang_v2::Address =
+                            ::core::convert::Into::into(#address_expr);
                         let __addr_json: anchor_lang_v2::__alloc::string::String =
                             anchor_lang_v2::__alloc::format!(",\"address\":\"{}\"", __addr);
                     }
