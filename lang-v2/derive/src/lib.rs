@@ -660,13 +660,13 @@ fn idl_field_ty(field: &parse::AccountField) -> Option<&Type> {
     field.idl_field_ty.as_ref()
 }
 
-fn cfg_filtered_fields(fields: &syn::Fields) -> syn::Fields {
+fn cfg_filtered_fields(fields: &syn::Fields) -> syn::Result<syn::Fields> {
     cfg_eval::filter_fields(fields)
 }
 
 fn cfg_filtered_variants(
     variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
-) -> syn::punctuated::Punctuated<syn::Variant, syn::token::Comma> {
+) -> syn::Result<syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>> {
     cfg_eval::filter_variants(variants)
 }
 
@@ -1898,7 +1898,10 @@ pub fn account(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .into()
         }
     };
-    let idl_fields = cfg_filtered_fields(fields);
+    let idl_fields = match cfg_filtered_fields(fields) {
+        Ok(fields) => fields,
+        Err(err) => return err.to_compile_error().into(),
+    };
 
     use sha2::Digest;
     let hash = sha2::Sha256::digest(format!("account:{name_str}").as_bytes());
@@ -2200,17 +2203,20 @@ pub fn derive_idl_type(input: TokenStream) -> TokenStream {
     // `IdlType` is layout-agnostic — users opt into Pod separately via
     // their own `bytemuck::Pod` derive if they need zero-copy. Forcing a
     // `"bytemuck"` tag here would lie in the IDL for non-Pod types.
-    let (idl_type_strings, field_tys): (_, Vec<Type>) = match &input.data {
-        Data::Struct(data) => {
-            let filtered_fields = cfg_filtered_fields(&data.fields);
-            if let Err(err) =
-                reject_wincode_idl_overrides_in_fields("`#[derive(IdlType)]`", &filtered_fields)
-            {
-                return err.to_compile_error().into();
-            }
-            let strings = match &filtered_fields {
-                Fields::Named(named) => idl::build_type_strings(
-                    &name_str,
+        let (idl_type_strings, field_tys): (_, Vec<Type>) = match &input.data {
+            Data::Struct(data) => {
+                let filtered_fields = match cfg_filtered_fields(&data.fields) {
+                    Ok(fields) => fields,
+                    Err(err) => return err.to_compile_error().into(),
+                };
+                if let Err(err) =
+                    reject_wincode_idl_overrides_in_fields("`#[derive(IdlType)]`", &filtered_fields)
+                {
+                    return err.to_compile_error().into();
+                }
+                let strings = match &filtered_fields {
+                    Fields::Named(named) => idl::build_type_strings(
+                        &name_str,
                     &empty_disc,
                     &docs,
                     &named.named,
@@ -2238,18 +2244,22 @@ pub fn derive_idl_type(input: TokenStream) -> TokenStream {
                 Fields::Unnamed(unnamed) => unnamed.unnamed.iter().map(|f| f.ty.clone()).collect(),
                 Fields::Unit => Vec::new(),
             };
-            (strings, field_tys)
-        }
-        Data::Enum(data) => {
-            let filtered_variants = cfg_filtered_variants(&data.variants);
-            if let Err(err) =
-                reject_wincode_idl_overrides_in_variants("`#[derive(IdlType)]`", &filtered_variants)
-            {
-                return err.to_compile_error().into();
+                (strings, field_tys)
             }
-            let strings = idl::build_enum_type_strings(
-                &name_str,
-                &empty_disc,
+            Data::Enum(data) => {
+                let filtered_variants = match cfg_filtered_variants(&data.variants) {
+                    Ok(variants) => variants,
+                    Err(err) => return err.to_compile_error().into(),
+                };
+                if let Err(err) = reject_wincode_idl_overrides_in_variants(
+                    "`#[derive(IdlType)]`",
+                    &filtered_variants,
+                ) {
+                    return err.to_compile_error().into();
+                }
+                let strings = idl::build_enum_type_strings(
+                    &name_str,
+                    &empty_disc,
                 &docs,
                 &filtered_variants,
                 idl::TypeKind::Borsh,
@@ -4616,7 +4626,10 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
     for item in content {
         if let syn::Item::Fn(func) = item {
             if matches!(&func.vis, syn::Visibility::Public(_))
-                && cfg_eval::cfg_attrs_match(&func.attrs)
+                && match cfg_eval::cfg_attrs_match(&func.attrs) {
+                    Ok(matches) => matches,
+                    Err(err) => return err.to_compile_error(),
+                }
             {
                 handlers.push(func);
                 continue;
@@ -5269,7 +5282,10 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .into()
         }
     };
-    let idl_fields = cfg_filtered_fields(fields);
+    let idl_fields = match cfg_filtered_fields(fields) {
+        Ok(fields) => fields,
+        Err(err) => return err.to_compile_error().into(),
+    };
 
     use sha2::Digest;
     let hash = sha2::Sha256::digest(format!("event:{name_str}").as_bytes());

@@ -52,7 +52,14 @@ fn try_discover_program_id() -> Option<[u8; 32]> {
 
     for item in &file.items {
         if let syn::Item::Macro(item_macro) = item {
-            if !crate::cfg_eval::cfg_attrs_match(&item_macro.attrs) {
+            let Some(cfg_matches) =
+                crate::cfg_eval::cfg_attrs_match_if_known(&item_macro.attrs).ok()?
+            else {
+                // If we can't prove which `declare_id!` is active, disable
+                // compile-time PDA precomputation and fall back to runtime.
+                return None;
+            };
+            if !cfg_matches {
                 continue;
             }
             let last = item_macro.mac.path.segments.last()?;
@@ -300,9 +307,51 @@ declare_id!("So11111111111111111111111111111111111111112");
         CACHED_PROGRAM_ID.with(|cell| *cell.borrow_mut() = None);
         if let Some(value) = original_manifest_dir {
             std::env::set_var("CARGO_MANIFEST_DIR", value);
-         } else {
-             std::env::remove_var("CARGO_MANIFEST_DIR");
-         }
-         let _ = std::fs::remove_dir_all(&temp_root);
-     }
- }
+        } else {
+            std::env::remove_var("CARGO_MANIFEST_DIR");
+        }
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn discover_program_id_skips_target_cfg_gated_declarations_when_cfg_is_unknown() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let original_manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR");
+        let target_os_key = "CARGO_CFG_TARGET_OS";
+        let temp_root = std::env::temp_dir().join(format!(
+            "anchor-derive-pda-target-cfg-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let src_dir = temp_root.join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(
+            src_dir.join("lib.rs"),
+            r#"
+#[cfg(not(target_os = "solana"))]
+declare_id!("11111111111111111111111111111111");
+
+#[cfg(target_os = "solana")]
+declare_id!("So11111111111111111111111111111111111111112");
+"#,
+        )
+        .unwrap();
+
+        std::env::set_var("CARGO_MANIFEST_DIR", &temp_root);
+        std::env::remove_var(target_os_key);
+        CACHED_PROGRAM_ID.with(|cell| *cell.borrow_mut() = None);
+
+        assert_eq!(discover_program_id(), None);
+
+        CACHED_PROGRAM_ID.with(|cell| *cell.borrow_mut() = None);
+        if let Some(value) = original_manifest_dir {
+            std::env::set_var("CARGO_MANIFEST_DIR", value);
+        } else {
+            std::env::remove_var("CARGO_MANIFEST_DIR");
+        }
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+}

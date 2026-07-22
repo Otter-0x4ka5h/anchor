@@ -30,7 +30,11 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
         let message = extract_msg(&variant.attrs);
         // Strip used `msg` attribute
         variant.attrs.retain(|a| !a.path().is_ident("msg"));
-        if !crate::cfg_eval::cfg_attrs_match(&variant.attrs) {
+        let cfg_matches = match crate::cfg_eval::cfg_attrs_match(&variant.attrs) {
+            Ok(matches) => matches,
+            Err(err) => return err.to_compile_error().into(),
+        };
+        if !cfg_matches {
             continue;
         }
         if let Some((_, discr)) = &variant.discriminant {
