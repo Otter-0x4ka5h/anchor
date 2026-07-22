@@ -221,6 +221,13 @@ pub fn find_and_verify_program_address(
 /// Uses `sol_sha256` + `sol_curve_validate_point` directly instead of
 /// `sol_create_program_address`. The seeds slice should already be
 /// runtime-valid and include the bump byte.
+///
+/// # Warning
+///
+/// This helper does not search for or canonicalize the bump. If the bump is
+/// caller-controlled, use [`find_program_address`] or
+/// [`create_and_verify_program_address`] so the runtime re-checks the full
+/// PDA shape before you trust the result.
 #[inline(always)]
 pub fn create_program_address(
     seeds: &[&[u8]],
@@ -246,6 +253,13 @@ pub fn create_program_address(
 /// which also performs host-side seed and curve validation. For untrusted bumps
 /// use `find_and_verify_program_address`. Seeds should already include the bump
 /// byte.
+///
+/// # Warning
+///
+/// This helper is only safe when the bump embedded in `seeds` is already
+/// trusted. For caller-controlled bumps, use
+/// [`create_and_verify_program_address`] so the full PDA validation path runs
+/// before accepting `expected`.
 #[inline(always)]
 pub fn verify_program_address(
     seeds: &[&[u8]],
@@ -633,6 +647,30 @@ pub fn realloc_account(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod pda_tests {
+    use super::*;
+
+    #[test]
+    fn strict_verifier_rejects_on_curve_expected_for_explicit_bump() {
+        let program_id = Address::new_from_array([7; 32]);
+        let base_seed = b"vault";
+        let (derived, bump) = find_program_address(&[base_seed.as_ref()], &program_id);
+        let bump_bytes = [bump];
+        let seeds = [base_seed.as_ref(), bump_bytes.as_ref()];
+
+        let on_curve_expected = (0u8..=u8::MAX)
+            .map(|byte| Address::new_from_array([byte; 32]))
+            .find(|address| address.is_on_curve() && !pinocchio::address::address_eq(address, &derived))
+            .expect("must find a deterministic on-curve address");
+
+        assert_eq!(
+            create_and_verify_program_address(&seeds, &program_id, &on_curve_expected),
+            Err(ProgramError::InvalidSeeds)
+        );
+    }
 }
 
 #[cfg(all(test, feature = "const-rent"))]
