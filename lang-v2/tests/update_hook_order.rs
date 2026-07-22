@@ -140,14 +140,20 @@ fn read_vault_authority_from_dispatch_input(input: &[u64]) -> [u8; 32] {
     }
 }
 
-fn build_rotate_ix_data() -> Vec<u8> {
+fn build_rotate_ix_data() -> Vec<u64> {
     let ix = crate::instruction::Rotate {};
     let data = <crate::instruction::Rotate as anchor_lang_v2::InstructionData>::data(&ix);
-    let mut buf = Vec::with_capacity(size_of::<u64>() + data.len() + 32);
-    buf.extend_from_slice(&(data.len() as u64).to_le_bytes());
-    buf.extend_from_slice(&data);
-    buf.extend_from_slice(&crate::ID.to_bytes());
-    buf
+    let byte_len = size_of::<u64>() + data.len() + 32;
+    let mut bytes = Vec::with_capacity(byte_len);
+    bytes.extend_from_slice(&(data.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(&data);
+    bytes.extend_from_slice(&crate::ID.to_bytes());
+
+    let mut backing = vec![0u64; bytes.len().div_ceil(8)];
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), backing.as_mut_ptr() as *mut u8, bytes.len());
+    }
+    backing
 }
 
 #[test]
@@ -222,8 +228,12 @@ fn generated_dispatch_runs_update_phase_before_user_handler() {
     let mut input = build_dispatch_input(&[&vault, &current, &replacement]);
     let ix_buf = build_rotate_ix_data();
 
-    let result =
-        unsafe { crate::__anchor_dispatch(input.as_mut_ptr() as *mut u8, ix_buf.as_ptr().add(8)) };
+    let result = unsafe {
+        crate::__anchor_dispatch(
+            input.as_mut_ptr() as *mut u8,
+            ix_buf.as_ptr().cast::<u8>().add(8),
+        )
+    };
 
     assert_eq!(
         result, 0,
