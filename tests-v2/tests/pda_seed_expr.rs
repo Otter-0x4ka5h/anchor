@@ -71,9 +71,17 @@ impl SeedBuf {
     }
 }
 
-#[account(borsh)]
+#[derive(SchemaRead, SchemaWrite)]
 pub struct Config {
     pub seed: SeedBuf,
+}
+
+impl Owner for Config {
+    const OWNER: Address = crate::ID;
+}
+
+impl Discriminator for Config {
+    const DISCRIMINATOR: &'static [u8] = &[0x63, 0x66, 0x67, 0x2d, 0x73, 0x65, 0x65, 0x64];
 }
 
 #[derive(Accounts)]
@@ -99,9 +107,17 @@ use anchor_lang_v2::prelude::*;
 
 declare_id!("11111111111111111111111111111111");
 
-#[account(borsh)]
+#[derive(SchemaRead, SchemaWrite)]
 pub struct Data {
     pub value: u64,
+}
+
+impl Owner for Data {
+    const OWNER: Address = crate::ID;
+}
+
+impl Discriminator for Data {
+    const DISCRIMINATOR: &'static [u8] = &[0x64, 0x61, 0x74, 0x61, 0x2d, 0x62, 0x6f, 0x72];
 }
 
 pub struct SeedBundle<'a>([&'a [u8]; 1]);
