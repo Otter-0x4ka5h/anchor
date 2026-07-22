@@ -1119,9 +1119,10 @@ pub struct NestedIdlDepsInner {
     pub vault: Account<NestedVault>,
 }
 
+#[cfg(feature = "idl-build")]
 impl IdlAccountType for NestedIdlDepsInner {
     fn __register_idl_deps(accounts: &mut Vec<&'static str>, types: &mut Vec<&'static str>) {
-        Self::__idl_register_deps(accounts, types);
+        <Account<NestedVault> as IdlAccountType>::__register_idl_deps(accounts, types);
     }
 }
 
@@ -1135,9 +1136,10 @@ pub struct NestedNoDepsInner {
     pub authority: Signer,
 }
 
+#[cfg(feature = "idl-build")]
 impl IdlAccountType for NestedNoDepsInner {
     fn __register_idl_deps(accounts: &mut Vec<&'static str>, types: &mut Vec<&'static str>) {
-        Self::__idl_register_deps(accounts, types);
+        <Signer as IdlAccountType>::__register_idl_deps(accounts, types);
     }
 }
 
