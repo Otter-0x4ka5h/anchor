@@ -57,6 +57,22 @@ pub trait TryAccounts: Bumps + Sized {
         ix_data: &'ix [u8],
     ) -> Result<(Self, Self::Bumps, Self::IxArgs<'ix>), ProgramError>;
 
+    /// Validation-only account construction path used by the dispatcher so it
+    /// can run `update(...)` hooks after access-control. Manual callers should
+    /// continue to use [`Self::try_accounts`], which preserves the historical
+    /// "validate + update" behavior by default.
+    #[doc(hidden)]
+    #[inline(always)]
+    fn validate_accounts<'ix>(
+        program_id: &Address,
+        views: &[AccountView],
+        duplicates: Option<&AccountBitvec>,
+        base_offset: usize,
+        ix_data: &'ix [u8],
+    ) -> Result<(Self, Self::Bumps, Self::IxArgs<'ix>), ProgramError> {
+        Self::try_accounts(program_id, views, duplicates, base_offset, ix_data)
+    }
+
     fn update_accounts(&mut self) -> Result<(), ProgramError>;
 
     fn exit_accounts<'ix>(&mut self, ix_data: &'ix [u8]) -> Result<(), ProgramError>;
@@ -94,7 +110,7 @@ pub fn run_handler<'a, T: TryAccounts, R>(
                 return Err(crate::ErrorCode::ConstraintDuplicateMutableAccount.into());
             }
         }
-        T::try_accounts(program_id, views, duplicates, 0, ix_data)?
+        T::validate_accounts(program_id, views, duplicates, 0, ix_data)?
     };
     const _: () = assert!(pinocchio::MAX_TX_ACCOUNTS <= u8::MAX as usize);
     let remaining_num = (num_accounts - T::HEADER_SIZE) as u8;

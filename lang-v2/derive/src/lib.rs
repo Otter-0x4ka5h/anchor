@@ -117,6 +117,46 @@ pub(crate) fn find_unsupported_wincode_attr(
     Ok(None)
 }
 
+fn update_accounts_stmt_for_handler_pat(pat: &mut Pat) -> Option<syn::Stmt> {
+    let update_stmt = |expr: TokenStream2| {
+        syn::parse_quote! {
+            anchor_lang_v2::TryAccounts::update_accounts(#expr)?;
+        }
+    };
+
+    match pat {
+        Pat::Ident(pi) => {
+            let ctx_ident = &pi.ident;
+            Some(update_stmt(quote! { &mut #ctx_ident.accounts }))
+        }
+        Pat::Struct(ps) => {
+            let Some(accounts_field) = ps.fields.iter_mut().find(|field| {
+                matches!(&field.member, syn::Member::Named(ident) if ident == "accounts")
+            }) else {
+                return None;
+            };
+
+            let accounts_ident = match accounts_field.pat.as_mut() {
+                Pat::Ident(pi) => pi.ident.clone(),
+                Pat::Wild(_) => {
+                    let ident = Ident::new("__anchor_accounts", accounts_field.pat.span());
+                    accounts_field.pat = Box::new(syn::parse_quote!(#ident));
+                    ident
+                }
+                _ => return None,
+            };
+
+            Some(update_stmt(quote! { #accounts_ident }))
+        }
+        Pat::Wild(_) => {
+            let ident = Ident::new("__anchor_ctx", pat.span());
+            *pat = syn::parse_quote!(#ident);
+            Some(update_stmt(quote! { &mut #ident.accounts }))
+        }
+        _ => None,
+    }
+}
+
 fn impl_to_cpi_accounts(input: &DeriveInput) -> TokenStream2 {
     let fields = match &input.data {
         Data::Struct(s) => match &s.fields {
@@ -1870,6 +1910,26 @@ fn impl_accounts(input: &DeriveInput) -> TokenStream2 {
 
             #[inline]
             fn try_accounts<'ix>(
+                __program_id: &anchor_lang_v2::Address,
+                __views: &[anchor_lang_v2::AccountView],
+                __duplicates: ::core::option::Option<&anchor_lang_v2::AccountBitvec>,
+                __base_offset: usize,
+                __ix_data: &'ix [u8],
+            ) -> anchor_lang_v2::Result<(Self, #bumps_name, Self::IxArgs<'ix>)> {
+                let (mut __accounts, __bumps, __ix_args) =
+                    <Self as anchor_lang_v2::TryAccounts>::validate_accounts(
+                        __program_id,
+                        __views,
+                        __duplicates,
+                        __base_offset,
+                        __ix_data,
+                    )?;
+                <Self as anchor_lang_v2::TryAccounts>::update_accounts(&mut __accounts)?;
+                Ok((__accounts, __bumps, __ix_args))
+            }
+
+            #[inline]
+            fn validate_accounts<'ix>(
                 __program_id: &anchor_lang_v2::Address,
                 __views: &[anchor_lang_v2::AccountView],
                 __duplicates: ::core::option::Option<&anchor_lang_v2::AccountBitvec>,
@@ -5008,15 +5068,9 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
                     true
                 }
             });
-            if let Some(syn::FnArg::Typed(pt)) = func.sig.inputs.first() {
-                if let syn::Pat::Ident(pi) = &*pt.pat {
-                    let ctx_ident = &pi.ident;
-                    func.block.stmts.insert(
-                        0,
-                        syn::parse_quote! {
-                            anchor_lang_v2::TryAccounts::update_accounts(&mut #ctx_ident.accounts)?;
-                        },
-                    );
+            if let Some(syn::FnArg::Typed(pt)) = func.sig.inputs.first_mut() {
+                if let Some(stmt) = update_accounts_stmt_for_handler_pat(pt.pat.as_mut()) {
+                    func.block.stmts.insert(0, stmt);
                 }
             }
             func
@@ -6535,6 +6589,62 @@ mod tests {
         assert!(
             generated.contains("access_control"),
             "expected access_control attr to remain on the generated handler, got: {generated}"
+        );
+    }
+
+    #[test]
+    fn program_handlers_inject_update_phase_for_destructured_context() {
+        let module: syn::ItemMod = syn::parse_quote! {
+            pub mod demo_program {
+                use super::*;
+
+                pub fn rotate(Context { accounts, .. }: &mut Context<RotateAuthority>) -> Result<()> {
+                    do_work(accounts)?;
+                    Ok(())
+                }
+            }
+        };
+        let config = ProgramConfig {
+            mode: ProgramMode::Executable,
+            program_id: syn::parse_quote!(crate::ID),
+        };
+
+        let generated = impl_program(&module, &config).to_string();
+
+        assert!(
+            generated.contains("anchor_lang_v2 :: TryAccounts :: update_accounts (accounts) ? ;"),
+            "expected destructured handler body to call update_accounts via accounts binding, got: {generated}"
+        );
+    }
+
+    #[test]
+    fn program_handlers_inject_update_phase_for_wildcard_context() {
+        let module: syn::ItemMod = syn::parse_quote! {
+            pub mod demo_program {
+                use super::*;
+
+                pub fn rotate(_: &mut Context<RotateAuthority>) -> Result<()> {
+                    do_work()?;
+                    Ok(())
+                }
+            }
+        };
+        let config = ProgramConfig {
+            mode: ProgramMode::Executable,
+            program_id: syn::parse_quote!(crate::ID),
+        };
+
+        let generated = impl_program(&module, &config).to_string();
+
+        assert!(
+            generated.contains(
+                "anchor_lang_v2 :: TryAccounts :: update_accounts (& mut __anchor_ctx . accounts) ? ;"
+            ),
+            "expected wildcard handler body to call update_accounts via synthesized ctx binding, got: {generated}"
+        );
+        assert!(
+            generated.contains("fn rotate (__anchor_ctx : & mut Context < RotateAuthority >)"),
+            "expected wildcard handler signature to be rewritten to a concrete ctx binding, got: {generated}"
         );
     }
 }
