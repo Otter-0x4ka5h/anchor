@@ -906,3 +906,91 @@ impl Id for Metadata {
 
     const IDL_ADDRESS: &'static str = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s";
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anchor_lang_v2::{
+        testing::{AccountBuffer, MIN_ACCOUNT_BUF},
+        ToCpiHandle, ToCpiHandleMut,
+    };
+
+    fn account(
+        address: [u8; 32],
+        signer: bool,
+        writable: bool,
+    ) -> AccountBuffer<{ MIN_ACCOUNT_BUF + 8 }> {
+        let buffer = AccountBuffer::new();
+        buffer.init(address, [1; 32], 8, signer, writable, false);
+        buffer
+    }
+
+    #[test]
+    fn revoke_collection_authority_keeps_delegate_readonly() {
+        let record_buffer = account([1; 32], false, true);
+        let delegate_buffer = account([2; 32], false, false);
+        let revoke_buffer = account([3; 32], true, true);
+        let metadata_buffer = account([4; 32], false, false);
+        let mint_buffer = account([5; 32], false, false);
+
+        let mut record_view = unsafe { record_buffer.view() };
+        let delegate_view = unsafe { delegate_buffer.view() };
+        let mut revoke_view = unsafe { revoke_buffer.view() };
+        let metadata_view = unsafe { metadata_buffer.view() };
+        let mint_view = unsafe { mint_buffer.view() };
+
+        let accounts = RevokeCollectionAuthority {
+            collection_authority_record: record_view.to_cpi_handle_mut(),
+            delegate_authority: delegate_view.to_cpi_handle(),
+            revoke_authority: revoke_view.to_cpi_handle_mut(),
+            metadata: metadata_view.to_cpi_handle(),
+            mint: mint_view.to_cpi_handle(),
+        };
+
+        let metas = accounts.to_instruction_accounts();
+        assert!(metas[0].is_writable);
+        assert!(!metas[1].is_writable);
+        assert!(metas[2].is_writable);
+
+        let handles = accounts.to_cpi_handles();
+        assert!(handles[0].is_writable());
+        assert!(!handles[1].is_writable());
+        assert!(handles[2].is_writable());
+
+        let ix = revoke_collection_authority_ix(&accounts);
+        assert!(ix.accounts[0].is_writable);
+        assert!(!ix.accounts[1].is_writable);
+        assert!(ix.accounts[2].is_writable);
+    }
+
+    #[test]
+    fn set_collection_size_keeps_update_authority_readonly() {
+        let metadata_buffer = account([6; 32], false, true);
+        let update_authority_buffer = account([7; 32], true, false);
+        let mint_buffer = account([8; 32], false, false);
+
+        let mut metadata_view = unsafe { metadata_buffer.view() };
+        let update_authority_view = unsafe { update_authority_buffer.view() };
+        let mint_view = unsafe { mint_buffer.view() };
+
+        let accounts = SetCollectionSize {
+            metadata: metadata_view.to_cpi_handle_mut(),
+            update_authority: update_authority_view.to_cpi_handle(),
+            mint: mint_view.to_cpi_handle(),
+        };
+
+        let metas = accounts.to_instruction_accounts();
+        assert!(metas[0].is_writable);
+        assert!(!metas[1].is_writable);
+        assert!(metas[1].is_signer);
+
+        let handles = accounts.to_cpi_handles();
+        assert!(handles[0].is_writable());
+        assert!(!handles[1].is_writable());
+
+        let ix = set_collection_size_ix(&accounts, None, 9);
+        assert!(ix.accounts[0].is_writable);
+        assert!(!ix.accounts[1].is_writable);
+        assert!(ix.accounts[1].is_signer);
+    }
+}
