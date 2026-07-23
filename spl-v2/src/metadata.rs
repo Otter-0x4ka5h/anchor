@@ -17,6 +17,7 @@ use {
     core::ops::Deref,
     pinocchio::account::AccountView,
     solana_address::Address,
+    solana_instruction::AccountMeta,
     solana_program_error::ProgramError,
     solana_pubkey::Pubkey,
 };
@@ -211,14 +212,7 @@ pub fn mint_new_edition_from_master_edition_via_token<'info>(
 pub fn revoke_collection_authority<'info>(
     ctx: CpiContext<'info, RevokeCollectionAuthority<'info>>,
 ) -> Result<()> {
-    let ix = mpl_token_metadata::instructions::RevokeCollectionAuthority {
-        collection_authority_record: *ctx.accounts.collection_authority_record.address(),
-        delegate_authority: *ctx.accounts.delegate_authority.address(),
-        metadata: *ctx.accounts.metadata.address(),
-        mint: *ctx.accounts.mint.address(),
-        revoke_authority: *ctx.accounts.revoke_authority.address(),
-    }
-    .instruction();
+    let ix = revoke_collection_authority_ix(&ctx.accounts);
     ctx.invoke_ix(ix)
 }
 
@@ -227,18 +221,43 @@ pub fn set_collection_size<'info>(
     collection_authority_record: Option<Pubkey>,
     size: u64,
 ) -> Result<()> {
-    let ix = mpl_token_metadata::instructions::SetCollectionSize {
-        collection_authority: *ctx.accounts.update_authority.address(),
+    let ix = set_collection_size_ix(&ctx.accounts, collection_authority_record, size);
+    ctx.invoke_ix(ix)
+}
+
+fn revoke_collection_authority_ix(
+    accounts: &RevokeCollectionAuthority<'_>,
+) -> solana_instruction::Instruction {
+    let mut ix = mpl_token_metadata::instructions::RevokeCollectionAuthority {
+        collection_authority_record: *accounts.collection_authority_record.address(),
+        delegate_authority: *accounts.delegate_authority.address(),
+        metadata: *accounts.metadata.address(),
+        mint: *accounts.mint.address(),
+        revoke_authority: *accounts.revoke_authority.address(),
+    }
+    .instruction();
+    ix.accounts[1] = AccountMeta::new_readonly(*accounts.delegate_authority.address(), false);
+    ix
+}
+
+fn set_collection_size_ix(
+    accounts: &SetCollectionSize<'_>,
+    collection_authority_record: Option<Pubkey>,
+    size: u64,
+) -> solana_instruction::Instruction {
+    let mut ix = mpl_token_metadata::instructions::SetCollectionSize {
+        collection_authority: *accounts.update_authority.address(),
         collection_authority_record,
-        collection_metadata: *ctx.accounts.metadata.address(),
-        collection_mint: *ctx.accounts.mint.address(),
+        collection_metadata: *accounts.metadata.address(),
+        collection_mint: *accounts.mint.address(),
     }
     .instruction(
         mpl_token_metadata::instructions::SetCollectionSizeInstructionArgs {
             set_collection_size_args: mpl_token_metadata::types::SetCollectionSizeArgs { size },
         },
     );
-    ctx.invoke_ix(ix)
+    ix.accounts[1] = AccountMeta::new_readonly(*accounts.update_authority.address(), true);
+    ix
 }
 
 pub fn verify_collection<'info>(
@@ -556,7 +575,7 @@ pub struct MintNewEditionFromMasterEditionViaToken<'info> {
 #[derive(ToCpiAccounts)]
 pub struct RevokeCollectionAuthority<'info> {
     pub collection_authority_record: CpiHandleMut<'info>,
-    pub delegate_authority: CpiHandleMut<'info>,
+    pub delegate_authority: CpiHandle<'info>,
     #[signer]
     pub revoke_authority: CpiHandleMut<'info>,
     pub metadata: CpiHandle<'info>,
@@ -567,7 +586,7 @@ pub struct RevokeCollectionAuthority<'info> {
 pub struct SetCollectionSize<'info> {
     pub metadata: CpiHandleMut<'info>,
     #[signer]
-    pub update_authority: CpiHandleMut<'info>,
+    pub update_authority: CpiHandle<'info>,
     pub mint: CpiHandle<'info>,
 }
 
