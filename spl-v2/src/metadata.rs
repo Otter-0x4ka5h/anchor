@@ -14,6 +14,7 @@ use {
         require, AccountDeserialize, AnchorAccount, CpiContext, CpiHandle, CpiHandleMut, Id,
         IdlAccountType, Result, ToCpiAccounts,
     },
+    borsh::BorshDeserialize,
     core::ops::Deref,
     pinocchio::account::AccountView,
     solana_address::Address,
@@ -734,9 +735,74 @@ pub struct MetadataAccount {
 
 impl MetadataAccount {
     #[inline]
-    fn parse(data: &[u8]) -> Result<mpl_token_metadata::accounts::Metadata> {
-        mpl_token_metadata::accounts::Metadata::safe_deserialize(data)
-            .map_err(|_| ProgramError::InvalidAccountData)
+    fn parse(buf: &mut &[u8]) -> Result<mpl_token_metadata::accounts::Metadata> {
+        use mpl_token_metadata::types::{
+            Collection, CollectionDetails, Data, Key, ProgrammableConfig, TokenStandard, Uses,
+        };
+
+        if buf.is_empty() || buf[0] != Key::MetadataV1 as u8 {
+            return Err(ProgramError::InvalidAccountData);
+        }
+
+        let key: Key =
+            BorshDeserialize::deserialize(buf).map_err(|_| ProgramError::InvalidAccountData)?;
+        let update_authority: Pubkey =
+            BorshDeserialize::deserialize(buf).map_err(|_| ProgramError::InvalidAccountData)?;
+        let mint: Pubkey =
+            BorshDeserialize::deserialize(buf).map_err(|_| ProgramError::InvalidAccountData)?;
+        let data: Data =
+            BorshDeserialize::deserialize(buf).map_err(|_| ProgramError::InvalidAccountData)?;
+        let primary_sale_happened: bool =
+            BorshDeserialize::deserialize(buf).map_err(|_| ProgramError::InvalidAccountData)?;
+        let is_mutable: bool =
+            BorshDeserialize::deserialize(buf).map_err(|_| ProgramError::InvalidAccountData)?;
+        let edition_nonce: Option<u8> =
+            BorshDeserialize::deserialize(buf).map_err(|_| ProgramError::InvalidAccountData)?;
+
+        let token_standard_res: core::result::Result<Option<TokenStandard>, borsh::io::Error> =
+            BorshDeserialize::deserialize(buf);
+        let collection_res: core::result::Result<Option<Collection>, borsh::io::Error> =
+            BorshDeserialize::deserialize(buf);
+        let uses_res: core::result::Result<Option<Uses>, borsh::io::Error> =
+            BorshDeserialize::deserialize(buf);
+        let collection_details_res: core::result::Result<
+            Option<CollectionDetails>,
+            borsh::io::Error,
+        > = BorshDeserialize::deserialize(buf);
+        let programmable_config_res: core::result::Result<
+            Option<ProgrammableConfig>,
+            borsh::io::Error,
+        > = BorshDeserialize::deserialize(buf);
+
+        let (token_standard, collection, uses) =
+            match (token_standard_res, collection_res, uses_res) {
+                (Ok(token_standard), Ok(collection), Ok(uses)) => {
+                    (token_standard, collection, uses)
+                }
+                _ => (None, None, None),
+            };
+
+        let collection_details = collection_details_res.unwrap_or(None);
+        let programmable_config = programmable_config_res.unwrap_or(None);
+
+        Ok(mpl_token_metadata::accounts::Metadata {
+            key,
+            update_authority,
+            mint,
+            name: data.name,
+            symbol: data.symbol,
+            uri: data.uri,
+            seller_fee_basis_points: data.seller_fee_basis_points,
+            creators: data.creators,
+            primary_sale_happened,
+            is_mutable,
+            edition_nonce,
+            token_standard,
+            collection,
+            uses,
+            collection_details,
+            programmable_config,
+        })
     }
 }
 
@@ -757,7 +823,7 @@ impl AnchorAccount for MetadataAccount {
     fn load(view: AccountView) -> Result<Self> {
         require!(view.owned_by(&ID), ProgramError::IllegalOwner);
         let data_ref = view.try_borrow()?;
-        let data = Self::parse(&data_ref)?;
+        let data = Self::parse(&mut &data_ref[..])?;
         drop(data_ref);
         Ok(Self {
             view: Some(view),
@@ -790,8 +856,12 @@ pub struct MasterEditionAccount {
 
 impl MasterEditionAccount {
     #[inline]
-    fn parse(data: &[u8]) -> Result<mpl_token_metadata::accounts::MasterEdition> {
-        mpl_token_metadata::accounts::MasterEdition::safe_deserialize(data)
+    fn parse(buf: &mut &[u8]) -> Result<mpl_token_metadata::accounts::MasterEdition> {
+        if buf.is_empty() || buf[0] != mpl_token_metadata::types::Key::MasterEditionV2 as u8 {
+            return Err(ProgramError::InvalidAccountData);
+        }
+
+        mpl_token_metadata::accounts::MasterEdition::deserialize(buf)
             .map_err(|_| ProgramError::InvalidAccountData)
     }
 }
@@ -813,7 +883,7 @@ impl AnchorAccount for MasterEditionAccount {
     fn load(view: AccountView) -> Result<Self> {
         require!(view.owned_by(&ID), ProgramError::IllegalOwner);
         let data_ref = view.try_borrow()?;
-        let data = Self::parse(&data_ref)?;
+        let data = Self::parse(&mut &data_ref[..])?;
         drop(data_ref);
         Ok(Self {
             view: Some(view),
@@ -849,9 +919,43 @@ impl TokenRecordAccount {
     const LEGACY_LEN: usize = Self::LEN - 33;
 
     #[inline]
-    fn parse(data: &[u8]) -> Result<mpl_token_metadata::accounts::TokenRecord> {
-        mpl_token_metadata::accounts::TokenRecord::safe_deserialize(data)
-            .map_err(|_| ProgramError::InvalidAccountData)
+    fn parse(buf: &mut &[u8]) -> Result<mpl_token_metadata::accounts::TokenRecord> {
+        const LOCKED_TRANSFER_SIZE: i64 = 33;
+
+        let length = Self::LEN as i64 - buf.len() as i64;
+        if !(length == 0 || length == LOCKED_TRANSFER_SIZE)
+            || buf.first().copied() != Some(mpl_token_metadata::types::Key::TokenRecord as u8)
+        {
+            return Err(ProgramError::InvalidAccountData);
+        }
+
+        let key =
+            BorshDeserialize::deserialize(buf).map_err(|_| ProgramError::InvalidAccountData)?;
+        let bump =
+            BorshDeserialize::deserialize(buf).map_err(|_| ProgramError::InvalidAccountData)?;
+        let state =
+            BorshDeserialize::deserialize(buf).map_err(|_| ProgramError::InvalidAccountData)?;
+        let rule_set_revision =
+            BorshDeserialize::deserialize(buf).map_err(|_| ProgramError::InvalidAccountData)?;
+        let delegate =
+            BorshDeserialize::deserialize(buf).map_err(|_| ProgramError::InvalidAccountData)?;
+        let delegate_role =
+            BorshDeserialize::deserialize(buf).map_err(|_| ProgramError::InvalidAccountData)?;
+        let locked_transfer = if length == 0 {
+            BorshDeserialize::deserialize(buf).map_err(|_| ProgramError::InvalidAccountData)?
+        } else {
+            None
+        };
+
+        Ok(mpl_token_metadata::accounts::TokenRecord {
+            key,
+            bump,
+            state,
+            rule_set_revision,
+            delegate,
+            delegate_role,
+            locked_transfer,
+        })
     }
 
     #[inline]
@@ -896,7 +1000,7 @@ impl AnchorAccount for TokenRecordAccount {
     fn load(view: AccountView) -> Result<Self> {
         require!(view.owned_by(&ID), ProgramError::IllegalOwner);
         let data_ref = view.try_borrow()?;
-        let data = Self::parse(&data_ref)?;
+        let data = Self::parse(&mut &data_ref[..])?;
         drop(data_ref);
         Ok(Self {
             view: Some(view),
