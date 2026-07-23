@@ -2,7 +2,7 @@
 
 use {
     anchor_lang_v2::{testing::AccountBuffer, AccountDeserialize, AnchorAccount},
-    anchor_spl_v2::metadata::{self, MetadataAccount, TokenRecordAccount},
+    anchor_spl_v2::metadata::{self, MasterEditionAccount, MetadataAccount, TokenRecordAccount},
     borsh::to_vec,
     solana_program_error::ProgramError,
     solana_pubkey::Pubkey,
@@ -34,6 +34,13 @@ fn sample_metadata() -> mpl_token_metadata::accounts::Metadata {
     }
 }
 
+fn sample_master_edition() -> mpl_token_metadata::accounts::MasterEdition {
+    mpl_token_metadata::accounts::MasterEdition {
+        key: mpl_token_metadata::types::Key::MasterEditionV2,
+        supply: 42,
+        max_supply: Some(100),
+    }
+}
 fn sample_token_record() -> mpl_token_metadata::accounts::TokenRecord {
     mpl_token_metadata::accounts::TokenRecord {
         key: mpl_token_metadata::types::Key::TokenRecord,
@@ -57,7 +64,6 @@ fn sample_legacy_token_record_bytes() -> Vec<u8> {
     data.extend_from_slice(&to_vec(&record.delegate_role).unwrap());
     data
 }
-
 #[test]
 fn fixture_is_real_metadata_program_elf() {
     let fixture = include_bytes!("fixtures/metaplex_token_metadata.so");
@@ -78,6 +84,36 @@ fn metadata_account_deserializes_raw_metaplex_bytes() {
         account.creators.as_ref().unwrap()[0].address,
         Pubkey::from([7u8; 32])
     );
+}
+
+#[test]
+fn metadata_account_deserialize_advances_cursor() {
+    let data = to_vec(&sample_metadata()).unwrap();
+    let mut cursor = data.as_slice();
+    let account = MetadataAccount::try_deserialize(&mut cursor).unwrap();
+
+    assert_eq!(account.key, mpl_token_metadata::types::Key::MetadataV1);
+    assert!(cursor.is_empty());
+}
+
+#[test]
+fn master_edition_account_deserialize_advances_cursor() {
+    let data = to_vec(&sample_master_edition()).unwrap();
+    let mut cursor = data.as_slice();
+    let account = MasterEditionAccount::try_deserialize(&mut cursor).unwrap();
+
+    assert_eq!(account.key, mpl_token_metadata::types::Key::MasterEditionV2);
+    assert!(cursor.is_empty());
+}
+
+#[test]
+fn token_record_account_deserialize_advances_cursor() {
+    let data = to_vec(&sample_token_record()).unwrap();
+    let mut cursor = data.as_slice();
+    let account = TokenRecordAccount::try_deserialize(&mut cursor).unwrap();
+
+    assert_eq!(account.key, mpl_token_metadata::types::Key::TokenRecord);
+    assert!(cursor.is_empty());
 }
 
 #[test]
