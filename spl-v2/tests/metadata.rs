@@ -3,10 +3,21 @@
 use {
     anchor_lang_v2::{testing::AccountBuffer, AccountDeserialize, AnchorAccount},
     anchor_spl_v2::metadata::{self, MasterEditionAccount, MetadataAccount, TokenRecordAccount},
-    borsh::to_vec,
+    borsh::{to_vec, BorshSerialize},
     solana_program_error::ProgramError,
     solana_pubkey::Pubkey,
 };
+
+#[derive(BorshSerialize)]
+struct LegacyMetadataAccount {
+    key: mpl_token_metadata::types::Key,
+    update_authority: Pubkey,
+    mint: Pubkey,
+    data: mpl_token_metadata::types::Data,
+    primary_sale_happened: bool,
+    is_mutable: bool,
+    edition_nonce: Option<u8>,
+}
 
 fn sample_metadata() -> mpl_token_metadata::accounts::Metadata {
     let creator = Pubkey::from([7u8; 32]);
@@ -31,6 +42,39 @@ fn sample_metadata() -> mpl_token_metadata::accounts::Metadata {
         uses: None,
         collection_details: None,
         programmable_config: None,
+    }
+}
+
+fn sample_metadata_with_v1_2_fields() -> mpl_token_metadata::accounts::Metadata {
+    let mut metadata = sample_metadata();
+    metadata.token_standard = Some(mpl_token_metadata::types::TokenStandard::NonFungible);
+    metadata.collection = Some(mpl_token_metadata::types::Collection {
+        verified: true,
+        key: Pubkey::from([11u8; 32]),
+    });
+    metadata
+}
+
+fn sample_legacy_metadata() -> LegacyMetadataAccount {
+    let creator = Pubkey::from([7u8; 32]);
+    LegacyMetadataAccount {
+        key: mpl_token_metadata::types::Key::MetadataV1,
+        update_authority: Pubkey::from([1u8; 32]),
+        mint: Pubkey::from([2u8; 32]),
+        data: mpl_token_metadata::types::Data {
+            name: "Pump AMM".to_string(),
+            symbol: "PUMP".to_string(),
+            uri: "https://example.invalid/pump.json".to_string(),
+            seller_fee_basis_points: 250,
+            creators: Some(vec![mpl_token_metadata::types::Creator {
+                address: creator,
+                verified: true,
+                share: 100,
+            }]),
+        },
+        primary_sale_happened: false,
+        is_mutable: true,
+        edition_nonce: Some(255),
     }
 }
 
@@ -93,6 +137,31 @@ fn metadata_account_deserialize_advances_cursor() {
     let account = MetadataAccount::try_deserialize(&mut cursor).unwrap();
 
     assert_eq!(account.key, mpl_token_metadata::types::Key::MetadataV1);
+    assert!(cursor.is_empty());
+}
+
+#[test]
+fn metadata_account_legacy_bytes_leave_v1_2_fields_absent() {
+    let data = to_vec(&sample_legacy_metadata()).unwrap();
+    let mut cursor = data.as_slice();
+    let account = MetadataAccount::try_deserialize(&mut cursor).unwrap();
+
+    assert_eq!(account.token_standard, None);
+    assert_eq!(account.collection, None);
+    assert_eq!(account.uses, None);
+    assert!(cursor.is_empty());
+}
+
+#[test]
+fn metadata_account_preserves_v1_2_fields_when_uses_is_none() {
+    let expected = sample_metadata_with_v1_2_fields();
+    let data = to_vec(&expected).unwrap();
+    let mut cursor = data.as_slice();
+    let account = MetadataAccount::try_deserialize(&mut cursor).unwrap();
+
+    assert_eq!(account.token_standard, expected.token_standard);
+    assert_eq!(account.collection, expected.collection);
+    assert_eq!(account.uses, None);
     assert!(cursor.is_empty());
 }
 
