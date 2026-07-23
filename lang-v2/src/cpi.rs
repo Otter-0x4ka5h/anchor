@@ -653,18 +653,43 @@ pub fn realloc_account(
 mod pda_tests {
     use super::*;
 
-    #[test]
-    fn strict_verifier_rejects_on_curve_expected_for_explicit_bump() {
-        let program_id = Address::new_from_array([7; 32]);
-        let base_seed = b"vault";
-        let (derived, bump) = find_program_address(&[base_seed.as_ref()], &program_id);
-        let bump_bytes = [bump];
-        let seeds = [base_seed.as_ref(), bump_bytes.as_ref()];
+    fn unchecked_pda_address_for_seed_byte(
+        seed_byte: u8,
+        bump: u8,
+        program_id: &Address,
+    ) -> Address {
+        let mut preimage = [0u8; 1 + 1 + 32 + 21];
+        preimage[0] = seed_byte;
+        preimage[1] = bump;
+        preimage[2..34].copy_from_slice(program_id.as_ref());
+        preimage[34..].copy_from_slice(b"ProgramDerivedAddress");
+        Address::new_from_array(crate::hash::sha256(&preimage))
+    }
 
-        let on_curve_expected = (0u8..=u8::MAX)
-            .map(|byte| Address::new_from_array([byte; 32]))
-            .find(|address| address.is_on_curve() && !pinocchio::address::address_eq(address, &derived))
-            .expect("must find a deterministic on-curve address");
+    #[test]
+    fn strict_verifier_rejects_on_curve_hash_for_explicit_bump() {
+        let program_id = Address::new_from_array([7; 32]);
+        let (seed_byte, bump, on_curve_expected) = (0u8..=u8::MAX)
+            .find_map(|seed_byte| {
+                (0u8..=u8::MAX).find_map(|bump| {
+                    let candidate = unchecked_pda_address_for_seed_byte(seed_byte, bump, &program_id);
+                    candidate.is_on_curve().then_some((seed_byte, bump, candidate))
+                })
+            })
+            .expect("must find a deterministic on-curve raw PDA hash");
+        let seed = [seed_byte];
+        let bump_bytes = [bump];
+        let seeds = [seed.as_ref(), bump_bytes.as_ref()];
+
+        // This is the real caller-controlled explicit-bump danger: the raw
+        // hash matches `expected`, but the result is on-curve and therefore
+        // not a valid PDA. The strict verifier must reject before the address
+        // comparison can succeed.
+        assert!(on_curve_expected.is_on_curve());
+        assert_eq!(
+            create_program_address(&seeds, &program_id),
+            Err(ProgramError::InvalidSeeds)
+        );
 
         assert_eq!(
             create_and_verify_program_address(&seeds, &program_id, &on_curve_expected),
