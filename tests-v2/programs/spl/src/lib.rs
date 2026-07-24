@@ -80,7 +80,6 @@ pub mod spl_test {
             &ctx.accounts.mint,
             &mut ctx.accounts.to,
             &ctx.accounts.authority,
-            &[],
             amount,
             decimals,
         )?;
@@ -94,7 +93,6 @@ pub mod spl_test {
             &mut ctx.accounts.account,
             &mut ctx.accounts.mint,
             &ctx.accounts.authority,
-            &[],
             amount,
         )?;
         Ok(())
@@ -107,7 +105,6 @@ pub mod spl_test {
             &mut ctx.accounts.source,
             &ctx.accounts.delegate,
             &ctx.accounts.authority,
-            &[],
             amount,
         )?;
         Ok(())
@@ -116,11 +113,9 @@ pub mod spl_test {
     /// Revokes the current delegate from `source`.
     #[discrim = 7]
     pub fn do_revoke(ctx: &mut Context<DoRevoke>) -> Result<()> {
-        ctx.accounts.token_program.revoke(
-            &mut ctx.accounts.source,
-            &ctx.accounts.authority,
-            &[],
-        )?;
+        ctx.accounts
+            .token_program
+            .revoke(&mut ctx.accounts.source, &ctx.accounts.authority)?;
         Ok(())
     }
 
@@ -131,7 +126,6 @@ pub mod spl_test {
             &mut ctx.accounts.account,
             &mut ctx.accounts.destination,
             &ctx.accounts.authority,
-            &[],
         )?;
 
         Ok(())
@@ -148,7 +142,6 @@ pub mod spl_test {
             &mut ctx.accounts.mint,
             &mut ctx.accounts.to,
             &ctx.accounts.authority,
-            &[],
             amount,
             decimals,
         )?;
@@ -166,7 +159,6 @@ pub mod spl_test {
             &mut ctx.accounts.account,
             &mut ctx.accounts.mint,
             &ctx.accounts.authority,
-            &[],
             amount,
             decimals,
         )?;
@@ -185,7 +177,6 @@ pub mod spl_test {
             &ctx.accounts.mint,
             &ctx.accounts.delegate,
             &ctx.accounts.authority,
-            &[],
             amount,
             decimals,
         )?;
@@ -200,7 +191,6 @@ pub mod spl_test {
             &mut ctx.accounts.account,
             &ctx.accounts.mint,
             &ctx.accounts.authority,
-            &[],
         )?;
         Ok(())
     }
@@ -211,7 +201,6 @@ pub mod spl_test {
             &mut ctx.accounts.account,
             &ctx.accounts.mint,
             &ctx.accounts.authority,
-            &[],
         )?;
         Ok(())
     }
