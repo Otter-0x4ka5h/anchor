@@ -56,6 +56,7 @@
 //! }
 //! ```
 
+use anyhow::{Context, Result, anyhow};
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
@@ -136,7 +137,7 @@ fn collect_asm(dir: &Path) -> String {
     collect_asm_inner(dir).unwrap_or_else(|err| panic!("{err}"))
 }
 
-fn collect_asm_inner(dir: &Path) -> Result<String, String> {
+fn collect_asm_inner(dir: &Path) -> Result<String> {
     let mut files: Vec<PathBuf> = Vec::new();
     walk_dir(dir, &mut files);
     files.sort();
@@ -150,7 +151,7 @@ fn collect_asm_inner(dir: &Path) -> Result<String, String> {
         let mut out = String::new();
         for file in &files {
             let content = std::fs::read_to_string(file)
-                .map_err(|e| format!("read {}: {e}", file.display()))?;
+                .with_context(|| format!("read {}", file.display()))?;
             out.push_str(&format!(
                 "# --- {} ---\n",
                 file.strip_prefix(dir).unwrap_or(file).display()
@@ -182,7 +183,7 @@ fn find_root_file(dir: &Path, files: &[PathBuf]) -> Option<PathBuf> {
     None
 }
 
-fn expand_includes(path: &Path, base_dir: &Path, stack: &mut Vec<PathBuf>) -> Result<String, String> {
+fn expand_includes(path: &Path, base_dir: &Path, stack: &mut Vec<PathBuf>) -> Result<String> {
     let canonical = canonicalize_path(path);
     if let Some(pos) = stack.iter().position(|seen_path| *seen_path == canonical) {
         let mut cycle_paths = stack[pos..].to_vec();
@@ -192,13 +193,13 @@ fn expand_includes(path: &Path, base_dir: &Path, stack: &mut Vec<PathBuf>) -> Re
             .map(|entry| display_path(entry, base_dir))
             .collect::<Vec<_>>()
             .join(" -> ");
-        return Err(format!("assembly include cycle detected: {cycle}"));
+        return Err(anyhow!("assembly include cycle detected: {cycle}"));
     }
 
     stack.push(canonical);
 
     let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("read {}: {e}", path.display()))?;
+        .with_context(|| format!("read {}", path.display()))?;
 
     let mut out = String::new();
     let rel = path.strip_prefix(base_dir).unwrap_or(path);
