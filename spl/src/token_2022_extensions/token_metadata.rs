@@ -69,7 +69,6 @@ pub fn token_metadata_update_authority<'info>(
 pub struct TokenMetadataUpdateAuthority<'info> {
     pub metadata: AccountInfo<'info>,
     pub current_authority: AccountInfo<'info>,
-    pub new_authority: AccountInfo<'info>,
 }
 
 pub fn token_metadata_update_field<'info>(
