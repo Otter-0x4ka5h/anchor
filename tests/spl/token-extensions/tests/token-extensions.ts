@@ -91,6 +91,35 @@ describe("token extensions", () => {
       .rpc();
   });
 
+  describe("generated_extension_init_cpis", () => {
+    let extensionMint = new Keypair();
+
+    it("Creates a mint with generated Token-2022 extension init CPIs", async () => {
+      await program.methods
+        .createSimpleExtensionMint()
+        .accountsStrict({
+          payer: payer.publicKey,
+          authority: payer.publicKey,
+          mint: extensionMint.publicKey,
+          systemProgram: anchor.web3.SystemProgram.programId,
+          tokenProgram: TOKEN_2022_PROGRAM_ID,
+        })
+        .signers([payer, extensionMint])
+        .rpc();
+    });
+
+    it("Accepts the generated-extension mint in the existing constraint checks", async () => {
+      await program.methods
+        .checkMintExtensionsConstraints()
+        .accountsStrict({
+          authority: payer.publicKey,
+          mint: extensionMint.publicKey,
+        })
+        .signers([payer])
+        .rpc();
+    });
+  });
+
   describe("group_pointer_update", () => {
     let groupPointerMint = new Keypair();
 

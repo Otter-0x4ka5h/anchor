@@ -29,6 +29,10 @@ pub mod token_extensions {
         Ok(())
     }
 
+    pub fn create_simple_extension_mint(ctx: Context<CreateSimpleExtensionMint>) -> Result<()> {
+        instructions::create_simple_extension_mint_handler(ctx)
+    }
+
     pub fn create_group_pointer_mint(_ctx: Context<CreateGroupPointerMint>) -> Result<()> {
         Ok(())
     }

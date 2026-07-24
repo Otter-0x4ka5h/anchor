@@ -93,7 +93,6 @@ impl<'info> CreateMintAccount<'info> {
         uri: String,
     ) -> ProgramResult {
         let cpi_accounts = TokenMetadataInitialize {
-            program_id: self.token_program.to_account_info(),
             mint: self.mint.to_account_info(),
             metadata: self.mint.to_account_info(), // metadata account is the mint, since data is stored in mint
             mint_authority: self.authority.to_account_info(),
@@ -195,6 +194,93 @@ pub struct CheckMintExtensionConstraints<'info> {
 }
 
 #[derive(Accounts)]
+pub struct CreateSimpleExtensionMint<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+    pub authority: Signer<'info>,
+    #[account(
+        init,
+        signer,
+        payer = payer,
+        mint::token_program = token_program,
+        mint::decimals = 0,
+        mint::authority = authority,
+        mint::freeze_authority = authority,
+        extensions::metadata_pointer::authority = authority,
+        extensions::metadata_pointer::metadata_address = mint,
+        extensions::group_member_pointer::authority = authority,
+        extensions::group_member_pointer::member_address = mint,
+        extensions::transfer_hook::authority = authority,
+        extensions::transfer_hook::program_id = crate::ID,
+        extensions::close_authority::authority = authority,
+        extensions::permanent_delegate::delegate = authority,
+        extensions::pausable::authority = authority,
+    )]
+    pub mint: Box<InterfaceAccount<'info, Mint>>,
+    pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token2022>,
+}
+
+pub fn create_simple_extension_mint_handler(
+    ctx: Context<CreateSimpleExtensionMint>,
+) -> Result<()> {
+    let mint_data = &mut ctx.accounts.mint.to_account_info();
+    let mint_key: Option<Pubkey> = Some(ctx.accounts.mint.key());
+    let authority_key: Option<Pubkey> = Some(ctx.accounts.authority.key());
+
+    let metadata_pointer = get_mint_extension_data::<MetadataPointer>(mint_data)?;
+    assert_eq!(
+        metadata_pointer.metadata_address,
+        OptionalNonZeroPubkey::try_from(mint_key)?
+    );
+    assert_eq!(
+        metadata_pointer.authority,
+        OptionalNonZeroPubkey::try_from(authority_key)?
+    );
+
+    let permanent_delegate = get_mint_extension_data::<PermanentDelegate>(mint_data)?;
+    assert_eq!(
+        permanent_delegate.delegate,
+        OptionalNonZeroPubkey::try_from(authority_key)?
+    );
+
+    let close_authority = get_mint_extension_data::<MintCloseAuthority>(mint_data)?;
+    assert_eq!(
+        close_authority.close_authority,
+        OptionalNonZeroPubkey::try_from(authority_key)?
+    );
+
+    let transfer_hook = get_mint_extension_data::<TransferHook>(mint_data)?;
+    let program_id: Option<Pubkey> = Some(ctx.program_id.key());
+    assert_eq!(
+        transfer_hook.authority,
+        OptionalNonZeroPubkey::try_from(authority_key)?
+    );
+    assert_eq!(
+        transfer_hook.program_id,
+        OptionalNonZeroPubkey::try_from(program_id)?
+    );
+
+    let group_member_pointer = get_mint_extension_data::<GroupMemberPointer>(mint_data)?;
+    assert_eq!(
+        group_member_pointer.authority,
+        OptionalNonZeroPubkey::try_from(authority_key)?
+    );
+    assert_eq!(
+        group_member_pointer.member_address,
+        OptionalNonZeroPubkey::try_from(mint_key)?
+    );
+
+    let pausable_extension = get_mint_extension_data::<PausableConfig>(mint_data)?;
+    assert_eq!(
+        pausable_extension.authority,
+        OptionalNonZeroPubkey::try_from(authority_key)?
+    );
+
+    Ok(())
+}
+
+#[derive(Accounts)]
 pub struct CreateGroupPointerMint<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
@@ -227,7 +313,6 @@ pub fn update_group_pointer_handler(
     new_group_address: Option<Pubkey>,
 ) -> Result<()> {
     let cpi_accounts = token_2022_extensions::group_pointer::GroupPointerUpdate {
-        token_program_id: ctx.accounts.token_program.to_account_info(),
         mint: ctx.accounts.mint.to_account_info(),
         authority: ctx.accounts.authority.to_account_info(),
     };
@@ -258,7 +343,6 @@ pub fn toggle_pause_handler(ctx: Context<CheckTogglePause>) -> Result<()> {
     pausable_pause(CpiContext::new(
         Token2022::id(),
         PausableToggle {
-            token_program_id: ctx.accounts.token_program.to_account_info(),
             mint: ctx.accounts.mint.to_account_info(),
             authority: ctx.accounts.authority.to_account_info(),
         },
@@ -270,7 +354,6 @@ pub fn toggle_pause_handler(ctx: Context<CheckTogglePause>) -> Result<()> {
     pausable_resume(CpiContext::new(
         Token2022::id(),
         PausableToggle {
-            token_program_id: ctx.accounts.token_program.to_account_info(),
             mint: ctx.accounts.mint.to_account_info(),
             authority: ctx.accounts.authority.to_account_info(),
         },
@@ -308,7 +391,6 @@ pub struct UpdateAndRemoveTokenMetadata<'info> {
 impl<'info> UpdateAndRemoveTokenMetadata<'info> {
     fn update_token_metadata(&self, field: String, value: String) -> ProgramResult {
         let cpi_accounts = TokenMetadataUpdateField {
-            program_id: self.token_program.to_account_info(),
             metadata: self.mint.to_account_info(), // metadata account is the mint, since data is stored in mint
             update_authority: self.authority.to_account_info(),
         };
@@ -319,7 +401,6 @@ impl<'info> UpdateAndRemoveTokenMetadata<'info> {
 
     fn remove_token_metadata(&self, key: String) -> ProgramResult {
         let cpi_accounts = TokenMetadataRemoveKey {
-            program_id: self.token_program.to_account_info(),
             metadata: self.mint.to_account_info(), // metadata account is the mint, since data is stored in mint
             update_authority: self.authority.to_account_info(),
         };
