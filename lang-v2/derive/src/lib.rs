@@ -1279,13 +1279,26 @@ fn impl_accounts(input: &DeriveInput) -> TokenStream2 {
         })
         .collect();
     let idl_accounts_fn = idl::build_accounts_emission(&accounts_fields);
-    // Only path-typed fields drive the IDL dep walk. `idl_field_ty` is
-    // already the post-Option-unwrap base type (see `parse::parse_field`),
-    // and is `None` for non-Path fields — filter those out so the emitted
-    // trait call has a concrete type to dispatch on.
-    let idl_field_tys: Vec<&syn::Type> = fields
+    // Most field types register transitive IDL deps through
+    // `IdlAccountType::__register_idl_deps`. `Nested<Inner>` is special:
+    // `#[derive(Accounts)]` emits an inherent `Inner::__idl_register_deps`
+    // helper, not an `IdlAccountType` impl for `Inner`, so route those
+    // fields to the inner helper directly.
+    let idl_dep_walkers: Vec<TokenStream2> = fields
         .iter()
-        .filter_map(|f| f.idl_field_ty.as_ref())
+        .filter_map(|f| {
+            if let Some(inner_ty) = parse::extract_nested_inner_type(&f.ty) {
+                Some(quote! {
+                    <#inner_ty>::__idl_register_deps(accounts, types);
+                })
+            } else {
+                f.idl_field_ty.as_ref().map(|ty| {
+                    quote! {
+                        <#ty as anchor_lang_v2::IdlAccountType>::__register_idl_deps(accounts, types);
+                    }
+                })
+            }
+        })
         .collect();
 
     let (ix_deser, ix_args_assoc, ix_args_return) = if ix_args.is_empty() {
@@ -1992,9 +2005,7 @@ fn impl_accounts(input: &DeriveInput) -> TokenStream2 {
                 accounts: &mut anchor_lang_v2::__alloc::vec::Vec<&'static str>,
                 types: &mut anchor_lang_v2::__alloc::vec::Vec<&'static str>,
             ) {
-                #(
-                    <#idl_field_tys as anchor_lang_v2::IdlAccountType>::__register_idl_deps(accounts, types);
-                )*
+                #(#idl_dep_walkers)*
             }
         }
     }
@@ -6666,11 +6677,16 @@ mod tests {
         let generated = impl_accounts(&input).to_string();
 
         assert!(
-            generated.contains(
+            generated.contains("< Inner > :: __idl_register_deps"),
+            "nested accounts should forward IDL dep registration through the inner helper: \
+             {generated}"
+        );
+        assert!(
+            !generated.contains(
                 "< anchor_lang_v2 :: Nested < Inner > as anchor_lang_v2 :: IdlAccountType > \
                  :: __register_idl_deps"
             ),
-            "nested accounts should forward IDL dep registration through the Nested wrapper: \
+            "nested accounts should not require an IdlAccountType impl on Inner via Nested: \
              {generated}"
         );
     }
