@@ -15,22 +15,17 @@ pub fn group_pointer_initialize<'info>(
     group_address: Option<Pubkey>,
 ) -> Result<()> {
     let ix = spl_token_2022::extension::group_pointer::instruction::initialize(
-        ctx.accounts.token_program_id.key,
+        &ctx.program_id,
         ctx.accounts.mint.key,
         authority,
         group_address,
     )?;
-    anchor_lang::solana_program::program::invoke_signed(
-        &ix,
-        &[ctx.accounts.token_program_id, ctx.accounts.mint],
-        ctx.signer_seeds,
-    )
-    .map_err(Into::into)
+    anchor_lang::solana_program::program::invoke_signed(&ix, &[ctx.accounts.mint], ctx.signer_seeds)
+        .map_err(Into::into)
 }
 
 #[derive(Accounts)]
 pub struct GroupPointerInitialize<'info> {
-    pub token_program_id: AccountInfo<'info>,
     pub mint: AccountInfo<'info>,
 }
 
@@ -39,7 +34,7 @@ pub fn group_pointer_update<'info>(
     group_address: Option<Pubkey>,
 ) -> Result<()> {
     let ix = spl_token_2022::extension::group_pointer::instruction::update(
-        ctx.accounts.token_program_id.key,
+        &ctx.program_id,
         ctx.accounts.mint.key,
         ctx.accounts.authority.key,
         &[ctx.accounts.authority.key],
@@ -47,11 +42,7 @@ pub fn group_pointer_update<'info>(
     )?;
     anchor_lang::solana_program::program::invoke_signed(
         &ix,
-        &[
-            ctx.accounts.token_program_id,
-            ctx.accounts.mint,
-            ctx.accounts.authority,
-        ],
+        &[ctx.accounts.mint, ctx.accounts.authority],
         ctx.signer_seeds,
     )
     .map_err(Into::into)
@@ -59,7 +50,6 @@ pub fn group_pointer_update<'info>(
 
 #[derive(Accounts)]
 pub struct GroupPointerUpdate<'info> {
-    pub token_program_id: AccountInfo<'info>,
     pub mint: AccountInfo<'info>,
     pub authority: AccountInfo<'info>,
 }

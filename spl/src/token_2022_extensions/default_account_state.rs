@@ -15,21 +15,16 @@ pub fn default_account_state_initialize<'info>(
     state: &AccountState,
 ) -> Result<()> {
     let ix = spl_token_2022::extension::default_account_state::instruction::initialize_default_account_state(
-        ctx.accounts.token_program_id.key,
+        &ctx.program_id,
         ctx.accounts.mint.key,
         state
     )?;
-    anchor_lang::solana_program::program::invoke_signed(
-        &ix,
-        &[ctx.accounts.token_program_id, ctx.accounts.mint],
-        ctx.signer_seeds,
-    )
-    .map_err(Into::into)
+    anchor_lang::solana_program::program::invoke_signed(&ix, &[ctx.accounts.mint], ctx.signer_seeds)
+        .map_err(Into::into)
 }
 
 #[derive(Accounts)]
 pub struct DefaultAccountStateInitialize<'info> {
-    pub token_program_id: AccountInfo<'info>,
     pub mint: AccountInfo<'info>,
 }
 
@@ -38,7 +33,7 @@ pub fn default_account_state_update<'info>(
     state: &AccountState,
 ) -> Result<()> {
     let ix = spl_token_2022::extension::default_account_state::instruction::update_default_account_state(
-        ctx.accounts.token_program_id.key,
+        &ctx.program_id,
         ctx.accounts.mint.key,
         ctx.accounts.freeze_authority.key,
         &[],
@@ -47,11 +42,7 @@ pub fn default_account_state_update<'info>(
 
     anchor_lang::solana_program::program::invoke_signed(
         &ix,
-        &[
-            ctx.accounts.token_program_id,
-            ctx.accounts.mint,
-            ctx.accounts.freeze_authority,
-        ],
+        &[ctx.accounts.mint, ctx.accounts.freeze_authority],
         ctx.signer_seeds,
     )
     .map_err(Into::into)
@@ -59,7 +50,6 @@ pub fn default_account_state_update<'info>(
 
 #[derive(Accounts)]
 pub struct DefaultAccountStateUpdate<'info> {
-    pub token_program_id: AccountInfo<'info>,
     pub mint: AccountInfo<'info>,
     pub freeze_authority: AccountInfo<'info>,
 }

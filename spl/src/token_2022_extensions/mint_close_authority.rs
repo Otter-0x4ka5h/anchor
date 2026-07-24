@@ -14,20 +14,15 @@ pub fn mint_close_authority_initialize<'info>(
     authority: Option<&Pubkey>,
 ) -> Result<()> {
     let ix = spl_token_2022::instruction::initialize_mint_close_authority(
-        ctx.accounts.token_program_id.key,
+        &ctx.program_id,
         ctx.accounts.mint.key,
         authority,
     )?;
-    anchor_lang::solana_program::program::invoke_signed(
-        &ix,
-        &[ctx.accounts.token_program_id, ctx.accounts.mint],
-        ctx.signer_seeds,
-    )
-    .map_err(Into::into)
+    anchor_lang::solana_program::program::invoke_signed(&ix, &[ctx.accounts.mint], ctx.signer_seeds)
+        .map_err(Into::into)
 }
 
 #[derive(Accounts)]
 pub struct MintCloseAuthorityInitialize<'info> {
-    pub token_program_id: AccountInfo<'info>,
     pub mint: AccountInfo<'info>,
 }

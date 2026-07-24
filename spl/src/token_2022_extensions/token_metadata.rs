@@ -17,7 +17,7 @@ pub fn token_metadata_initialize<'info>(
     uri: String,
 ) -> Result<()> {
     let ix = spl_token_metadata_interface::instruction::initialize(
-        ctx.accounts.program_id.key,
+        &ctx.program_id,
         ctx.accounts.metadata.key,
         ctx.accounts.update_authority.key,
         ctx.accounts.mint.key,
@@ -29,7 +29,6 @@ pub fn token_metadata_initialize<'info>(
     anchor_lang::solana_program::program::invoke_signed(
         &ix,
         &[
-            ctx.accounts.program_id,
             ctx.accounts.metadata,
             ctx.accounts.update_authority,
             ctx.accounts.mint,
@@ -42,7 +41,6 @@ pub fn token_metadata_initialize<'info>(
 
 #[derive(Accounts)]
 pub struct TokenMetadataInitialize<'info> {
-    pub program_id: AccountInfo<'info>,
     pub metadata: AccountInfo<'info>,
     pub update_authority: AccountInfo<'info>,
     pub mint_authority: AccountInfo<'info>,
@@ -54,18 +52,14 @@ pub fn token_metadata_update_authority<'info>(
     new_authority: OptionalNonZeroPubkey,
 ) -> Result<()> {
     let ix = spl_token_metadata_interface::instruction::update_authority(
-        ctx.accounts.program_id.key,
+        &ctx.program_id,
         ctx.accounts.metadata.key,
         ctx.accounts.current_authority.key,
         new_authority,
     );
     anchor_lang::solana_program::program::invoke_signed(
         &ix,
-        &[
-            ctx.accounts.program_id,
-            ctx.accounts.metadata,
-            ctx.accounts.current_authority,
-        ],
+        &[ctx.accounts.metadata, ctx.accounts.current_authority],
         ctx.signer_seeds,
     )
     .map_err(Into::into)
@@ -73,7 +67,6 @@ pub fn token_metadata_update_authority<'info>(
 
 #[derive(Accounts)]
 pub struct TokenMetadataUpdateAuthority<'info> {
-    pub program_id: AccountInfo<'info>,
     pub metadata: AccountInfo<'info>,
     pub current_authority: AccountInfo<'info>,
     pub new_authority: AccountInfo<'info>,
@@ -85,7 +78,7 @@ pub fn token_metadata_update_field<'info>(
     value: String,
 ) -> Result<()> {
     let ix = spl_token_metadata_interface::instruction::update_field(
-        ctx.accounts.program_id.key,
+        &ctx.program_id,
         ctx.accounts.metadata.key,
         ctx.accounts.update_authority.key,
         field,
@@ -93,11 +86,7 @@ pub fn token_metadata_update_field<'info>(
     );
     anchor_lang::solana_program::program::invoke_signed(
         &ix,
-        &[
-            ctx.accounts.program_id,
-            ctx.accounts.metadata,
-            ctx.accounts.update_authority,
-        ],
+        &[ctx.accounts.metadata, ctx.accounts.update_authority],
         ctx.signer_seeds,
     )
     .map_err(Into::into)
@@ -105,7 +94,6 @@ pub fn token_metadata_update_field<'info>(
 
 #[derive(Accounts)]
 pub struct TokenMetadataUpdateField<'info> {
-    pub program_id: AccountInfo<'info>,
     pub metadata: AccountInfo<'info>,
     pub update_authority: AccountInfo<'info>,
 }
@@ -116,7 +104,7 @@ pub fn token_metadata_remove_key<'info>(
     idempotent: bool,
 ) -> Result<()> {
     let ix = spl_token_metadata_interface::instruction::remove_key(
-        ctx.accounts.program_id.key,
+        &ctx.program_id,
         ctx.accounts.metadata.key,
         ctx.accounts.update_authority.key,
         key,
@@ -124,11 +112,7 @@ pub fn token_metadata_remove_key<'info>(
     );
     anchor_lang::solana_program::program::invoke_signed(
         &ix,
-        &[
-            ctx.accounts.program_id,
-            ctx.accounts.metadata,
-            ctx.accounts.update_authority,
-        ],
+        &[ctx.accounts.metadata, ctx.accounts.update_authority],
         ctx.signer_seeds,
     )
     .map_err(Into::into)
@@ -136,7 +120,6 @@ pub fn token_metadata_remove_key<'info>(
 
 #[derive(Accounts)]
 pub struct TokenMetadataRemoveKey<'info> {
-    pub program_id: AccountInfo<'info>,
     pub metadata: AccountInfo<'info>,
     pub update_authority: AccountInfo<'info>,
 }

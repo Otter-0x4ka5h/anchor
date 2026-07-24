@@ -17,24 +17,19 @@ pub fn transfer_fee_initialize<'info>(
     maximum_fee: u64,
 ) -> Result<()> {
     let ix = spl_token_2022::extension::transfer_fee::instruction::initialize_transfer_fee_config(
-        ctx.accounts.token_program_id.key,
+        &ctx.program_id,
         ctx.accounts.mint.key,
         transfer_fee_config_authority,
         withdraw_withheld_authority,
         transfer_fee_basis_points,
         maximum_fee,
     )?;
-    anchor_lang::solana_program::program::invoke_signed(
-        &ix,
-        &[ctx.accounts.token_program_id, ctx.accounts.mint],
-        ctx.signer_seeds,
-    )
-    .map_err(Into::into)
+    anchor_lang::solana_program::program::invoke_signed(&ix, &[ctx.accounts.mint], ctx.signer_seeds)
+        .map_err(Into::into)
 }
 
 #[derive(Accounts)]
 pub struct TransferFeeInitialize<'info> {
-    pub token_program_id: AccountInfo<'info>,
     pub mint: AccountInfo<'info>,
 }
 
@@ -44,7 +39,7 @@ pub fn transfer_fee_set<'info>(
     maximum_fee: u64,
 ) -> Result<()> {
     let ix = spl_token_2022::extension::transfer_fee::instruction::set_transfer_fee(
-        ctx.accounts.token_program_id.key,
+        &ctx.program_id,
         ctx.accounts.mint.key,
         ctx.accounts.authority.key,
         &[],
@@ -53,11 +48,7 @@ pub fn transfer_fee_set<'info>(
     )?;
     anchor_lang::solana_program::program::invoke_signed(
         &ix,
-        &[
-            ctx.accounts.token_program_id,
-            ctx.accounts.mint,
-            ctx.accounts.authority,
-        ],
+        &[ctx.accounts.mint, ctx.accounts.authority],
         ctx.signer_seeds,
     )
     .map_err(Into::into)
@@ -65,7 +56,6 @@ pub fn transfer_fee_set<'info>(
 
 #[derive(Accounts)]
 pub struct TransferFeeSetTransferFee<'info> {
-    pub token_program_id: AccountInfo<'info>,
     pub mint: AccountInfo<'info>,
     pub authority: AccountInfo<'info>,
 }
@@ -77,7 +67,7 @@ pub fn transfer_checked_with_fee<'info>(
     fee: u64,
 ) -> Result<()> {
     let ix = spl_token_2022::extension::transfer_fee::instruction::transfer_checked_with_fee(
-        ctx.accounts.token_program_id.key,
+        &ctx.program_id,
         ctx.accounts.source.key,
         ctx.accounts.mint.key,
         ctx.accounts.destination.key,
@@ -90,7 +80,6 @@ pub fn transfer_checked_with_fee<'info>(
     anchor_lang::solana_program::program::invoke_signed(
         &ix,
         &[
-            ctx.accounts.token_program_id,
             ctx.accounts.source,
             ctx.accounts.mint,
             ctx.accounts.destination,
@@ -103,7 +92,6 @@ pub fn transfer_checked_with_fee<'info>(
 
 #[derive(Accounts)]
 pub struct TransferCheckedWithFee<'info> {
-    pub token_program_id: AccountInfo<'info>,
     pub source: AccountInfo<'info>,
     pub mint: AccountInfo<'info>,
     pub destination: AccountInfo<'info>,
@@ -115,12 +103,12 @@ pub fn harvest_withheld_tokens_to_mint<'info>(
     sources: Vec<AccountInfo<'info>>,
 ) -> Result<()> {
     let ix = spl_token_2022::extension::transfer_fee::instruction::harvest_withheld_tokens_to_mint(
-        ctx.accounts.token_program_id.key,
+        &ctx.program_id,
         ctx.accounts.mint.key,
         sources.iter().map(|a| a.key).collect::<Vec<_>>().as_slice(),
     )?;
 
-    let mut account_infos = vec![ctx.accounts.token_program_id, ctx.accounts.mint];
+    let mut account_infos = vec![ctx.accounts.mint];
     account_infos.extend_from_slice(&sources);
 
     anchor_lang::solana_program::program::invoke_signed(&ix, &account_infos, ctx.signer_seeds)
@@ -129,7 +117,6 @@ pub fn harvest_withheld_tokens_to_mint<'info>(
 
 #[derive(Accounts)]
 pub struct HarvestWithheldTokensToMint<'info> {
-    pub token_program_id: AccountInfo<'info>,
     pub mint: AccountInfo<'info>,
 }
 
@@ -138,7 +125,7 @@ pub fn withdraw_withheld_tokens_from_mint<'info>(
 ) -> Result<()> {
     let ix =
         spl_token_2022::extension::transfer_fee::instruction::withdraw_withheld_tokens_from_mint(
-            ctx.accounts.token_program_id.key,
+            &ctx.program_id,
             ctx.accounts.mint.key,
             ctx.accounts.destination.key,
             ctx.accounts.authority.key,
@@ -147,7 +134,6 @@ pub fn withdraw_withheld_tokens_from_mint<'info>(
     anchor_lang::solana_program::program::invoke_signed(
         &ix,
         &[
-            ctx.accounts.token_program_id,
             ctx.accounts.mint,
             ctx.accounts.destination,
             ctx.accounts.authority,
@@ -159,7 +145,6 @@ pub fn withdraw_withheld_tokens_from_mint<'info>(
 
 #[derive(Accounts)]
 pub struct WithdrawWithheldTokensFromMint<'info> {
-    pub token_program_id: AccountInfo<'info>,
     pub mint: AccountInfo<'info>,
     pub destination: AccountInfo<'info>,
     pub authority: AccountInfo<'info>,
@@ -170,7 +155,7 @@ pub fn withdraw_withheld_tokens_from_accounts<'info>(
     sources: Vec<AccountInfo<'info>>,
 ) -> Result<()> {
     let ix = spl_token_2022::extension::transfer_fee::instruction::withdraw_withheld_tokens_from_accounts(
-        ctx.accounts.token_program_id.key,
+        &ctx.program_id,
         ctx.accounts.mint.key,
         ctx.accounts.destination.key,
         ctx.accounts.authority.key,
@@ -179,7 +164,6 @@ pub fn withdraw_withheld_tokens_from_accounts<'info>(
     )?;
 
     let mut account_infos = vec![
-        ctx.accounts.token_program_id,
         ctx.accounts.mint,
         ctx.accounts.destination,
         ctx.accounts.authority,
@@ -192,7 +176,6 @@ pub fn withdraw_withheld_tokens_from_accounts<'info>(
 
 #[derive(Accounts)]
 pub struct WithdrawWithheldTokensFromAccounts<'info> {
-    pub token_program_id: AccountInfo<'info>,
     pub mint: AccountInfo<'info>,
     pub destination: AccountInfo<'info>,
     pub authority: AccountInfo<'info>,

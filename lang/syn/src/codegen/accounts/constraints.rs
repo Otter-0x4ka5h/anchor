@@ -1024,49 +1024,41 @@ fn generate_constraint_init_group(
                                 match e {
                                     ::anchor_spl::token_interface::spl_token_2022::extension::ExtensionType::GroupPointer => {
                                         ::anchor_spl::token_interface::group_pointer_initialize(anchor_lang::context::CpiContext::new(cpi_program_id, ::anchor_spl::token_interface::GroupPointerInitialize {
-                                            token_program_id: #token_program.to_account_info(),
                                             mint: #field.to_account_info(),
                                         }), #group_pointer_authority, #group_pointer_group_address)?;
                                     },
                                     ::anchor_spl::token_interface::spl_token_2022::extension::ExtensionType::GroupMemberPointer => {
                                         ::anchor_spl::token_interface::group_member_pointer_initialize(anchor_lang::context::CpiContext::new(cpi_program_id, ::anchor_spl::token_interface::GroupMemberPointerInitialize {
-                                            token_program_id: #token_program.to_account_info(),
                                             mint: #field.to_account_info(),
                                         }), #group_member_pointer_authority, #group_member_pointer_member_address)?;
                                     },
                                     ::anchor_spl::token_interface::spl_token_2022::extension::ExtensionType::MetadataPointer => {
                                         ::anchor_spl::token_interface::metadata_pointer_initialize(anchor_lang::context::CpiContext::new(cpi_program_id, ::anchor_spl::token_interface::MetadataPointerInitialize {
-                                            token_program_id: #token_program.to_account_info(),
                                             mint: #field.to_account_info(),
                                         }), #metadata_pointer_authority, #metadata_pointer_metadata_address)?;
                                     },
                                     ::anchor_spl::token_interface::spl_token_2022::extension::ExtensionType::MintCloseAuthority => {
                                         ::anchor_spl::token_interface::mint_close_authority_initialize(anchor_lang::context::CpiContext::new(cpi_program_id, ::anchor_spl::token_interface::MintCloseAuthorityInitialize {
-                                            token_program_id: #token_program.to_account_info(),
                                             mint: #field.to_account_info(),
                                         }), #close_authority)?;
                                     },
                                     ::anchor_spl::token_interface::spl_token_2022::extension::ExtensionType::TransferHook => {
                                         ::anchor_spl::token_interface::transfer_hook_initialize(anchor_lang::context::CpiContext::new(cpi_program_id, ::anchor_spl::token_interface::TransferHookInitialize {
-                                            token_program_id: #token_program.to_account_info(),
                                             mint: #field.to_account_info(),
                                         }), #transfer_hook_authority, #transfer_hook_program_id)?;
                                     },
                                     ::anchor_spl::token_interface::spl_token_2022::extension::ExtensionType::NonTransferable => {
                                         ::anchor_spl::token_interface::non_transferable_mint_initialize(anchor_lang::context::CpiContext::new(cpi_program_id, ::anchor_spl::token_interface::NonTransferableMintInitialize {
-                                            token_program_id: #token_program.to_account_info(),
                                             mint: #field.to_account_info(),
                                         }))?;
                                     },
                                     ::anchor_spl::token_interface::spl_token_2022::extension::ExtensionType::PermanentDelegate => {
                                         ::anchor_spl::token_interface::permanent_delegate_initialize(anchor_lang::context::CpiContext::new(cpi_program_id, ::anchor_spl::token_interface::PermanentDelegateInitialize {
-                                            token_program_id: #token_program.to_account_info(),
                                             mint: #field.to_account_info(),
                                         }), #permanent_delegate.unwrap())?;
                                     },
                                     ::anchor_spl::token_interface::spl_token_2022::extension::ExtensionType::Pausable => {
                                         ::anchor_spl::token_interface::pausable_initialize(anchor_lang::context::CpiContext::new(cpi_program_id, ::anchor_spl::token_interface::PausableInitialize {
-                                            token_program_id: #token_program.to_account_info(),
                                             mint: #field.to_account_info(),
                                         }), #pausable_authority.unwrap())?;
                                     },
