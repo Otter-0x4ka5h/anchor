@@ -744,6 +744,10 @@ impl MetadataAccount {
             return Err(ProgramError::InvalidAccountData);
         }
 
+        // Metaplex stores MetadataV1 accounts on chain in this exact order:
+        // key, update_authority, mint, data, primary_sale_happened,
+        // is_mutable, edition_nonce, token_standard, collection, uses,
+        // collection_details, programmable_config.
         let key: Key =
             BorshDeserialize::deserialize(buf).map_err(|_| ProgramError::InvalidAccountData)?;
         let update_authority: Pubkey =
