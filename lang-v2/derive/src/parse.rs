@@ -103,7 +103,7 @@ pub struct IdlPdaMeta {
 }
 
 pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
-    let mut explicit_mut = false;
+    let mut explicit_mut = None;
     let mut realloc_zero_seen = false;
     let mut result = AccountAttrs {
         is_mut: false,
@@ -147,10 +147,10 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                 let ident = Ident::parse_any(input)?;
                 match ident.to_string().as_str() {
                     "mut" => {
-                        if explicit_mut {
+                        if explicit_mut.is_some() {
                             return Err(duplicate_singleton(ident.span(), "mut"));
                         }
-                        explicit_mut = true;
+                        explicit_mut = Some(ident.span());
                         result.is_mut = true;
                     }
                     "init" => {
@@ -512,6 +512,15 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
         }
     }
 
+    if let Some(span) = explicit_mut {
+        if result.is_init || result.is_init_if_needed {
+            return Err(syn::Error::new(span, "mut cannot be provided with init"));
+        }
+        if result.is_zeroed {
+            return Err(syn::Error::new(span, "mut cannot be provided with zeroed"));
+        }
+    }
+
     if result.close.is_some() && (result.is_init || result.is_init_if_needed || result.is_zeroed) {
         return Err(syn::Error::new(
             result.close.as_ref().unwrap().span(),
@@ -617,6 +626,13 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
         return Err(syn::Error::new(
             result.realloc.as_ref().unwrap().span(),
             "`realloc` requires `realloc_payer`",
+        ));
+    }
+
+    if result.realloc.is_some() && !realloc_zero_seen {
+        return Err(syn::Error::new(
+            result.realloc.as_ref().unwrap().span(),
+            "`realloc` requires `realloc_zero`",
         ));
     }
 
