@@ -55,15 +55,8 @@ pub struct Profile {
     pub scores: alloc::vec::Vec<u64>,
 }
 
-#[derive(IdlType)]
-pub struct QualifiedPubkeyHolder {
-    pub authority: solana_pubkey::Pubkey,
-}
-
 pub mod qualified {
-    use super::*;
-
-    #[derive(IdlType)]
+    #[derive(anchor_lang_v2::IdlType)]
     pub struct Inner {
         pub value: u64,
     }
@@ -74,14 +67,11 @@ pub mod limits {
 }
 
 #[derive(IdlType)]
-pub struct QualifiedUserTypeHolder {
+pub struct QualifiedUserTypeHolder<const N: usize> {
+    pub authority: anchor_lang_v2::prelude::Address,
     pub inner: qualified::Inner,
     pub literal_expr: [u8; 1 + 1],
     pub const_path: [u8; limits::ITEMS],
-}
-
-#[derive(IdlType)]
-pub struct GenericArray<const N: usize> {
     pub bytes: [u8; N],
 }
 
@@ -281,29 +271,24 @@ mod idl_tests {
 
     #[test]
     fn idl_type_lowering_is_self_contained() {
-        let type_def = <QualifiedPubkeyHolder as IdlAccountType>::__IDL_TYPE_DEF
-            .expect("QualifiedPubkeyHolder should emit an IDL type");
-        assert!(type_def.contains("\"name\":\"QualifiedPubkeyHolder\""));
-        assert!(type_def.contains("\"name\":\"authority\""));
-        assert!(type_def.contains("\"type\":\"pubkey\""));
-
-        let type_def = <QualifiedUserTypeHolder as IdlAccountType>::__IDL_TYPE_DEF
+        let type_def = <QualifiedUserTypeHolder<4> as IdlAccountType>::__IDL_TYPE_DEF
             .expect("QualifiedUserTypeHolder should emit an IDL type");
+        assert!(type_def.contains("\"name\":\"authority\",\"type\":\"pubkey\""));
         assert!(type_def.contains("\"defined\":{\"name\":\"Inner\"}"));
         assert!(!type_def.contains("qualified::Inner"));
         assert!(type_def.contains("\"array\":[\"u8\",2]"));
         assert!(type_def.contains("\"array\":[\"u8\",3]"));
         assert!(!type_def.contains("limits::ITEMS"));
-
-        let generic_type_def = <GenericArray<4> as IdlAccountType>::__IDL_TYPE_DEF
-            .expect("GenericArray should emit an IDL type");
-        assert!(generic_type_def
+        assert!(type_def
             .contains("\"generics\":[{\"kind\":\"const\",\"name\":\"N\",\"type\":\"usize\"}]"));
-        assert!(generic_type_def.contains("\"array\":[\"u8\",{\"generic\":\"N\"}]"));
+        assert!(type_def.contains("\"array\":[\"u8\",{\"generic\":\"N\"}]"));
 
         let mut accounts = alloc::vec::Vec::new();
         let mut types = alloc::vec::Vec::new();
-        <QualifiedUserTypeHolder as IdlAccountType>::__register_idl_deps(&mut accounts, &mut types);
+        <QualifiedUserTypeHolder<4> as IdlAccountType>::__register_idl_deps(
+            &mut accounts,
+            &mut types,
+        );
         assert!(types.iter().any(|ty| ty.contains("\"name\":\"Inner\"")));
     }
 }
