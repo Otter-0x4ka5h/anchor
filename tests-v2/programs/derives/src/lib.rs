@@ -60,6 +60,21 @@ pub struct QualifiedPubkeyHolder {
     pub authority: solana_pubkey::Pubkey,
 }
 
+pub mod qualified {
+    use super::*;
+
+    #[derive(IdlType)]
+    pub struct Inner {
+        pub value: u64,
+    }
+}
+
+#[derive(IdlType)]
+pub struct QualifiedUserTypeHolder {
+    pub inner: qualified::Inner,
+    pub literal_expr: [u8; 1 + 1],
+}
+
 // ---- #[event] -------------------------------------------------------------
 
 /// Default-mode event (wincode with a borsh-compatible wire format).
@@ -253,5 +268,17 @@ mod idl_tests {
         assert!(type_def.contains("\"name\":\"QualifiedPubkeyHolder\""));
         assert!(type_def.contains("\"name\":\"authority\""));
         assert!(type_def.contains("\"type\":\"pubkey\""));
+
+        let type_def = <QualifiedUserTypeHolder as IdlAccountType>::__IDL_TYPE_DEF
+            .expect("QualifiedUserTypeHolder should emit an IDL type");
+        assert!(type_def.contains("\"defined\":{\"name\":\"Inner\"}"));
+        assert!(!type_def.contains("qualified::Inner"));
+        assert!(type_def.contains("\"array\":[\"u8\",2]"));
+        assert!(!type_def.contains("\"generic\":\"1+1\""));
+
+        let mut accounts = alloc::vec::Vec::new();
+        let mut types = alloc::vec::Vec::new();
+        <QualifiedUserTypeHolder as IdlAccountType>::__register_idl_deps(&mut accounts, &mut types);
+        assert!(types.iter().any(|ty| ty.contains("\"name\":\"Inner\"")));
     }
 }
