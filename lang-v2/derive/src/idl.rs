@@ -125,27 +125,6 @@ impl<'a> TypeLowerer<'a> {
         }
     }
 
-    fn generic_definitions(&self, generics: &Generics) -> Vec<Value> {
-        generics
-            .params
-            .iter()
-            .filter_map(|param| match param {
-                GenericParam::Type(param) => {
-                    Some(json!({ "kind": "type", "name": param.ident.to_string() }))
-                }
-                GenericParam::Const(param) => {
-                    let ty = &param.ty;
-                    Some(json!({
-                        "kind": "const",
-                        "name": param.ident.to_string(),
-                        "type": quote!(#ty).to_string().replace(' ', ""),
-                    }))
-                }
-                GenericParam::Lifetime(_) => None,
-            })
-            .collect()
-    }
-
     fn finish(self, value: Value) -> TokenStream2 {
         let mut remaining = value.to_string();
         if self.dynamic_lengths.is_empty() {
@@ -167,6 +146,12 @@ impl<'a> TypeLowerer<'a> {
     }
 }
 
+/// Convert a Rust type to a generated expression containing its IDL JSON.
+pub fn rust_type_to_idl(ty: &Type) -> TokenStream2 {
+    let mut lowerer = TypeLowerer::default();
+    let value = lowerer.lower(ty);
+    lowerer.finish(value)
+}
 fn normalize_builtin_path(ty: &str) -> &str {
     let ty = ty.trim_start_matches("::");
     [
@@ -224,13 +209,6 @@ fn peel_expr(expr: &Expr) -> &Expr {
     }
 }
 
-/// Convert a Rust type to a generated expression containing its IDL JSON.
-pub fn rust_type_to_idl(ty: &Type) -> TokenStream2 {
-    let mut lowerer = TypeLowerer::default();
-    let value = lowerer.lower(ty);
-    lowerer.finish(value)
-}
-
 #[cfg(test)]
 fn rust_type_to_idl_value(ty: &Type) -> Value {
     TypeLowerer::default().lower(ty)
@@ -245,46 +223,6 @@ fn type_str_to_idl_value(s: &str) -> Value {
             .unwrap_or_else(|_| json!({ "defined": { "name": s } })),
     }
 }
-
-/// Drop the `<...>` suffix on a user-defined type name.
-///
-/// `MixedArgs<'_>` / `MixedArgs<'info>` → `MixedArgs`.
-/// `PodVec<PodU64, 16>` → `PodVec`.
-///
-/// The IDL spec's `IdlType::Defined { name, generics }` models generic
-/// references structurally (spec:284+), but the v2 derive doesn't yet emit
-/// the `generics` payload. Meanwhile, `#[derive(IdlType)]` registers types
-/// under the bare ident (no `<...>`), so leaking the generic suffix into
-/// the reference produces a `{"defined":{"name":"Foo<'_>"}}` that never
-/// resolves against the `types[]` entry named `"Foo"`. Strip here so the
-/// two sides agree — downstream TS clients used to patch this at runtime
-/// (`tests/shared.ts::loadIdl`).
-///
-/// Limitation: generic arguments on defined type references are not emitted,
-/// so multiple instantiations still collapse to the same definition name.
-fn strip_type_generics(name: &str) -> &str {
-    match name.find('<') {
-        Some(idx) => &name[..idx],
-        None => name,
-    }
-}
-
-/// Strip a leading `&` reference and any `'lifetime` annotation from a type
-/// string, so `&'a [u64]` → `[u64]`. Leaves nested types alone.
-fn strip_ref_and_lifetime(s: &str) -> String {
-    let s = s.trim();
-    let s = s.strip_prefix('&').unwrap_or(s).trim_start();
-    let s = if let Some(rest) = s.strip_prefix('\'') {
-        match rest.find(|c: char| c.is_whitespace() || c == '[' || c == ',') {
-            Some(pos) => rest[pos..].trim_start().to_owned(),
-            None => String::new(),
-        }
-    } else {
-        s.to_owned()
-    };
-    s.trim_start_matches("mut ").trim().to_owned()
-}
-
 /// Per-field input to the runtime `__idl_accounts()` emission. See
 /// [`build_accounts_emission`].
 pub struct AccountsJsonField<'a> {
@@ -575,7 +513,7 @@ pub fn build_type_strings(
     generics: &Generics,
 ) -> IdlTypeStrings {
     let mut lowerer = TypeLowerer::with_generics(generics);
-    let mut type_def_obj = build_type_def_header(name, docs, kind, &lowerer, generics);
+    let mut type_def_obj = build_type_def_header(name, docs, kind, generics);
     let field_values: Vec<Value> = fields
         .iter()
         .map(|field| named_field_value(field, &mut lowerer))
@@ -601,7 +539,7 @@ pub fn build_enum_type_strings(
     generics: &Generics,
 ) -> IdlTypeStrings {
     let mut lowerer = TypeLowerer::with_generics(generics);
-    let mut type_def_obj = build_type_def_header(name, docs, kind, &lowerer, generics);
+    let mut type_def_obj = build_type_def_header(name, docs, kind, generics);
     let variant_values: Vec<Value> = variants
         .iter()
         .map(|v| {
@@ -664,7 +602,6 @@ fn build_type_def_header(
     name: &str,
     docs: &[String],
     kind: TypeKind,
-    lowerer: &TypeLowerer,
     generics: &Generics,
 ) -> serde_json::Map<String, Value> {
     let mut out = serde_json::Map::new();
@@ -672,7 +609,7 @@ fn build_type_def_header(
     if !docs.is_empty() {
         out.insert("docs".into(), docs_value(docs));
     }
-    let generics = lowerer.generic_definitions(generics);
+    let generics = generic_definitions(generics);
     if !generics.is_empty() {
         out.insert("generics".into(), Value::Array(generics));
     }
@@ -684,6 +621,27 @@ fn build_type_def_header(
         }
     }
     out
+}
+
+fn generic_definitions(generics: &Generics) -> Vec<Value> {
+    generics
+        .params
+        .iter()
+        .filter_map(|param| match param {
+            GenericParam::Type(param) => {
+                Some(json!({ "kind": "type", "name": param.ident.to_string() }))
+            }
+            GenericParam::Const(param) => {
+                let ty = &param.ty;
+                Some(json!({
+                    "kind": "const",
+                    "name": param.ident.to_string(),
+                    "type": quote!(#ty).to_string().replace(' ', ""),
+                }))
+            }
+            GenericParam::Lifetime(_) => None,
+        })
+        .collect()
 }
 
 /// Build a named `IdlField` value — `{name, type, docs?}` — for a single
@@ -1077,7 +1035,7 @@ pub fn pda_object_emission(seeds: &[SeedJson], program: Option<&SeedJson>) -> To
 
 #[cfg(test)]
 mod tests {
-    use {super::*, serde_json::json};
+    use super::*;
 
     /// Pull the inner JSON string out of a `Static` seed for assertion.
     /// Panics if the seed was classified as `Runtime`.
@@ -1149,7 +1107,7 @@ mod tests {
             json!({ "array": ["u8", { "generic": "N" }] })
         );
         assert_eq!(
-            lowerer.generic_definitions(&generics),
+            generic_definitions(&generics),
             vec![json!({ "kind": "const", "name": "N", "type": "usize" })]
         );
 

@@ -3985,16 +3985,11 @@ fn declare_idl_array_len_to_tokens(
         let len = len as usize;
         return Ok(quote! { #len });
     }
-    if let Some(generic) = value.get("generic").and_then(serde_json::Value::as_str) {
-        let ident: Ident = syn::parse_str(generic).map_err(|err| {
-            syn::Error::new(
-                span,
-                format!("invalid IDL array generic `{generic}`: {err}"),
-            )
-        })?;
-        return Ok(quote! { #ident });
-    }
-    if let Some(generic) = value.as_str() {
+    let generic = value
+        .get("generic")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| value.as_str());
+    if let Some(generic) = generic {
         let ident: Ident = syn::parse_str(generic).map_err(|err| {
             syn::Error::new(
                 span,
