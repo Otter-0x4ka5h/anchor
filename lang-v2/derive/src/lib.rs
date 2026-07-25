@@ -117,9 +117,6 @@ pub(crate) fn find_unsupported_wincode_attr(
     Ok(None)
 }
 
-// Rewrites supported handler context patterns so generated handlers can call
-// `TryAccounts::update_accounts(...)`. Unsupported destructuring now returns a
-// targeted compile error instead of silently omitting the update phase.
 fn update_accounts_stmt_for_handler_pat(pat: &mut Pat) -> syn::Result<syn::Stmt> {
     let update_stmt = |expr: TokenStream2| {
         syn::parse_quote! {
