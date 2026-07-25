@@ -1027,6 +1027,80 @@ pub struct Bad {
     ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
 )]
 fn account_attrs_reject_duplicate_singletons_and_conflicts() {
+    for (name, attrs, message) in [
+        (
+            "duplicate_mut",
+            "#[account(mut)] #[account(mut)]",
+            "`mut` already provided",
+        ),
+        (
+            "duplicate_signer",
+            "#[account(signer)] #[account(signer)]",
+            "`signer` already provided",
+        ),
+        (
+            "duplicate_executable",
+            "#[account(executable)] #[account(executable)]",
+            "`executable` already provided",
+        ),
+        (
+            "duplicate_unsafe_dup",
+            "#[account(unsafe(dup))] #[account(unsafe(dup))]",
+            "`unsafe(dup)` already provided",
+        ),
+    ] {
+        compile_fail_case(
+            name,
+            &format!(
+                r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {{
+    {attrs}
+    pub data: UncheckedAccount,
+}}
+"#
+            ),
+            &[message],
+        );
+    }
+
+    compile_fail_case(
+        "duplicate_realloc_zero",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(
+        realloc = 16,
+        realloc_payer = payer,
+        realloc_zero = false,
+        realloc_zero = true,
+    )]
+    pub data: UncheckedAccount,
+    #[account(mut)]
+    pub payer: Signer,
+}
+"#,
+        &["`realloc_zero` already provided"],
+    );
+
+    compile_fail_case(
+        "duplicate_namespaced_constraint",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(example::value = 1, example::value = 2)]
+    pub data: UncheckedAccount,
+}
+"#,
+        &["duplicate `example::value` constraint"],
+    );
+
     compile_fail_case(
         "duplicate_owner_across_account_attrs",
         r#"
@@ -1152,6 +1226,34 @@ pub struct Bad {
 )]
 fn account_attrs_enforce_local_dependency_pairs() {
     compile_fail_case(
+        "init_without_payer",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(init, space = 8)]
+    pub data: UncheckedAccount,
+}
+"#,
+        &["`init` and `init_if_needed` require `payer`"],
+    );
+
+    compile_fail_case(
+        "init_if_needed_without_payer",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(init_if_needed, space = 8)]
+    pub data: UncheckedAccount,
+}
+"#,
+        &["`init` and `init_if_needed` require `payer`"],
+    );
+
+    compile_fail_case(
         "payer_without_init",
         r#"
 use anchor_lang_v2::prelude::*;
@@ -1243,6 +1345,256 @@ pub struct Bad {
 "#,
         &["`realloc_payer` requires `realloc`"],
     );
+
+    compile_fail_case(
+        "realloc_without_payer",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(realloc = 16)]
+    pub data: UncheckedAccount,
+}
+"#,
+        &["`realloc` requires `realloc_payer`"],
+    );
+
+    compile_fail_case(
+        "realloc_zero_without_realloc",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(realloc_zero = true)]
+    pub data: UncheckedAccount,
+}
+"#,
+        &["`realloc_zero` requires `realloc`"],
+    );
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
+fn accounts_derive_enforces_referenced_account_invariants() {
+    compile_fail_case(
+        "required_init_rejects_optional_payer",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut)]
+    pub payer: Option<Signer>,
+    #[account(init, payer = payer, space = 8)]
+    pub data: UncheckedAccount,
+    pub system_program: Program<System>,
+}
+"#,
+        &["optional accounts cannot be used as init payers"],
+    );
+
+    compile_fail_case(
+        "required_init_requires_system_program",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut)]
+    pub payer: Signer,
+    #[account(init, payer = payer, space = 8)]
+    pub data: UncheckedAccount,
+}
+"#,
+        &["the init program account `system_program` does not exist"],
+    );
+
+    compile_fail_case(
+        "required_init_rejects_optional_system_program",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut)]
+    pub payer: Signer,
+    #[account(init, payer = payer, space = 8)]
+    pub data: UncheckedAccount,
+    pub system_program: Option<Program<System>>,
+}
+"#,
+        &["the init program account `system_program` must be non-optional"],
+    );
+
+    compile_fail_case(
+        "required_spl_init_requires_token_program",
+        r#"
+use anchor_lang_v2::prelude::*;
+use anchor_spl_v2::{
+    mint::{self},
+    token::{self},
+    token_interface::{Mint, TokenAccount},
+};
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut)]
+    pub payer: Signer,
+    pub mint: InterfaceAccount<Mint>,
+    pub authority: UncheckedAccount,
+    #[account(
+        init,
+        payer = payer,
+        token::mint = mint,
+        token::authority = authority,
+    )]
+    pub token_account: InterfaceAccount<TokenAccount>,
+    pub system_program: Program<System>,
+}
+"#,
+        &["the SPL token program account `token_program` does not exist"],
+    );
+
+    compile_fail_case(
+        "token_init_mint_must_reference_account",
+        r#"
+use anchor_lang_v2::prelude::*;
+use anchor_spl_v2::{
+    mint::{self},
+    token::{self},
+    token_interface::{TokenAccount, TokenInterface},
+};
+
+pub const MINT: Address =
+    Address::from_str_const("Gue5TpR6sstSyGhSvmVeH2TeKqBYYqmXpRCacB9jAk8u");
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut)]
+    pub payer: Signer,
+    pub authority: UncheckedAccount,
+    pub token_program: Interface<'static, TokenInterface>,
+    #[account(
+        init,
+        payer = payer,
+        token::mint = MINT,
+        token::authority = authority,
+    )]
+    pub token_account: InterfaceAccount<TokenAccount>,
+    pub system_program: Program<System>,
+}
+"#,
+        &["the token mint account `MINT` does not exist"],
+    );
+
+    compile_fail_case(
+        "required_spl_init_rejects_optional_token_program",
+        r#"
+use anchor_lang_v2::prelude::*;
+use anchor_spl_v2::{
+    mint::{self},
+    token::{self},
+    token_interface::{Mint, TokenAccount, TokenInterface},
+};
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut)]
+    pub payer: Signer,
+    pub mint: InterfaceAccount<Mint>,
+    pub authority: UncheckedAccount,
+    pub token_program: Option<Interface<'static, TokenInterface>>,
+    #[account(
+        init,
+        payer = payer,
+        token::mint = mint,
+        token::authority = authority,
+    )]
+    pub token_account: InterfaceAccount<TokenAccount>,
+    pub system_program: Program<System>,
+}
+"#,
+        &["the SPL token program account `token_program` must be non-optional"],
+    );
+
+    compile_fail_case(
+        "associated_token_init_requires_program",
+        r#"
+use anchor_lang_v2::prelude::*;
+use anchor_spl_v2::{
+    associated_token::{self},
+    token_interface::{Mint, TokenAccount, TokenInterface},
+};
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut)]
+    pub payer: Signer,
+    pub mint: InterfaceAccount<Mint>,
+    pub authority: UncheckedAccount,
+    pub token_program: Interface<'static, TokenInterface>,
+    #[account(
+        init,
+        payer = payer,
+        associated_token::mint = mint,
+        associated_token::authority = authority,
+    )]
+    pub token_account: InterfaceAccount<TokenAccount>,
+    pub system_program: Program<System>,
+}
+"#,
+        &["the associated token program account `associated_token_program` does not exist"],
+    );
+
+    compile_fail_case(
+        "realloc_payer_must_be_mutable",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {
+    pub payer: Signer,
+    #[account(realloc = 16, realloc_payer = payer, realloc_zero = false)]
+    pub data: UncheckedAccount,
+}
+"#,
+        &["the payer specified for a realloc constraint must be mutable"],
+    );
+
+    compile_fail_case(
+        "required_realloc_rejects_optional_payer",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut)]
+    pub payer: Option<Signer>,
+    #[account(realloc = 16, realloc_payer = payer, realloc_zero = false)]
+    pub data: UncheckedAccount,
+}
+"#,
+        &["optional accounts cannot be used as realloc payers"],
+    );
+
+    compile_fail_case(
+        "realloc_payer_must_exist",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(realloc = 16, realloc_payer = payer, realloc_zero = false)]
+    pub data: UncheckedAccount,
+}
+"#,
+        &["the realloc payer account `payer` does not exist"],
+    );
 }
 
 #[test]
@@ -1251,6 +1603,62 @@ pub struct Bad {
     ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
 )]
 fn spl_init_constraints_require_pairs() {
+    compile_fail_case(
+        "associated_token_requires_authority",
+        r#"
+use anchor_lang_v2::prelude::*;
+use anchor_spl_v2::{
+    associated_token::{self},
+    token_interface::{Mint, TokenAccount, TokenInterface},
+};
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut)]
+    pub payer: Signer,
+    pub mint: InterfaceAccount<Mint>,
+    pub token_program: Interface<'static, TokenInterface>,
+    pub associated_token_program: Program<AssociatedToken>,
+    #[account(init, payer = payer, associated_token::mint = mint)]
+    pub token_account: InterfaceAccount<TokenAccount>,
+    pub system_program: Program<System>,
+}
+"#,
+        &["`associated_token::authority` is required when using associated_token constraints"],
+    );
+
+    compile_fail_case(
+        "associated_token_rejects_seeds",
+        r#"
+use anchor_lang_v2::prelude::*;
+use anchor_spl_v2::{
+    associated_token::{self},
+    token_interface::{Mint, TokenAccount, TokenInterface},
+};
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut)]
+    pub payer: Signer,
+    pub mint: InterfaceAccount<Mint>,
+    pub authority: UncheckedAccount,
+    pub token_program: Interface<'static, TokenInterface>,
+    pub associated_token_program: Program<AssociatedToken>,
+    #[account(
+        init,
+        payer = payer,
+        seeds = [b"token"],
+        bump,
+        associated_token::mint = mint,
+        associated_token::authority = authority,
+    )]
+    pub token_account: InterfaceAccount<TokenAccount>,
+    pub system_program: Program<System>,
+}
+"#,
+        &["`associated_token` constraints cannot be used with `seeds`"],
+    );
+
     compile_fail_case(
         "init_token_requires_authority_with_mint",
         r#"
