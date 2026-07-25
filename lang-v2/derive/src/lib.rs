@@ -117,7 +117,7 @@ pub(crate) fn find_unsupported_wincode_attr(
     Ok(None)
 }
 
-fn update_accounts_stmt_for_handler_pat(pat: &mut Pat) -> Option<syn::Stmt> {
+fn update_accounts_stmt_for_handler_pat(pat: &mut Pat) -> syn::Result<syn::Stmt> {
     let update_stmt = |expr: TokenStream2| {
         syn::parse_quote! {
             anchor_lang_v2::TryAccounts::update_accounts(#expr)?;
@@ -127,33 +127,48 @@ fn update_accounts_stmt_for_handler_pat(pat: &mut Pat) -> Option<syn::Stmt> {
     match pat {
         Pat::Ident(pi) => {
             let ctx_ident = &pi.ident;
-            Some(update_stmt(quote! { &mut #ctx_ident.accounts }))
+            Ok(update_stmt(quote! { &mut #ctx_ident.accounts }))
         }
         Pat::Struct(ps) => {
-            let Some(accounts_field) = ps.fields.iter_mut().find(|field| {
+            let accounts_ident = if let Some(accounts_field) = ps.fields.iter_mut().find(|field| {
                 matches!(&field.member, syn::Member::Named(ident) if ident == "accounts")
-            }) else {
-                return None;
-            };
-
-            let accounts_ident = match accounts_field.pat.as_mut() {
-                Pat::Ident(pi) => pi.ident.clone(),
-                Pat::Wild(_) => {
-                    let ident = Ident::new("__anchor_accounts", accounts_field.pat.span());
-                    accounts_field.pat = Box::new(syn::parse_quote!(#ident));
-                    ident
+            }) {
+                match accounts_field.pat.as_mut() {
+                    Pat::Ident(pi) => pi.ident.clone(),
+                    Pat::Wild(_) => {
+                        let ident = Ident::new("__anchor_accounts", accounts_field.pat.span());
+                        accounts_field.pat = Box::new(syn::parse_quote!(#ident));
+                        ident
+                    }
+                    other => {
+                        return Err(syn::Error::new_spanned(
+                            other,
+                            "handlers with `update(...)` must bind `Context.accounts` to an identifier or `_`",
+                        ));
+                    }
                 }
-                _ => return None,
+            } else {
+                let ident = Ident::new("__anchor_accounts", ps.path.span());
+                ps.fields.push(syn::FieldPat {
+                    attrs: Vec::new(),
+                    member: syn::Member::Named(Ident::new("accounts", ps.path.span())),
+                    colon_token: Some(Default::default()),
+                    pat: Box::new(syn::parse_quote!(#ident)),
+                });
+                ident
             };
 
-            Some(update_stmt(quote! { #accounts_ident }))
+            Ok(update_stmt(quote! { #accounts_ident }))
         }
         Pat::Wild(_) => {
             let ident = Ident::new("__anchor_ctx", pat.span());
             *pat = syn::parse_quote!(#ident);
-            Some(update_stmt(quote! { &mut #ident.accounts }))
+            Ok(update_stmt(quote! { &mut #ident.accounts }))
         }
-        _ => None,
+        _ => Err(syn::Error::new_spanned(
+            pat,
+            "handlers with `update(...)` must bind context as `ctx`, `_`, or `Context { .. }`",
+        )),
     }
 }
 
@@ -4825,6 +4840,7 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
 
     // Strip #[discrim = N] attributes from handler outputs so rustc
     // doesn't complain about an unknown attribute.
+    let mut handler_update_errors = Vec::new();
     let handlers: Vec<_> = handlers
         .iter()
         .map(|func| {
@@ -4837,13 +4853,21 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
                 }
             });
             if let Some(syn::FnArg::Typed(pt)) = func.sig.inputs.first_mut() {
-                if let Some(stmt) = update_accounts_stmt_for_handler_pat(pt.pat.as_mut()) {
-                    func.block.stmts.insert(0, stmt);
+                match update_accounts_stmt_for_handler_pat(pt.pat.as_mut()) {
+                    Ok(stmt) => {
+                        func.block.stmts.insert(0, stmt);
+                    }
+                    Err(err) => handler_update_errors.push(err.to_compile_error()),
                 }
             }
             func
         })
         .collect();
+    if !handler_update_errors.is_empty() {
+        return quote! {
+            #(#handler_update_errors)*
+        };
+    }
 
     let interface_account_reexports = if config.mode == ProgramMode::Interface {
         quote! { pub use super::*; }
@@ -6285,6 +6309,37 @@ mod tests {
     }
 
     #[test]
+    fn program_handlers_synthesize_accounts_binding_for_struct_context() {
+        let module: syn::ItemMod = syn::parse_quote! {
+            pub mod demo_program {
+                use super::*;
+
+                pub fn rotate(Context { bumps, .. }: &mut Context<RotateAuthority>) -> Result<()> {
+                    do_work(bumps)?;
+                    Ok(())
+                }
+            }
+        };
+        let config = ProgramConfig {
+            mode: ProgramMode::Executable,
+            program_id: syn::parse_quote!(crate::ID),
+        };
+
+        let generated = impl_program(&module, &config).to_string();
+
+        assert!(
+            generated.contains(
+                "anchor_lang_v2 :: TryAccounts :: update_accounts (__anchor_accounts) ? ;"
+            ),
+            "expected struct-pattern handler body to call update_accounts via synthesized accounts binding, got: {generated}"
+        );
+        assert!(
+            generated.contains("Context { bumps , accounts : __anchor_accounts , .. }"),
+            "expected struct-pattern handler signature to include synthesized accounts binding, got: {generated}"
+        );
+    }
+
+    #[test]
     fn program_handlers_inject_update_phase_for_wildcard_context() {
         let module: syn::ItemMod = syn::parse_quote! {
             pub mod demo_program {
@@ -6312,6 +6367,37 @@ mod tests {
         assert!(
             generated.contains("fn rotate (__anchor_ctx : & mut Context < RotateAuthority >)"),
             "expected wildcard handler signature to be rewritten to a concrete ctx binding, got: {generated}"
+        );
+    }
+
+    #[test]
+    fn program_handlers_reject_unsupported_update_hook_context_patterns() {
+        let module: syn::ItemMod = syn::parse_quote! {
+            pub mod demo_program {
+                use super::*;
+
+                pub fn rotate(
+                    Context { accounts: RotateAuthority { vault, .. }, .. }: &mut Context<RotateAuthority>
+                ) -> Result<()> {
+                    do_work(vault)?;
+                    Ok(())
+                }
+            }
+        };
+        let config = ProgramConfig {
+            mode: ProgramMode::Executable,
+            program_id: syn::parse_quote!(crate::ID),
+        };
+
+        let generated = impl_program(&module, &config).to_string();
+
+        assert!(
+            generated.contains("compile_error"),
+            "expected unsupported nested accounts destructuring to emit a compile error, got: {generated}"
+        );
+        assert!(
+            generated.contains("bind `Context.accounts` to an identifier or `_`"),
+            "expected targeted unsupported-pattern error, got: {generated}"
         );
     }
 }
