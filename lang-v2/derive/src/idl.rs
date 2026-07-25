@@ -134,18 +134,20 @@ fn syn_path_type_to_idl_value(type_path: &TypePath) -> Option<Value> {
     let segment = path.segments.last()?;
     let ident = segment.ident.to_string();
     match ident.as_str() {
-        "u8" | "u16" | "u32" | "u64" | "u128" | "i8" | "i16" | "i32" | "i64" | "i128" | "bool" => {
+        "u8" | "u16" | "u32" | "u64" | "u128" | "i8" | "i16" | "i32" | "i64" | "i128" | "bool"
+            if path_is_primitive(path, &ident) =>
+        {
             Some(Value::String(ident))
         }
-        "PodU16" => Some(Value::String("u16".into())),
-        "PodU32" => Some(Value::String("u32".into())),
-        "PodU64" => Some(Value::String("u64".into())),
-        "PodU128" => Some(Value::String("u128".into())),
-        "PodI16" => Some(Value::String("i16".into())),
-        "PodI32" => Some(Value::String("i32".into())),
-        "PodI64" => Some(Value::String("i64".into())),
-        "PodI128" => Some(Value::String("i128".into())),
-        "PodBool" => Some(Value::String("bool".into())),
+        "PodU16" if path_is_pod_primitive(path, &ident) => Some(Value::String("u16".into())),
+        "PodU32" if path_is_pod_primitive(path, &ident) => Some(Value::String("u32".into())),
+        "PodU64" if path_is_pod_primitive(path, &ident) => Some(Value::String("u64".into())),
+        "PodU128" if path_is_pod_primitive(path, &ident) => Some(Value::String("u128".into())),
+        "PodI16" if path_is_pod_primitive(path, &ident) => Some(Value::String("i16".into())),
+        "PodI32" if path_is_pod_primitive(path, &ident) => Some(Value::String("i32".into())),
+        "PodI64" if path_is_pod_primitive(path, &ident) => Some(Value::String("i64".into())),
+        "PodI128" if path_is_pod_primitive(path, &ident) => Some(Value::String("i128".into())),
+        "PodBool" if path_is_pod_primitive(path, &ident) => Some(Value::String("bool".into())),
         "String"
             if path_is_builtin(
                 path,
@@ -159,9 +161,7 @@ fn syn_path_type_to_idl_value(type_path: &TypePath) -> Option<Value> {
             Some(Value::String("string".into()))
         }
         "str" if path_is_builtin(path, &[&["str"]]) => Some(Value::String("string".into())),
-        "Pubkey"
-            if path_is_builtin(path, &[&["Pubkey"], &["solana_pubkey", "Pubkey"]]) =>
-        {
+        "Pubkey" if path_is_builtin(path, &[&["Pubkey"], &["solana_pubkey", "Pubkey"]]) => {
             Some(Value::String("pubkey".into()))
         }
         "Address"
@@ -211,7 +211,10 @@ fn syn_path_type_to_idl_value(type_path: &TypePath) -> Option<Value> {
             let inner = first_type_arg(segment)?;
             Some(rust_type_to_idl_value(inner))
         }
-        _ => None,
+        // User-defined types are registered under their final Rust ident,
+        // regardless of how a field qualifies the path (`models::Inner`,
+        // `crate::models::Inner`, etc.).
+        _ => Some(json!({ "defined": { "name": ident } })),
     }
 }
 
@@ -224,6 +227,28 @@ fn path_is_builtin(path: &Path, candidates: &[&[&str]]) -> bool {
                 .map(|segment| segment.ident.to_string())
                 .eq(candidate.iter().copied().map(str::to_owned))
     })
+}
+
+fn path_is_primitive(path: &Path, ident: &str) -> bool {
+    path_is_builtin(
+        path,
+        &[
+            &[ident],
+            &["core", "primitive", ident],
+            &["std", "primitive", ident],
+        ],
+    )
+}
+
+fn path_is_pod_primitive(path: &Path, ident: &str) -> bool {
+    path_is_builtin(
+        path,
+        &[
+            &[ident],
+            &["anchor_lang_v2", "pod", ident],
+            &["anchor_lang_v2", "prelude", ident],
+        ],
+    )
 }
 
 fn first_type_arg<'a>(segment: &'a syn::PathSegment) -> Option<&'a Type> {
@@ -243,6 +268,10 @@ fn is_path_ident(ty: &Type, ident: &str) -> bool {
 }
 
 fn syn_array_len_to_idl_value(expr: &Expr) -> Value {
+    if let Some(len) = eval_usize_expr(expr) {
+        return json!(len);
+    }
+
     match expr {
         Expr::Group(group) => syn_array_len_to_idl_value(&group.expr),
         Expr::Paren(paren) => syn_array_len_to_idl_value(&paren.expr),
@@ -254,6 +283,37 @@ fn syn_array_len_to_idl_value(expr: &Expr) -> Value {
             .map(|len| json!(len))
             .unwrap_or_else(|_| json!({ "generic": normalize_array_len_expr(expr) })),
         _ => json!({ "generic": normalize_array_len_expr(expr) }),
+    }
+}
+
+fn eval_usize_expr(expr: &Expr) -> Option<usize> {
+    let binary =
+        |left: &Expr, right: &Expr| Some((eval_usize_expr(left)?, eval_usize_expr(right)?));
+
+    match expr {
+        Expr::Group(group) => eval_usize_expr(&group.expr),
+        Expr::Paren(paren) => eval_usize_expr(&paren.expr),
+        Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Int(value),
+            ..
+        }) => value.base10_parse().ok(),
+        Expr::Binary(expr) => {
+            let (left, right) = binary(&expr.left, &expr.right)?;
+            match expr.op {
+                syn::BinOp::Add(_) => left.checked_add(right),
+                syn::BinOp::Sub(_) => left.checked_sub(right),
+                syn::BinOp::Mul(_) => left.checked_mul(right),
+                syn::BinOp::Div(_) => left.checked_div(right),
+                syn::BinOp::Rem(_) => left.checked_rem(right),
+                syn::BinOp::BitXor(_) => Some(left ^ right),
+                syn::BinOp::BitAnd(_) => Some(left & right),
+                syn::BinOp::BitOr(_) => Some(left | right),
+                syn::BinOp::Shl(_) => left.checked_shl(right.try_into().ok()?),
+                syn::BinOp::Shr(_) => left.checked_shr(right.try_into().ok()?),
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
 
@@ -1078,8 +1138,7 @@ pub fn pda_object_emission(seeds: &[SeedJson], program: Option<&SeedJson>) -> To
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use serde_json::json;
+    use {super::*, serde_json::json};
 
     /// Pull the inner JSON string out of a `Static` seed for assertion.
     /// Panics if the seed was classified as `Runtime`.
@@ -1127,6 +1186,18 @@ mod tests {
 
         let address_ty: Type = syn::parse_quote!(anchor_lang_v2::prelude::Address);
         assert_eq!(rust_type_to_idl_value(&address_ty), json!("pubkey"));
+
+        let user_ty: Type = syn::parse_quote!(crate::models::Inner);
+        assert_eq!(
+            rust_type_to_idl_value(&user_ty),
+            json!({ "defined": { "name": "Inner" } })
+        );
+
+        let primitive_named_user_ty: Type = syn::parse_quote!(models::u8);
+        assert_eq!(
+            rust_type_to_idl_value(&primitive_named_user_ty),
+            json!({ "defined": { "name": "u8" } })
+        );
     }
 
     #[test]
@@ -1146,7 +1217,7 @@ mod tests {
         let expr_len: Type = syn::parse_quote!([u8; 1 + 1]);
         assert_eq!(
             rust_type_to_idl_value(&expr_len),
-            json!({ "array": ["u8", { "generic": "1+1" }] })
+            json!({ "array": ["u8", 2] })
         );
     }
 
