@@ -643,37 +643,33 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
         ));
     }
 
-    let has_init = result.is_init || result.is_init_if_needed;
     let has_namespaced = |ns: &str, key: &str| {
         result
             .namespaced
             .iter()
             .any(|nc| !nc.is_update && nc.namespace == ns && nc.raw_key == key)
     };
-    if has_init {
-        if has_namespaced("token", "mint") && !has_namespaced("token", "authority") {
-            return Err(syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "when initializing, `token::authority` must be provided if `token::mint` is",
-            ));
-        }
-        if has_namespaced("token", "authority") && !has_namespaced("token", "mint") {
-            return Err(syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "when initializing, `token::mint` must be provided if `token::authority` is",
-            ));
-        }
-        if has_namespaced("mint", "decimals") && !has_namespaced("mint", "authority") {
-            return Err(syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "when initializing, `mint::authority` must be provided if `mint::decimals` is",
-            ));
-        }
-        if has_namespaced("mint", "authority") && !has_namespaced("mint", "decimals") {
-            return Err(syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "when initializing, `mint::decimals` must be provided if `mint::authority` is",
-            ));
+    if result.is_init || result.is_init_if_needed {
+        for (namespace, left, right) in [
+            ("token", "mint", "authority"),
+            ("mint", "decimals", "authority"),
+        ] {
+            let has_left = has_namespaced(namespace, left);
+            let has_right = has_namespaced(namespace, right);
+            if has_left != has_right {
+                let (missing, present) = if has_left {
+                    (right, left)
+                } else {
+                    (left, right)
+                };
+                return Err(syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    format!(
+                        "when initializing, `{namespace}::{missing}` must be provided if \
+                         `{namespace}::{present}` is"
+                    ),
+                ));
+            }
         }
     }
     Ok(result)
@@ -1360,9 +1356,6 @@ fn dotted_address_hint(
         None
     }
 
-fn find_summary_field<'a>(fields: &'a [FieldSummary], name: &Ident) -> Option<&'a FieldSummary> {
-    fields.iter().find(|field| field.name == *name)
-}
 
 fn require_summary_field<'a>(
     fields: &'a [FieldSummary],
@@ -1371,12 +1364,15 @@ fn require_summary_field<'a>(
     purpose: &str,
     required: bool,
 ) -> syn::Result<&'a FieldSummary> {
-    let field = find_summary_field(fields, name).ok_or_else(|| {
-        syn::Error::new(
-            name.span(),
-            format!("the {purpose} account `{name}` does not exist"),
-        )
-    })?;
+    let field = fields
+        .iter()
+        .find(|field| field.name == *name)
+        .ok_or_else(|| {
+            syn::Error::new(
+                name.span(),
+                format!("the {purpose} account `{name}` does not exist"),
+            )
+        })?;
     if required && extract_option_inner(&field.ty).is_some() {
         return Err(syn::Error::new(
             target.name.span(),
@@ -1425,11 +1421,11 @@ pub fn validate_account_fields(fields: &[FieldSummary]) -> syn::Result<()> {
                 })
                 .collect();
             if !spl_constraints.is_empty() {
-                let token_program_constraints: Vec<_> = spl_constraints
+                let mut token_program_constraints = spl_constraints
                     .iter()
                     .filter(|constraint| constraint.raw_key == "token_program")
-                    .collect();
-                if token_program_constraints.is_empty() {
+                    .peekable();
+                if token_program_constraints.peek().is_none() {
                     let token_program = Ident::new("token_program", proc_macro2::Span::call_site());
                     require_summary_field(
                         fields,
@@ -2185,6 +2181,7 @@ fn emit_init_if_needed_reuse_validation(
 
 pub fn parse_field(
     field: &syn::Field,
+    attrs: &AccountAttrs,
     field_names: &[String],
     field_offsets: &[(String, TokenStream2)],
     offset_expr: proc_macro2::TokenStream,
@@ -2193,22 +2190,7 @@ pub fn parse_field(
 ) -> syn::Result<AccountField> {
     let field_name = field.ident.as_ref().expect("named field");
     let field_ty = &field.ty;
-    let attrs = parse_account_attrs(&field.attrs)?;
-    if attrs.seeds_program.is_some() {
-        if attrs.is_init {
-            return Err(syn::Error::new(
-                attrs.seeds_program.as_ref().unwrap().span(),
-                "`seeds::program` cannot be used with `init`",
-            ));
-        }
-        if attrs.is_init_if_needed {
-            return Err(syn::Error::new(
-                attrs.seeds_program.as_ref().unwrap().span(),
-                "`seeds::program` cannot be used with `init_if_needed`",
-            ));
-        }
-    }
-    validate_init_constraint_refs(field_name, &attrs, field_summaries)?;
+    validate_init_constraint_refs(field_name, attrs, field_summaries)?;
     if attrs.close.is_some() && !attrs.is_mut {
         return Err(syn::Error::new(
             field_name.span(),
@@ -3290,6 +3272,11 @@ pub fn parse_field(
 mod tests {
     use super::*;
 
+    fn parse_test_field(field: &syn::Field) -> syn::Result<AccountField> {
+        let attrs = parse_account_attrs(&field.attrs)?;
+        parse_field(field, &attrs, &[], &[], quote!(0usize), &[], &[])
+    }
+
     #[test]
     fn test_parse_account_attrs() {
         let attrs: Vec<Attribute> = vec![syn::parse_quote!(
@@ -3351,7 +3338,7 @@ mod tests {
                 pub inner: Nested<Inner>
             })
             .unwrap();
-        let err = match parse_field(&field, &[], &[], quote::quote!(0usize), &[], &[]) {
+        let err = match parse_test_field(&field) {
             Ok(_) => panic!("account attrs on Nested<T> must be rejected"),
             Err(err) => err,
         };
@@ -3377,7 +3364,7 @@ mod tests {
                 pub my_acc: Account<MyAcc>
             })
             .unwrap();
-        let parsed = parse_field(&field, &[], &[], quote::quote!(0usize), &[], &[]).unwrap();
+        let parsed = parse_test_field(&field).unwrap();
         let joined = parsed
             .constraints
             .iter()

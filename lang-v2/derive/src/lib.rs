@@ -1024,9 +1024,11 @@ fn impl_accounts(input: &DeriveInput) -> TokenStream2 {
         .named
         .iter()
         .zip(offset_exprs)
-        .map(|(f, offset)| {
+        .zip(&field_summaries)
+        .map(|((f, offset), summary)| {
             parse::parse_field(
                 f,
+                &summary.attrs,
                 &raw_field_names,
                 &field_offsets,
                 offset,
