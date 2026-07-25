@@ -103,6 +103,8 @@ pub struct IdlPdaMeta {
 }
 
 pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
+    let mut explicit_mut = false;
+    let mut realloc_zero_seen = false;
     let mut result = AccountAttrs {
         is_mut: false,
         is_signer: false,
@@ -144,7 +146,13 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
             while !input.is_empty() {
                 let ident = Ident::parse_any(input)?;
                 match ident.to_string().as_str() {
-                    "mut" => result.is_mut = true,
+                    "mut" => {
+                        if explicit_mut {
+                            return Err(duplicate_singleton(ident.span(), "mut"));
+                        }
+                        explicit_mut = true;
+                        result.is_mut = true;
+                    }
                     "init" => {
                         if result.is_init {
                             return Err(duplicate_singleton(ident.span(), "init"));
@@ -197,8 +205,18 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                             result.bump = Some(None);
                         }
                     }
-                    "signer" => result.is_signer = true,
-                    "executable" => result.is_executable = true,
+                    "signer" => {
+                        if result.is_signer {
+                            return Err(duplicate_singleton(ident.span(), "signer"));
+                        }
+                        result.is_signer = true;
+                    }
+                    "executable" => {
+                        if result.is_executable {
+                            return Err(duplicate_singleton(ident.span(), "executable"));
+                        }
+                        result.is_executable = true;
+                    }
                     "dup" => {
                         return Err(syn::Error::new(
                             ident.span(),
@@ -212,6 +230,9 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                         let inner: Ident = content.parse()?;
                         match inner.to_string().as_str() {
                             "dup" => {
+                                if result.is_dup {
+                                    return Err(duplicate_singleton(inner.span(), "unsafe(dup)"));
+                                }
                                 result.is_dup = true;
                                 result.is_mut = true;
                             }
@@ -348,6 +369,10 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                     }
                     "realloc_zero" => {
                         input.parse::<Token![=]>()?;
+                        if realloc_zero_seen {
+                            return Err(duplicate_singleton(ident.span(), "realloc_zero"));
+                        }
+                        realloc_zero_seen = true;
                         let val: syn::LitBool = input.parse()?;
                         result.realloc_zero = val.value;
                     }
@@ -509,6 +534,13 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
         ));
     }
 
+    if (result.is_init || result.is_init_if_needed) && result.payer.is_none() {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "`init` and `init_if_needed` require `payer`",
+        ));
+    }
+
     if result.space.is_some() && !(result.is_init || result.is_init_if_needed) {
         return Err(syn::Error::new(
             result.space.as_ref().unwrap().span(),
@@ -578,6 +610,20 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
         return Err(syn::Error::new(
             result.realloc_payer.as_ref().unwrap().span(),
             "`realloc_payer` requires `realloc`",
+        ));
+    }
+
+    if result.realloc.is_some() && result.realloc_payer.is_none() {
+        return Err(syn::Error::new(
+            result.realloc.as_ref().unwrap().span(),
+            "`realloc` requires `realloc_payer`",
+        ));
+    }
+
+    if realloc_zero_seen && result.realloc.is_none() {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "`realloc_zero` requires `realloc`",
         ));
     }
 
@@ -1135,9 +1181,6 @@ pub struct AccountField {
     /// `true` iff this optional field contributes to the runtime active
     /// mutable mask when it loads as `Some`.
     pub contributes_active_mut_bit: bool,
-    /// The local payer field named by this field's `init`/`init_if_needed`
-    /// constraint, if present.
-    pub init_payer: Option<String>,
     // IDL metadata
     pub idl_writable: bool,
     /// True when this is a fresh-keypair init site (attrs: `init` or
@@ -1300,6 +1343,169 @@ fn dotted_address_hint(
     } else {
         None
     }
+
+fn find_summary_field<'a>(fields: &'a [FieldSummary], name: &Ident) -> Option<&'a FieldSummary> {
+    fields.iter().find(|field| field.name == *name)
+}
+
+fn require_summary_field<'a>(
+    fields: &'a [FieldSummary],
+    name: &Ident,
+    target: &FieldSummary,
+    purpose: &str,
+    required: bool,
+) -> syn::Result<&'a FieldSummary> {
+    let field = find_summary_field(fields, name).ok_or_else(|| {
+        syn::Error::new(
+            name.span(),
+            format!("the {purpose} account `{name}` does not exist"),
+        )
+    })?;
+    if required && extract_option_inner(&field.ty).is_some() {
+        return Err(syn::Error::new(
+            target.name.span(),
+            format!("the {purpose} account `{name}` must be non-optional"),
+        ));
+    }
+    Ok(field)
+}
+
+pub fn validate_account_fields(fields: &[FieldSummary]) -> syn::Result<()> {
+    for target in fields {
+        let attrs = &target.attrs;
+        let required = extract_option_inner(&target.ty).is_none();
+
+        if attrs.is_init || attrs.is_init_if_needed {
+            let payer = attrs
+                .payer
+                .as_ref()
+                .expect("init payer is validated while parsing account attributes");
+            let payer_field = require_summary_field(fields, payer, target, "init payer", false)?;
+            if required && extract_option_inner(&payer_field.ty).is_some() {
+                return Err(syn::Error::new(
+                    payer_field.name.span(),
+                    "optional accounts cannot be used as init payers",
+                ));
+            }
+            if !payer_field.attrs.is_mut {
+                return Err(syn::Error::new(
+                    target.name.span(),
+                    "the payer specified for an init constraint must be mutable",
+                ));
+            }
+
+            let system_program = Ident::new("system_program", proc_macro2::Span::call_site());
+            require_summary_field(fields, &system_program, target, "init program", required)?;
+
+            let spl_constraints: Vec<_> = attrs
+                .namespaced
+                .iter()
+                .filter(|constraint| {
+                    !constraint.is_update
+                        && matches!(
+                            constraint.namespace.as_str(),
+                            "token" | "mint" | "associated_token"
+                        )
+                })
+                .collect();
+            if !spl_constraints.is_empty() {
+                let token_program_constraints: Vec<_> = spl_constraints
+                    .iter()
+                    .filter(|constraint| constraint.raw_key == "token_program")
+                    .collect();
+                if token_program_constraints.is_empty() {
+                    let token_program = Ident::new("token_program", proc_macro2::Span::call_site());
+                    require_summary_field(
+                        fields,
+                        &token_program,
+                        target,
+                        "SPL token program",
+                        required,
+                    )?;
+                } else {
+                    for constraint in token_program_constraints {
+                        let token_program =
+                            expr_as_field_ident(&constraint.value).ok_or_else(|| {
+                                syn::Error::new(
+                                    constraint.value.span(),
+                                    "SPL token program constraints must reference an account field",
+                                )
+                            })?;
+                        require_summary_field(
+                            fields,
+                            &token_program,
+                            target,
+                            "SPL token program",
+                            required,
+                        )?;
+                    }
+                }
+            }
+
+            for constraint in spl_constraints.iter().filter(|constraint| {
+                constraint.raw_key == "mint"
+                    && matches!(constraint.namespace.as_str(), "token" | "associated_token")
+            }) {
+                let mint = expr_as_field_ident(&constraint.value).ok_or_else(|| {
+                    syn::Error::new(
+                        constraint.value.span(),
+                        "the mint constraint must reference an account field for token \
+                         initialization",
+                    )
+                })?;
+                require_summary_field(fields, &mint, target, "token mint", false)?;
+            }
+
+            if spl_constraints
+                .iter()
+                .any(|constraint| constraint.namespace == "associated_token")
+            {
+                let associated_token_program =
+                    Ident::new("associated_token_program", proc_macro2::Span::call_site());
+                require_summary_field(
+                    fields,
+                    &associated_token_program,
+                    target,
+                    "associated token program",
+                    required,
+                )?;
+            }
+        }
+
+        if attrs.realloc.is_some() {
+            let payer = attrs
+                .realloc_payer
+                .as_ref()
+                .expect("realloc payer is validated while parsing account attributes");
+            let payer_field =
+                require_summary_field(fields, payer, target, "realloc payer", false)?;
+            if required && extract_option_inner(&payer_field.ty).is_some() {
+                return Err(syn::Error::new(
+                    payer_field.name.span(),
+                    "optional accounts cannot be used as realloc payers",
+                ));
+            }
+            if !payer_field.attrs.is_mut {
+                return Err(syn::Error::new(
+                    target.name.span(),
+                    "the payer specified for a realloc constraint must be mutable",
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Turn the RHS of `#[account(address = <expr>)]` into the string form the
+/// IDL emits. Whitespace from `quote!`'s token reassembly is stripped so
+/// `crate :: ID` → `crate::ID`, `data . authority` → `data.authority`, and
+/// `crate :: id ()` → `crate::id()` — matching what a user would hand-write
+/// and what downstream tooling (the Anchor CLI resolver, TS client path
+/// walkers) expect to parse.
+fn stringify_address_expr(expr: &Expr) -> String {
+    let s = quote!(#expr).to_string();
+    s.split_whitespace().collect()
 }
 
 /// If `expr` is the v1-encodable shape `<sibling>.<field>` where both:
@@ -2141,7 +2347,6 @@ pub fn parse_field(
             // own offset.
             contributes_mut_bit: false,
             contributes_active_mut_bit: false,
-            init_payer: None,
             idl_writable: false,
             idl_init_signer: false,
             idl_has_one: vec![],
@@ -3040,10 +3245,6 @@ pub fn parse_field(
 
     let contributes_mut_bit = attrs.is_mut && !attrs.is_dup && !is_optional;
     let contributes_active_mut_bit = attrs.is_mut && !attrs.is_dup && is_optional;
-    let init_payer = (attrs.is_init || attrs.is_init_if_needed)
-        .then(|| attrs.payer.as_ref().map(ToString::to_string))
-        .flatten();
-
     Ok(AccountField {
         name: field_name.clone(),
         ty: field.ty.clone(),
@@ -3057,7 +3258,6 @@ pub fn parse_field(
         offset_expr,
         contributes_mut_bit,
         contributes_active_mut_bit,
-        init_payer,
         idl_writable,
         idl_init_signer,
         idl_has_one,
