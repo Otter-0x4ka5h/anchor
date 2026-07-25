@@ -69,10 +69,20 @@ pub mod qualified {
     }
 }
 
+pub mod limits {
+    pub const ITEMS: usize = 3;
+}
+
 #[derive(IdlType)]
 pub struct QualifiedUserTypeHolder {
     pub inner: qualified::Inner,
     pub literal_expr: [u8; 1 + 1],
+    pub const_path: [u8; limits::ITEMS],
+}
+
+#[derive(IdlType)]
+pub struct GenericArray<const N: usize> {
+    pub bytes: [u8; N],
 }
 
 // ---- #[event] -------------------------------------------------------------
@@ -203,6 +213,14 @@ pub mod derives_test {
         p.scores = alloc::vec![10, 20, 30, 40];
         Ok(())
     }
+
+    #[discrim = 6]
+    pub fn const_array(
+        _ctx: &mut Context<Bump>,
+        bytes: [u8; limits::ITEMS],
+    ) -> Result<[u8; limits::ITEMS]> {
+        Ok(bytes)
+    }
 }
 
 fn require_authority(ctx: &Context<Privileged>) -> Result<()> {
@@ -262,7 +280,7 @@ mod idl_tests {
     use super::*;
 
     #[test]
-    fn qualified_pubkey_lowers_like_builtin_pubkey() {
+    fn idl_type_lowering_is_self_contained() {
         let type_def = <QualifiedPubkeyHolder as IdlAccountType>::__IDL_TYPE_DEF
             .expect("QualifiedPubkeyHolder should emit an IDL type");
         assert!(type_def.contains("\"name\":\"QualifiedPubkeyHolder\""));
@@ -274,7 +292,14 @@ mod idl_tests {
         assert!(type_def.contains("\"defined\":{\"name\":\"Inner\"}"));
         assert!(!type_def.contains("qualified::Inner"));
         assert!(type_def.contains("\"array\":[\"u8\",2]"));
-        assert!(!type_def.contains("\"generic\":\"1+1\""));
+        assert!(type_def.contains("\"array\":[\"u8\",3]"));
+        assert!(!type_def.contains("limits::ITEMS"));
+
+        let generic_type_def = <GenericArray<4> as IdlAccountType>::__IDL_TYPE_DEF
+            .expect("GenericArray should emit an IDL type");
+        assert!(generic_type_def
+            .contains("\"generics\":[{\"kind\":\"const\",\"name\":\"N\",\"type\":\"usize\"}]"));
+        assert!(generic_type_def.contains("\"array\":[\"u8\",{\"generic\":\"N\"}]"));
 
         let mut accounts = alloc::vec::Vec::new();
         let mut types = alloc::vec::Vec::new();
