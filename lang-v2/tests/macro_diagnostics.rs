@@ -1048,6 +1048,21 @@ fn account_attrs_reject_duplicate_singletons_and_conflicts() {
             "#[account(unsafe(dup))] #[account(unsafe(dup))]",
             "`unsafe(dup)` already provided",
         ),
+        (
+            "mut_with_init",
+            "#[account(mut, init)]",
+            "mut cannot be provided with init",
+        ),
+        (
+            "mut_with_init_if_needed",
+            "#[account(mut, init_if_needed)]",
+            "mut cannot be provided with init",
+        ),
+        (
+            "mut_with_zeroed",
+            "#[account(mut, zeroed)]",
+            "mut cannot be provided with zeroed",
+        ),
     ] {
         compile_fail_case(
             name,
@@ -1372,6 +1387,22 @@ pub struct Bad {
 }
 "#,
         &["`realloc_zero` requires `realloc`"],
+    );
+
+    compile_fail_case(
+        "realloc_without_zero",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(realloc = 16, realloc_payer = payer)]
+    pub data: UncheckedAccount,
+    #[account(mut)]
+    pub payer: Signer,
+}
+"#,
+        &["`realloc` requires `realloc_zero`"],
     );
 }
 
