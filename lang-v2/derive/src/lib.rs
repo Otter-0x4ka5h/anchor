@@ -143,7 +143,7 @@ fn update_accounts_stmt_for_handler_pat(pat: &mut Pat) -> syn::Result<syn::Stmt>
                     other => {
                         return Err(syn::Error::new_spanned(
                             other,
-                            "handlers with `update(...)` must bind `Context.accounts` to an identifier or `_`",
+                            "`update(...)` handlers that destructure `Context { .. }` must bind `accounts` as a name or `_`, for example `Context { accounts, .. }` or `Context { accounts: _, .. }`",
                         ));
                     }
                 }
@@ -167,7 +167,7 @@ fn update_accounts_stmt_for_handler_pat(pat: &mut Pat) -> syn::Result<syn::Stmt>
         }
         _ => Err(syn::Error::new_spanned(
             pat,
-            "handlers with `update(...)` must bind context as `ctx`, `_`, or `Context { .. }`",
+            "`update(...)` handlers must take `&mut Context<T>` as an identifier like `ctx`, `_`, or `Context { .. }`, for example `ctx: &mut Context<T>` or `Context { accounts, .. }: &mut Context<T>`",
         )),
     }
 }
@@ -6729,8 +6729,39 @@ mod tests {
             "expected unsupported nested accounts destructuring to emit a compile error, got: {generated}"
         );
         assert!(
-            generated.contains("bind `Context.accounts` to an identifier or `_`"),
+            generated.contains("must bind `accounts` as a name or `_`"),
             "expected targeted unsupported-pattern error, got: {generated}"
+        );
+    }
+
+    #[test]
+    fn program_handlers_reject_non_binding_update_hook_context_patterns() {
+        let module: syn::ItemMod = syn::parse_quote! {
+            pub mod demo_program {
+                use super::*;
+
+                pub fn rotate(
+                    &mut ctx: &mut Context<RotateAuthority>
+                ) -> Result<()> {
+                    do_work(ctx.accounts.vault)?;
+                    Ok(())
+                }
+            }
+        };
+        let config = ProgramConfig {
+            mode: ProgramMode::Executable,
+            program_id: syn::parse_quote!(crate::ID),
+        };
+
+        let generated = impl_program(&module, &config).to_string();
+
+        assert!(
+            generated.contains("compile_error"),
+            "expected unsupported reference-pattern context to emit a compile error, got: {generated}"
+        );
+        assert!(
+            generated.contains("must take `&mut Context<T>` as an identifier like `ctx`, `_`, or `Context { .. }`"),
+            "expected targeted top-level pattern error, got: {generated}"
         );
     }
 }
