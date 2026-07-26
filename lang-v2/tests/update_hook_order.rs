@@ -3,7 +3,8 @@ use {
         accounts::{BorshAccount, Signer, UncheckedAccount},
         testing::AccountBuffer,
         wincode::{SchemaRead, SchemaWrite},
-        AccountConstraint, Accounts, AnchorAccount, Discriminator, ErrorCode, Owner, TryAccounts,
+        AccountConstraint, Accounts, AnchorAccount, Discriminator, ErrorCode, Nested, Owner,
+        TryAccounts,
     },
     core::{mem::size_of, ptr},
     pinocchio::address::Address,
@@ -30,6 +31,19 @@ impl Discriminator for Vault {
     const DISCRIMINATOR: &'static [u8] = &[0x41, 0x75, 0x74, 0x68, 0x56, 0x61, 0x75, 0x6c];
 }
 
+#[derive(SchemaRead, SchemaWrite, Clone, Copy)]
+struct StepCounter {
+    value: u64,
+}
+
+impl Owner for StepCounter {
+    const OWNER: Address = Address::new_from_array(PROGRAM_ID);
+}
+
+impl Discriminator for StepCounter {
+    const DISCRIMINATOR: &'static [u8] = &[0x53, 0x74, 0x65, 0x70, 0x43, 0x74, 0x72, 0x21];
+}
+
 mod role {
     use super::*;
 
@@ -48,12 +62,51 @@ mod role {
     }
 }
 
+mod counter_ns {
+    use super::*;
+
+    pub struct IncrementConstraint;
+
+    impl AccountConstraint<BorshAccount<StepCounter>> for IncrementConstraint {
+        type Value = u64;
+
+        fn update(
+            account: &mut BorshAccount<StepCounter>,
+            amount: &Self::Value,
+        ) -> Result<(), ProgramError> {
+            account.value = account
+                .value
+                .checked_add(*amount)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+            Ok(())
+        }
+    }
+}
+
 #[derive(Accounts)]
 struct RotateAuthority {
     #[account(mut, has_one = current_authority, update(role::set_authority = new_authority))]
     vault: BorshAccount<Vault>,
     current_authority: Signer,
     new_authority: UncheckedAccount,
+}
+
+#[derive(Accounts)]
+struct InnerIncrement {
+    #[account(mut, update(counter_ns::increment = 1u64))]
+    counter: BorshAccount<StepCounter>,
+}
+
+#[derive(Accounts)]
+struct OuterNestedIncrement {
+    inner: Nested<InnerIncrement>,
+}
+
+#[derive(Accounts)]
+struct OuterNestedGate {
+    inner: Nested<InnerIncrement>,
+    #[account(constraint = inner.counter.value == 1u64)]
+    witness: UncheckedAccount,
 }
 
 #[anchor_lang_v2::program]
@@ -100,6 +153,21 @@ fn unchecked_account(address: [u8; 32]) -> AccountBuffer<128> {
 fn read_vault_authority(buf: &AccountBuffer<128>) -> [u8; 32] {
     let data = buf.read_data();
     data[8..40].try_into().unwrap()
+}
+
+fn counter_account(value: u64) -> AccountBuffer<128> {
+    let buf = AccountBuffer::<128>::new();
+    let mut data = [0u8; 16];
+    data[..8].copy_from_slice(StepCounter::DISCRIMINATOR);
+    data[8..16].copy_from_slice(&value.to_le_bytes());
+    buf.init([0xAC; 32], PROGRAM_ID, data.len(), false, true, false);
+    buf.write_data(&data);
+    buf
+}
+
+fn read_counter_value(buf: &AccountBuffer<128>) -> u64 {
+    let data = buf.read_data();
+    u64::from_le_bytes(data[8..16].try_into().unwrap())
 }
 
 fn build_dispatch_input<const N: usize>(accounts: &[&AccountBuffer<N>]) -> Vec<u64> {
@@ -244,4 +312,50 @@ fn generated_dispatch_runs_update_phase_before_user_handler() {
         NEW_AUTHORITY,
         "generated dispatch must persist update-phase mutations when exit_accounts runs"
     );
+}
+
+#[test]
+fn nested_validate_accounts_keeps_inner_updates_after_outer_validation() {
+    let counter = counter_account(0);
+    let witness = unchecked_account([0x33; 32]);
+    let views = [unsafe { counter.view() }, unsafe { witness.view() }];
+
+    let err = expect_err(<OuterNestedGate as TryAccounts>::validate_accounts(
+        &Address::new_from_array(PROGRAM_ID),
+        &views,
+        None,
+        0,
+        &[],
+    ));
+
+    assert_eq!(err, ErrorCode::ConstraintRaw.into());
+    assert_eq!(
+        read_counter_value(&counter),
+        0,
+        "nested validate_accounts must not run inner update hooks before outer validation"
+    );
+}
+
+#[test]
+fn nested_try_accounts_runs_inner_updates_once() {
+    let counter = counter_account(0);
+    let views = [unsafe { counter.view() }];
+
+    let (mut accounts, _, _) = OuterNestedIncrement::try_accounts(
+        &Address::new_from_array(PROGRAM_ID),
+        &views,
+        None,
+        0,
+        &[],
+    )
+    .expect("nested try_accounts should succeed");
+
+    assert_eq!(
+        accounts.inner.counter.value,
+        1,
+        "nested update hooks should run exactly once"
+    );
+
+    accounts.exit_accounts().unwrap();
+    assert_eq!(read_counter_value(&counter), 1);
 }
