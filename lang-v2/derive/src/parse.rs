@@ -1741,12 +1741,26 @@ fn emit_associated_token_init_body(
     })
 }
 
+fn has_namespaced_constraint(attrs: &AccountAttrs, namespace: &str, key: Option<&str>) -> bool {
+    attrs.namespaced.iter().any(|nc| {
+        nc.namespace == namespace && key.is_none_or(|expected_key| nc.key == expected_key)
+    })
+}
+
 fn emit_init_if_needed_reuse_validation(
     field_ty: &Type,
     attrs: &AccountAttrs,
     associated_token: Option<&AssociatedTokenInit>,
     field_offsets: &[(String, TokenStream2)],
 ) -> syn::Result<TokenStream2> {
+    let has_mint_constraints = has_namespaced_constraint(attrs, "mint", None);
+    let has_token_constraints = has_namespaced_constraint(attrs, "token", None);
+    let needs_generic_reuse_validation =
+        associated_token.is_none() && !has_mint_constraints && !has_token_constraints;
+    if !needs_generic_reuse_validation {
+        return Ok(quote! {});
+    }
+
     let space = match attrs.space.as_ref() {
         Some(expr) => quote! { #expr },
         None => quote! { <#field_ty as anchor_lang_v2::Space>::INIT_SPACE },
@@ -1759,7 +1773,7 @@ fn emit_init_if_needed_reuse_validation(
     } else {
         quote! { *__program_id }
     };
-    let signer_check = if attrs.seeds.is_none() && associated_token.is_none() {
+    let signer_check = if attrs.seeds.is_none() && !attrs.is_signer {
         quote! {
             if !__target.is_signer() {
                 return Err(anchor_lang_v2::ErrorCode::ConstraintSigner.into());
@@ -2044,10 +2058,8 @@ pub fn parse_field(
             let init_body_with_constraints =
                 wrap_init_body_with_constraints(inner_ty, &attrs, field_names, &init_body);
             quote! {
-                if __target.data_len() > 0
-                    && !__target.owned_by(&anchor_lang_v2::programs::System::id())
-                {
-                    #init_if_needed_reuse_validation
+                if !__target.owned_by(&anchor_lang_v2::programs::System::id()) {
+                        #init_if_needed_reuse_validation
                     // SAFETY: the bitvec duplicate-account check below ensures
                     // no other mutable reference to this account's data exists.
                     Some(unsafe {
@@ -2099,7 +2111,6 @@ pub fn parse_field(
                 let #existed = {
                     let __target = __views[#offset_expr];
                     !anchor_lang_v2::address_eq(__target.address(), __program_id)
-                        && __target.data_len() > 0
                         && !__target.owned_by(&anchor_lang_v2::programs::System::id())
                 };
             }
@@ -2195,8 +2206,7 @@ pub fn parse_field(
         deferred_load = Some(quote! {
             let #existed = {
                 let __target = __views[#offset_expr];
-                __target.data_len() > 0
-                    && !__target.owned_by(&anchor_lang_v2::programs::System::id())
+                !__target.owned_by(&anchor_lang_v2::programs::System::id())
             };
             let mut #field_name: #field_ty = {
                 let __target = __views[#offset_expr];
@@ -2269,6 +2279,27 @@ pub fn parse_field(
                 return Err(anchor_lang_v2::ErrorCode::ConstraintSigner.into());
             }
         });
+    }
+
+    if attrs.is_init_if_needed
+        && has_namespaced_constraint(&attrs, "mint", None)
+        && !has_namespaced_constraint(&attrs, "mint", Some("freeze_authority"))
+    {
+        if is_optional {
+            constraints.push(quote! {
+                if let Some(__mint) = &#field_name {
+                    if __mint.freeze_authority().is_some() {
+                        return Err(anchor_lang_v2::Error::InvalidAccountData);
+                    }
+                }
+            });
+        } else {
+            constraints.push(quote! {
+                if #field_name.freeze_authority().is_some() {
+                    return Err(anchor_lang_v2::Error::InvalidAccountData);
+                }
+            });
+        }
     }
 
     // executable check
