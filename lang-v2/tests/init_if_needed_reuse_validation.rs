@@ -99,7 +99,6 @@ impl AnchorAccount for FakeMintAccount {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Default)]
 struct FakeMintInitParams<'a> {
     decimals: Option<u8>,
@@ -115,10 +114,11 @@ impl AccountInitialize for FakeMintAccount {
         _account: &AccountView,
         _space: usize,
         _owner: &Address,
-        _params: &Self::Params<'a>,
+        params: &Self::Params<'a>,
         _signer_seeds: Option<&[&[u8]]>,
         _payer_signer_seeds: Option<&[&[u8]]>,
     ) -> Result<Self, ProgramError> {
+        let _ = (params.decimals, params.authority, params.freeze_authority);
         Err(Error::InvalidAccountData)
     }
 }
