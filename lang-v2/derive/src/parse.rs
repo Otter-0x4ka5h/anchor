@@ -1751,7 +1751,6 @@ fn emit_init_if_needed_reuse_validation(
     field_ty: &Type,
     attrs: &AccountAttrs,
     associated_token: Option<&AssociatedTokenInit>,
-    field_offsets: &[(String, TokenStream2)],
 ) -> syn::Result<TokenStream2> {
     let has_mint_constraints = has_namespaced_constraint(attrs, "mint", None);
     let has_token_constraints = has_namespaced_constraint(attrs, "token", None);
@@ -1765,10 +1764,7 @@ fn emit_init_if_needed_reuse_validation(
         Some(expr) => quote! { #expr },
         None => quote! { <#field_ty as anchor_lang_v2::Space>::INIT_SPACE },
     };
-    let owner = if let Some(at) = associated_token {
-        let token_program_offset = field_offset_expr(field_offsets, &at.token_program)?;
-        quote! { *__views[#token_program_offset].address() }
-    } else if let Some(expr) = attrs.owner.as_ref() {
+    let owner = if let Some(expr) = attrs.owner.as_ref() {
         quote! { #expr }
     } else {
         quote! { *__program_id }
@@ -1839,7 +1835,6 @@ pub fn parse_field(
             option_inner.unwrap_or(field_ty),
             &attrs,
             associated_token.as_ref(),
-            field_offsets,
         )?)
     } else {
         None
