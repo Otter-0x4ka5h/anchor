@@ -55,6 +55,16 @@ fn sample_metadata_with_v1_2_fields() -> mpl_token_metadata::accounts::Metadata 
     metadata
 }
 
+fn sample_metadata_with_programmable_config() -> mpl_token_metadata::accounts::Metadata {
+    let mut metadata = sample_metadata_with_v1_2_fields();
+    metadata.token_standard =
+        Some(mpl_token_metadata::types::TokenStandard::ProgrammableNonFungible);
+    metadata.programmable_config = Some(mpl_token_metadata::types::ProgrammableConfig::V1 {
+        rule_set: Some(Pubkey::from([12u8; 32])),
+    });
+    metadata
+}
+
 fn sample_legacy_metadata() -> LegacyMetadataAccount {
     let creator = Pubkey::from([7u8; 32]);
     LegacyMetadataAccount {
@@ -121,13 +131,7 @@ fn metadata_account_deserializes_raw_metaplex_bytes() {
     let data = to_vec(&expected).unwrap();
     let account = MetadataAccount::try_deserialize(&mut data.as_slice()).unwrap();
 
-    assert_eq!(account.key, mpl_token_metadata::types::Key::MetadataV1);
-    assert_eq!(account.name, "Pump AMM");
-    assert_eq!(account.mint, expected.mint);
-    assert_eq!(
-        account.creators.as_ref().unwrap()[0].address,
-        Pubkey::from([7u8; 32])
-    );
+    assert_eq!(&*account, &expected);
 }
 
 #[test]
@@ -162,6 +166,19 @@ fn metadata_account_preserves_v1_2_fields_when_uses_is_none() {
     assert_eq!(account.token_standard, expected.token_standard);
     assert_eq!(account.collection, expected.collection);
     assert_eq!(account.uses, None);
+    assert!(cursor.is_empty());
+}
+
+#[test]
+fn metadata_account_preserves_programmable_config_fields() {
+    let expected = sample_metadata_with_programmable_config();
+    let data = to_vec(&expected).unwrap();
+    let mut cursor = data.as_slice();
+    let account = MetadataAccount::try_deserialize(&mut cursor).unwrap();
+
+    assert_eq!(account.token_standard, expected.token_standard);
+    assert_eq!(account.collection, expected.collection);
+    assert_eq!(account.programmable_config, expected.programmable_config);
     assert!(cursor.is_empty());
 }
 
