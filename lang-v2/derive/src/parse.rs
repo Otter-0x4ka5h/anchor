@@ -1880,13 +1880,15 @@ pub fn parse_field(
 
         let inner_ty = extract_nested_inner_type(field_ty)
             .expect("is_nested_type was true but extract_nested_inner_type returned None");
-        // Nested<Inner> — delegate to Inner::try_accounts, which advances the
-        // shared cursor by Inner::HEADER_SIZE. The outer walk_n covers only
-        // direct (non-nested) fields; the nested try_accounts picks up where
-        // the outer left off.
+        // Nested<Inner> — delegate to Inner::validate_accounts, which advances
+        // the shared cursor by Inner::HEADER_SIZE without firing inner
+        // update-hooks yet. The outer walk_n covers only direct
+        // (non-nested) fields; the nested validate_accounts picks up where
+        // the outer left off, and the outer update phase later calls
+        // Inner::update_accounts exactly once.
         //
         // Constraint processing and exit are handled by the inner struct's own
-        // try_accounts / exit_accounts — the outer derives don't need to
+        // validate_accounts / exit_accounts — the outer derives don't need to
         // re-check them.
         // TODO: passing `__base_offset + #offset_expr` means the nested
         // struct's bitvec lookups hit the correct global indices. This is
@@ -1895,7 +1897,7 @@ pub fn parse_field(
         // or use a wrapper that offsets transparently.
         let load = quote! {
             let (__nested_inner, _, _) =
-                <#inner_ty as anchor_lang_v2::TryAccounts>::try_accounts(
+                <#inner_ty as anchor_lang_v2::TryAccounts>::validate_accounts(
                     __program_id,
                     &__views[#offset_expr .. #offset_expr + <#inner_ty as anchor_lang_v2::TryAccounts>::HEADER_SIZE],
                     __duplicates,
