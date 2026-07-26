@@ -3,19 +3,171 @@ use {
         accounts::{Signer, UncheckedAccount},
         cpi::rent_exempt_lamports,
         testing::AccountBuffer,
-        Accounts, AnchorAccount, ErrorCode, Id, TryAccounts,
+        AccountInitialize, Accounts, AnchorAccount, Error, ErrorCode, Id, TryAccounts,
     },
-    pinocchio::address::Address,
+    core::ops::Deref,
+    pinocchio::{account::AccountView, address::Address},
     solana_program_error::ProgramError,
 };
 
 const PROGRAM_ID: [u8; 32] = [0x42; 32];
 const FOREIGN_OWNER: [u8; 32] = [0x24; 32];
+const FAKE_MINT_LEN: usize = 66;
 
 #[derive(Accounts)]
 struct SeedlessReuseUnchecked {
     #[account(init_if_needed, payer = payer, space = 8)]
     target: UncheckedAccount,
+    #[account(mut)]
+    payer: Signer,
+}
+
+#[derive(Clone, Copy)]
+struct FakeMintData {
+    authority: Address,
+    decimals: u8,
+    freeze_authority: Option<Address>,
+}
+
+struct FakeMintAccount {
+    account: AccountView,
+    data: FakeMintData,
+}
+
+impl FakeMintAccount {
+    fn authority(&self) -> &Address {
+        &self.data.authority
+    }
+
+    fn decimals(&self) -> u8 {
+        self.data.decimals
+    }
+
+    fn freeze_authority(&self) -> Option<&Address> {
+        self.data.freeze_authority.as_ref()
+    }
+}
+
+impl Deref for FakeMintAccount {
+    type Target = FakeMintData;
+
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl AnchorAccount for FakeMintAccount {
+    type Data = FakeMintData;
+    const MIN_DATA_LEN: usize = FAKE_MINT_LEN;
+
+    fn load(view: AccountView) -> Result<Self, ProgramError> {
+        let data = view.try_borrow()?;
+        if data.len() < FAKE_MINT_LEN {
+            return Err(ErrorCode::ConstraintSpace.into());
+        }
+
+        let mut authority = [0u8; 32];
+        authority.copy_from_slice(&data[..32]);
+        let decimals = data[32];
+        let freeze_authority = if data[33] == 0 {
+            None
+        } else {
+            let mut freeze = [0u8; 32];
+            freeze.copy_from_slice(&data[34..66]);
+            Some(Address::new_from_array(freeze))
+        };
+
+        Ok(Self {
+            account: view,
+            data: FakeMintData {
+                authority: Address::new_from_array(authority),
+                decimals,
+                freeze_authority,
+            },
+        })
+    }
+
+    unsafe fn load_mut(view: AccountView) -> Result<Self, ProgramError> {
+        if !view.is_writable() {
+            return Err(ErrorCode::ConstraintMut.into());
+        }
+        Self::load(view)
+    }
+
+    fn account(&self) -> &AccountView {
+        &self.account
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Default)]
+struct FakeMintInitParams<'a> {
+    decimals: Option<u8>,
+    authority: Option<&'a AccountView>,
+    freeze_authority: Option<&'a AccountView>,
+}
+
+impl AccountInitialize for FakeMintAccount {
+    type Params<'a> = FakeMintInitParams<'a>;
+
+    fn create_and_initialize<'a>(
+        _payer: &AccountView,
+        _account: &AccountView,
+        _space: usize,
+        _owner: &Address,
+        _params: &Self::Params<'a>,
+        _signer_seeds: Option<&[&[u8]]>,
+        _payer_signer_seeds: Option<&[&[u8]]>,
+    ) -> Result<Self, ProgramError> {
+        Err(Error::InvalidAccountData)
+    }
+}
+
+mod mint {
+    use super::FakeMintAccount;
+    use {
+        anchor_lang_v2::{AccountConstraint, Error},
+        solana_program_error::ProgramError,
+    };
+
+    pub struct AuthorityConstraint;
+
+    impl AccountConstraint<FakeMintAccount> for AuthorityConstraint {
+        type Value = pinocchio::address::Address;
+
+        fn check(account: &FakeMintAccount, expected: &Self::Value) -> Result<(), ProgramError> {
+            if !anchor_lang_v2::address_eq(account.authority(), expected) {
+                return Err(Error::InvalidAccountData);
+            }
+            Ok(())
+        }
+    }
+
+    pub struct DecimalsConstraint;
+
+    impl AccountConstraint<FakeMintAccount> for DecimalsConstraint {
+        type Value = u8;
+
+        fn check(account: &FakeMintAccount, expected: &Self::Value) -> Result<(), ProgramError> {
+            if account.decimals() != *expected {
+                return Err(Error::InvalidAccountData);
+            }
+            Ok(())
+        }
+    }
+}
+
+#[derive(Accounts)]
+struct ReuseFakeMint {
+    #[account(
+        init_if_needed,
+        payer = payer,
+        space = FAKE_MINT_LEN,
+        mint::authority = authority,
+        mint::decimals = 6
+    )]
+    target: FakeMintAccount,
+    authority: UncheckedAccount,
     #[account(mut)]
     payer: Signer,
 }
@@ -45,9 +197,49 @@ fn payer_account() -> AccountBuffer<128> {
     buf
 }
 
+fn authority_account(address: [u8; 32]) -> AccountBuffer<128> {
+    let buf = AccountBuffer::<128>::new();
+    buf.init(address, PROGRAM_ID, 0, false, false, false);
+    buf
+}
+
+fn fake_mint_account(
+    owner: [u8; 32],
+    authority: [u8; 32],
+    decimals: u8,
+    freeze_authority: Option<[u8; 32]>,
+    signer: bool,
+) -> AccountBuffer<256> {
+    let buf = AccountBuffer::<256>::new();
+    buf.init([0xCC; 32], owner, FAKE_MINT_LEN, signer, true, false);
+    let mut data = [0u8; FAKE_MINT_LEN];
+    data[..32].copy_from_slice(&authority);
+    data[32] = decimals;
+    data[33] = u8::from(freeze_authority.is_some());
+    if let Some(freeze_authority) = freeze_authority {
+        data[34..66].copy_from_slice(&freeze_authority);
+    }
+    buf.write_data(&data);
+    buf
+}
+
 fn try_reuse(target: &AccountBuffer<128>, payer: &AccountBuffer<128>) -> Result<(), ProgramError> {
     let views = [unsafe { target.view() }, unsafe { payer.view() }];
     SeedlessReuseUnchecked::try_accounts(&Address::new_from_array(PROGRAM_ID), &views, None, 0, &[])
+        .map(|_| ())
+}
+
+fn try_reuse_fake_mint(
+    target: &AccountBuffer<256>,
+    authority: &AccountBuffer<128>,
+    payer: &AccountBuffer<128>,
+) -> Result<(), ProgramError> {
+    let views = [
+        unsafe { target.view() },
+        unsafe { authority.view() },
+        unsafe { payer.view() },
+    ];
+    ReuseFakeMint::try_accounts(&Address::new_from_array(PROGRAM_ID), &views, None, 0, &[])
         .map(|_| ())
 }
 
@@ -61,12 +253,20 @@ fn seedless_reuse_requires_target_signature() {
 }
 
 #[test]
-fn seedless_reuse_revalidates_exact_space() {
-    let target = target_account(PROGRAM_ID, 16, true, 1_000_000);
+fn seedless_reuse_treats_zero_length_program_owned_target_as_existing() {
+    let target = target_account(PROGRAM_ID, 0, true, 1_000_000);
     let payer = payer_account();
 
     let err = expect_err(try_reuse(&target, &payer));
     assert_eq!(err, ErrorCode::ConstraintSpace.into());
+}
+
+#[test]
+fn seedless_reuse_allows_extra_space() {
+    let target = target_account(PROGRAM_ID, 16, true, 1_000_000);
+    let payer = payer_account();
+
+    try_reuse(&target, &payer).expect("reused accounts with extra space should stay valid");
 }
 
 #[test]
@@ -94,4 +294,24 @@ fn seedless_reuse_accepts_fully_initialized_accounts() {
     let payer = payer_account();
 
     try_reuse(&target, &payer).expect("fully initialized reuse path should succeed");
+}
+
+#[test]
+fn mint_reuse_skips_generic_seedless_signer_validation() {
+    let authority = authority_account([0x77; 32]);
+    let payer = payer_account();
+    let target = fake_mint_account(PROGRAM_ID, [0x77; 32], 6, None, false);
+
+    try_reuse_fake_mint(&target, &authority, &payer)
+        .expect("mint reuse should rely on mint constraints, not the generic signer gate");
+}
+
+#[test]
+fn mint_reuse_without_freeze_authority_attr_requires_none() {
+    let authority = authority_account([0x88; 32]);
+    let payer = payer_account();
+    let target = fake_mint_account(PROGRAM_ID, [0x88; 32], 6, Some([0x99; 32]), true);
+
+    let err = expect_err(try_reuse_fake_mint(&target, &authority, &payer));
+    assert_eq!(err, Error::InvalidAccountData);
 }
