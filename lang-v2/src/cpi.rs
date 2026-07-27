@@ -265,25 +265,12 @@ pub fn verify_program_address(
 ) -> Result<(), ProgramError> {
     validate_pda_seeds(seeds, MAX_PDA_SEEDS_TOTAL)?;
 
-    #[cfg(target_os = "solana")]
-    {
-        let computed = hash_pda_seeds(seeds, program_id)?;
-        if pinocchio::address::address_eq(&computed, expected) {
-            Ok(())
-        } else {
-            Err(ProgramError::InvalidSeeds)
-        }
-    }
-
-    #[cfg(not(target_os = "solana"))]
-    {
-        let computed = Address::create_program_address(seeds, program_id)
-            .map_err(|_| ProgramError::InvalidSeeds)?;
-        if pinocchio::address::address_eq(&computed, expected) {
-            Ok(())
-        } else {
-            Err(ProgramError::InvalidSeeds)
-        }
+    let computed =
+        create_program_address(seeds, program_id).map_err(|_| ProgramError::InvalidSeeds)?;
+    if pinocchio::address::address_eq(&computed, expected) {
+        Ok(())
+    } else {
+        Err(ProgramError::InvalidSeeds)
     }
 }
 
