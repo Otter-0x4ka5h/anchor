@@ -1387,7 +1387,7 @@ pub fn validate_account_fields(fields: &[FieldSummary]) -> syn::Result<()> {
                 .as_ref()
                 .expect("init payer is validated while parsing account attributes");
             let payer_field = require_summary_field(fields, payer, target, "init payer", false)?;
-            if required && extract_option_inner(&payer_field.ty).is_some() {
+            if extract_option_inner(&payer_field.ty).is_some() {
                 return Err(syn::Error::new(
                     payer_field.name.span(),
                     "optional accounts cannot be used as init payers",
@@ -1485,7 +1485,7 @@ pub fn validate_account_fields(fields: &[FieldSummary]) -> syn::Result<()> {
                 .expect("realloc payer is validated while parsing account attributes");
             let payer_field =
                 require_summary_field(fields, payer, target, "realloc payer", false)?;
-            if required && extract_option_inner(&payer_field.ty).is_some() {
+            if extract_option_inner(&payer_field.ty).is_some() {
                 return Err(syn::Error::new(
                     payer_field.name.span(),
                     "optional accounts cannot be used as realloc payers",
