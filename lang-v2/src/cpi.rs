@@ -48,7 +48,7 @@ fn encode_system_transfer(lamports: u64) -> [u8; 12] {
 #[inline(always)]
 fn validate_pda_seeds(seeds: &[&[u8]], max_seed_count: usize) -> Result<(), ProgramError> {
     if seeds.len() > max_seed_count || seeds.iter().any(|seed| seed.len() > MAX_PDA_SEED_LEN) {
-        return Err(ProgramError::InvalidSeeds);
+        return Err(ProgramError::MaxSeedLengthExceeded);
     }
     Ok(())
 }

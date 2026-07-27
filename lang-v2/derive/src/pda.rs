@@ -17,14 +17,9 @@ use {
 };
 
 const PDA_MARKER: &[u8; 21] = b"ProgramDerivedAddress";
-const MAX_PDA_SEEDS_TOTAL: usize = 16;
-const MAX_PDA_SEED_LEN: usize = 32;
+const MAX_PDA_SEEDS_TOTAL: usize = solana_address::MAX_SEEDS;
+const MAX_PDA_SEED_LEN: usize =  solana_address::MAX_SEED_LEN;
 const MAX_PDA_SEEDS_WITHOUT_BUMP: usize = MAX_PDA_SEEDS_TOTAL - 1;
-
-const _: () = {
-    assert!(MAX_PDA_SEEDS_TOTAL == solana_address::MAX_SEEDS);
-    assert!(MAX_PDA_SEED_LEN == solana_address::MAX_SEED_LEN);
-};
 
 thread_local! {
     /// `None`   = not yet attempted.
