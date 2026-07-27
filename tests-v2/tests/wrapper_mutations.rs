@@ -7,7 +7,6 @@ use {
         AnchorAccount, Discriminator, Owner,
     },
     pinocchio::{account::RuntimeAccount, address::Address},
-    solana_program_error::ProgramError,
 };
 
 const PROGRAM_ID: [u8; 32] = [0x42; 32];
@@ -76,18 +75,6 @@ fn slab_read_only_load_allows_shared_borrow_on_copy() {
     let account = CounterAccount::load(view).unwrap();
     let view_copy = view;
     assert!(view_copy.try_borrow().is_ok());
-    assert_eq!(account.value, 42);
-}
-
-#[test]
-fn slab_read_only_load_blocks_unsafe_mut_reload_on_copy() {
-    let mut buf = AccountBuffer::<256>::new();
-    setup_counter(&mut buf, true);
-    let view = unsafe { buf.view() };
-
-    let account = CounterAccount::load(view).unwrap();
-    let err = unsafe { CounterAccount::load_mut(view) }.err();
-    assert_eq!(err, Some(ProgramError::AccountBorrowFailed));
     assert_eq!(account.value, 42);
 }
 

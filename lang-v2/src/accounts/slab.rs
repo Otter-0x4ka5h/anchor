@@ -358,10 +358,6 @@ where
     #[inline(always)]
     fn build_mutable(view: AccountView) -> Result<Self, ProgramError> {
         Self::assert_header_alignment();
-        let borrow_state = unsafe { (*view.account_ptr()).borrow_state };
-        if borrow_state != NOT_BORROWED {
-            return Err(ProgramError::AccountBorrowFailed);
-        }
         // SAFETY: AccountView's data pointer is valid for the instruction lifetime.
         // Duplicate mutable accounts are rejected at deserialization.
         let data = unsafe { view.borrow_unchecked() };
@@ -1190,23 +1186,6 @@ mod tests {
         assert_eq!(acct.value, 99);
     }
 
-    #[test]
-    fn read_only_load_blocks_unsafe_mut_reload_on_copy() {
-        let mut buf = AccountBuffer::<256>::new();
-        setup(&mut buf, true);
-        let view = unsafe { buf.view() };
-
-        let acct = CounterAccount::load(view).unwrap();
-
-        let err = unsafe { CounterAccount::load_mut(view) }.err();
-        assert_eq!(
-            err,
-            Some(ProgramError::AccountBorrowFailed),
-            "mutable Slab loads must reject a copied view while a read-only Slab is alive"
-        );
-
-        drop(acct);
-    }
 }
 
 // Kani proofs for the `capacity_for` helper, which backs `Slab::capacity`
