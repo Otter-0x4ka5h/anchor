@@ -432,12 +432,12 @@ mod tests {
         let seeds = vec![b"x".as_ref(); MAX_PDA_SEEDS_TOTAL];
 
         let err = try_find_program_address(&seeds, &program_id).unwrap_err();
-        assert_eq!(err, ProgramError::InvalidSeeds);
+        assert_eq!(err, ProgramError::MaxSeedLengthExceeded);
 
         let err =
             find_and_verify_program_address(&seeds, &program_id, &Address::new_from_array([0; 32]))
                 .unwrap_err();
-        assert_eq!(err, ProgramError::InvalidSeeds);
+        assert_eq!(err, ProgramError::MaxSeedLengthExceeded);
 
         let err = find_and_verify_program_address_skip_curve(
             &seeds,
@@ -445,7 +445,7 @@ mod tests {
             &Address::new_from_array([0; 32]),
         )
         .unwrap_err();
-        assert_eq!(err, ProgramError::InvalidSeeds);
+        assert_eq!(err, ProgramError::MaxSeedLengthExceeded);
     }
 
     #[test]
@@ -454,11 +454,11 @@ mod tests {
         let seeds = vec![b"x".as_ref(); MAX_PDA_SEEDS_TOTAL + 1];
 
         let err = create_program_address(&seeds, &program_id).unwrap_err();
-        assert_eq!(err, ProgramError::InvalidSeeds);
+        assert_eq!(err, ProgramError::MaxSeedLengthExceeded);
 
         let err = verify_program_address(&seeds, &program_id, &Address::new_from_array([0; 32]))
             .unwrap_err();
-        assert_eq!(err, ProgramError::InvalidSeeds);
+        assert_eq!(err, ProgramError::MaxSeedLengthExceeded);
     }
 
     #[test]
@@ -469,14 +469,14 @@ mod tests {
         let finder = [&long_seed[..]];
 
         let err = create_program_address(&explicit, &program_id).unwrap_err();
-        assert_eq!(err, ProgramError::InvalidSeeds);
+        assert_eq!(err, ProgramError::MaxSeedLengthExceeded);
 
         let err = verify_program_address(&explicit, &program_id, &Address::new_from_array([0; 32]))
             .unwrap_err();
-        assert_eq!(err, ProgramError::InvalidSeeds);
+        assert_eq!(err, ProgramError::MaxSeedLengthExceeded);
 
         let err = try_find_program_address(&finder, &program_id).unwrap_err();
-        assert_eq!(err, ProgramError::InvalidSeeds);
+        assert_eq!(err, ProgramError::MaxSeedLengthExceeded);
     }
 }
 
