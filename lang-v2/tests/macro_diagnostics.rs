@@ -1430,6 +1430,23 @@ pub struct Bad {
     );
 
     compile_fail_case(
+        "optional_init_target_rejects_optional_payer",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut)]
+    pub payer: Option<Signer>,
+    #[account(init_if_needed, payer = payer, space = 8)]
+    pub data: Option<UncheckedAccount>,
+    pub system_program: Program<System>,
+}
+"#,
+        &["optional accounts cannot be used as init payers"],
+    );
+
+    compile_fail_case(
         "required_init_requires_system_program",
         r#"
 use anchor_lang_v2::prelude::*;
@@ -1608,6 +1625,22 @@ pub struct Bad {
     pub payer: Option<Signer>,
     #[account(realloc = 16, realloc_payer = payer, realloc_zero = false)]
     pub data: UncheckedAccount,
+}
+"#,
+        &["optional accounts cannot be used as realloc payers"],
+    );
+
+    compile_fail_case(
+        "optional_realloc_target_rejects_optional_payer",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(mut)]
+    pub payer: Option<Signer>,
+    #[account(realloc = 16, realloc_payer = payer, realloc_zero = false)]
+    pub data: Option<UncheckedAccount>,
 }
 "#,
         &["optional accounts cannot be used as realloc payers"],
