@@ -1743,8 +1743,23 @@ fn emit_associated_token_init_body(
 
 fn has_namespaced_constraint(attrs: &AccountAttrs, namespace: &str, key: Option<&str>) -> bool {
     attrs.namespaced.iter().any(|nc| {
-        nc.namespace == namespace && key.is_none_or(|expected_key| nc.key == expected_key)
+        nc.namespace == namespace && key.is_none_or(|expected_key| nc.raw_key == expected_key)
     })
+}
+
+fn emit_init_if_needed_signer_check(
+    attrs: &AccountAttrs,
+    associated_token: Option<&AssociatedTokenInit>,
+) -> TokenStream2 {
+    if attrs.seeds.is_none() && !attrs.is_signer && associated_token.is_none() {
+        quote! {
+            if !__target.is_signer() {
+                return Err(anchor_lang_v2::ErrorCode::ConstraintSigner.into());
+            }
+        }
+    } else {
+        quote! {}
+    }
 }
 
 fn emit_init_if_needed_reuse_validation(
@@ -1756,8 +1771,9 @@ fn emit_init_if_needed_reuse_validation(
     let has_token_constraints = has_namespaced_constraint(attrs, "token", None);
     let needs_generic_reuse_validation =
         associated_token.is_none() && !has_mint_constraints && !has_token_constraints;
+    let signer_check = emit_init_if_needed_signer_check(attrs, associated_token);
     if !needs_generic_reuse_validation {
-        return Ok(quote! {});
+        return Ok(signer_check);
     }
 
     let space = match attrs.space.as_ref() {
@@ -1768,15 +1784,6 @@ fn emit_init_if_needed_reuse_validation(
         quote! { #expr }
     } else {
         quote! { *__program_id }
-    };
-    let signer_check = if attrs.seeds.is_none() && !attrs.is_signer {
-        quote! {
-            if !__target.is_signer() {
-                return Err(anchor_lang_v2::ErrorCode::ConstraintSigner.into());
-            }
-        }
-    } else {
-        quote! {}
     };
 
     Ok(quote! {
