@@ -284,6 +284,7 @@ impl<T: Space, const N: usize> Space for [T; N] {
 
 #[doc(hidden)]
 pub mod __private {
+    #[cfg(feature = "idl-build")]
     pub use const_format::concatcp;
 
     /// Used by `#[derive(InitSpace)]` on enums to pick the largest variant size.
