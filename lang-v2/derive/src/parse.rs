@@ -435,12 +435,6 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                                     ));
                                 }
                                 input.parse::<Token![=]>()?;
-                                if result.seeds_program.is_some() {
-                                    return Err(duplicate_singleton(
-                                        key_ident.span(),
-                                        "seeds::program",
-                                    ));
-                                }
                                 result.seeds_program = Some(input.parse()?);
                                 if !input.is_empty() {
                                     input.parse::<Token![,]>()?;
