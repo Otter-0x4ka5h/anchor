@@ -3,7 +3,11 @@ use pinocchio::account::{Ref, RefMut};
 use {
     crate::require,
     core::ops::Deref,
-    pinocchio::{account::AccountView, address::Address, instruction::InstructionAccount},
+    pinocchio::{
+        account::{AccountView, NOT_BORROWED},
+        address::Address,
+        instruction::InstructionAccount,
+    },
     solana_program_error::{ProgramError, ProgramResult},
 };
 
@@ -11,9 +15,9 @@ use {
 ///
 /// Obtained via [`AnchorAccount::cpi_handle`] (shared borrow) or by erasing a
 /// [`CpiHandleMut`] produced from [`AnchorAccount::cpi_handle_mut`].
-/// Writable handles participate in raw `AccountView` borrow validation before
-/// CPI by default. Wrappers with their own borrow-state discipline may opt out
-/// for writable CPIs.
+/// Handles participate in raw `AccountView` borrow validation before CPI by
+/// default. Wrappers with their own borrow-state discipline may opt out when
+/// the CPI account meta guarantees the callee cannot mutate the account.
 ///
 /// Deliberately does NOT implement `Deref<Target = AccountView>` to
 /// prevent accidental use with pinocchio's checked invoke builders.
@@ -22,6 +26,7 @@ pub struct CpiHandle<'a> {
     view: &'a AccountView,
     writable: bool,
     borrow_check: bool,
+    relax_readonly_borrow: bool,
 }
 
 /// Typed mutable CPI handle for API-facing CPI account structs.
@@ -34,13 +39,33 @@ pub struct CpiHandleMut<'a> {
     borrow_check: bool,
 }
 
+pub(crate) struct CpiBorrowGuard {
+    borrow_state: *mut u8,
+    restore_to: u8,
+}
+
 impl<'a> CpiHandle<'a> {
     #[inline(always)]
     pub fn readonly(view: &'a AccountView) -> Self {
+        Self::readonly_with_borrow_check(view, true)
+    }
+
+    #[inline(always)]
+    pub(crate) fn readonly_with_borrow_check(view: &'a AccountView, borrow_check: bool) -> Self {
+        Self::readonly_with_flags(view, borrow_check, false)
+    }
+
+    #[inline(always)]
+    pub(crate) fn readonly_with_flags(
+        view: &'a AccountView,
+        borrow_check: bool,
+        relax_readonly_borrow: bool,
+    ) -> Self {
         Self {
             view,
             writable: false,
-            borrow_check: true,
+            borrow_check,
+            relax_readonly_borrow,
         }
     }
 
@@ -55,6 +80,7 @@ impl<'a> CpiHandle<'a> {
             view,
             writable: true,
             borrow_check,
+            relax_readonly_borrow: false,
         }
     }
 
@@ -92,6 +118,25 @@ impl<'a> CpiHandle<'a> {
     #[inline(always)]
     pub(crate) fn requires_borrow_check(&self) -> bool {
         self.borrow_check
+    }
+
+    #[inline(always)]
+    pub(crate) fn enter_cpi(&self) -> Option<CpiBorrowGuard> {
+        if !self.writable && self.relax_readonly_borrow {
+            let borrow_state = self.view.account_ptr().cast_mut().cast::<u8>();
+            // Mutable Slab wrappers pin the runtime borrow state at `0` while
+            // the wrapper is alive. For readonly CPIs that state is too
+            // strong: the callee only needs shared borrows, and readonly metas
+            // prevent writes. Downgrade to a single shared borrow for the CPI
+            // and restore the exclusive marker afterwards.
+            unsafe { *borrow_state = NOT_BORROWED - 1 };
+            Some(CpiBorrowGuard {
+                borrow_state,
+                restore_to: 0,
+            })
+        } else {
+            None
+        }
     }
 }
 
@@ -137,8 +182,25 @@ impl<'a> From<CpiHandleMut<'a>> for CpiHandle<'a> {
             view: handle.view,
             writable: true,
             borrow_check: handle.borrow_check,
+            relax_readonly_borrow: false,
         }
     }
+}
+
+impl Drop for CpiBorrowGuard {
+    fn drop(&mut self) {
+        unsafe { *self.borrow_state = self.restore_to };
+    }
+}
+
+pub(crate) fn enter_cpi<'a>(handles: &[CpiHandle<'a>]) -> alloc::vec::Vec<CpiBorrowGuard> {
+    let mut guards = alloc::vec::Vec::new();
+    for handle in handles {
+        if let Some(guard) = handle.enter_cpi() {
+            guards.push(guard);
+        }
+    }
+    guards
 }
 
 /// Converts a CPI accounts struct into instruction metadata and handles.

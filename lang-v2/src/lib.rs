@@ -284,9 +284,25 @@ impl<T: Space, const N: usize> Space for [T; N] {
 
 #[doc(hidden)]
 pub mod __private {
+    use crate::CpiHandle;
+    use pinocchio::account::AccountView;
+
     /// Used by `#[derive(InitSpace)]` on enums to pick the largest variant size.
     pub const fn max(a: usize, b: usize) -> usize {
         [a, b][(a < b) as usize]
+    }
+
+    #[doc(hidden)]
+    #[inline(always)]
+    pub fn readonly_cpi_handle_for_manual_mut_borrow<'a>(
+        view: &'a AccountView,
+        needs_relax: bool,
+    ) -> CpiHandle<'a> {
+        if needs_relax {
+            CpiHandle::readonly_with_flags(view, false, true)
+        } else {
+            CpiHandle::readonly(view)
+        }
     }
 }
 

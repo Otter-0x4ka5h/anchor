@@ -373,6 +373,21 @@ fn cpi_context_invoke_accepts_mutable_slab_handle() {
 }
 
 #[test]
+fn cpi_context_invoke_accepts_readonly_slab_handle_from_mutable_wrapper() {
+    let program = ID;
+    let buffer = slab_account_view([1; 32], true, 9);
+    let view = unsafe { buffer.view() };
+    let acct = unsafe { Account::<PodCounter>::load_mut(view) }.unwrap();
+    let accounts = ReadonlyCpi {
+        account: acct.cpi_handle(),
+    };
+
+    CpiContext::new(&program, accounts)
+        .invoke(&[1, 2, 3])
+        .unwrap();
+}
+
+#[test]
 fn invoke_ix_rejects_live_borrow_for_writable_meta() {
     let program = ID;
     let buffer = account_view([1; 32], true);
@@ -409,6 +424,25 @@ fn invoke_ix_accepts_mutable_slab_handle() {
     let ix = Instruction {
         program_id: program,
         accounts: vec![AccountMeta::new(address, false)],
+        data: vec![],
+    };
+
+    CpiContext::new(&program, accounts).invoke_ix(ix).unwrap();
+}
+
+#[test]
+fn invoke_ix_accepts_readonly_slab_handle_from_mutable_wrapper() {
+    let program = ID;
+    let buffer = slab_account_view([1; 32], true, 9);
+    let view = unsafe { buffer.view() };
+    let acct = unsafe { Account::<PodCounter>::load_mut(view) }.unwrap();
+    let address = *acct.address();
+    let accounts = ReadonlyCpi {
+        account: acct.cpi_handle(),
+    };
+    let ix = Instruction {
+        program_id: program,
+        accounts: vec![AccountMeta::new_readonly(address, false)],
         data: vec![],
     };
 

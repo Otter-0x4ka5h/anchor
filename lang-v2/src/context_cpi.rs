@@ -105,7 +105,7 @@ impl<'a, T: ToCpiAccounts<'a>> CpiContext<'a, T> {
                 if handle.requires_borrow_check() {
                     handle.account_view().check_borrow_mut()?;
                 }
-            } else {
+            } else if handle.requires_borrow_check() {
                 handle.account_view().check_borrow()?;
             }
 
@@ -117,6 +117,8 @@ impl<'a, T: ToCpiAccounts<'a>> CpiContext<'a, T> {
             data,
             accounts: &instruction_accounts,
         };
+
+        let _borrow_guards = crate::enter_cpi(&handles);
 
         // Convert signer seeds to pinocchio Signers.
         // SAFETY: pinocchio::cpi::Seed is repr(C) { *const u8, u64, PhantomData }
@@ -213,6 +215,8 @@ pub fn unchecked_invoke_signed_fixed<'a, const N: usize>(
         data,
         accounts: instruction_accounts,
     };
+
+    let _borrow_guards = crate::enter_cpi(handles);
 
     let mut cpi_accounts = [const { MaybeUninit::<pinocchio::cpi::CpiAccount>::uninit() }; N];
     for (handle, slot) in handles.iter().zip(cpi_accounts.iter_mut()) {

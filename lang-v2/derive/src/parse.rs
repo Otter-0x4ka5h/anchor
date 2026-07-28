@@ -465,6 +465,44 @@ fn field_offset_expr(
         })
 }
 
+fn type_uses_manual_readonly_cpi_relax(ty: &Type) -> bool {
+    let Type::Path(type_path) = ty else {
+        return false;
+    };
+    let Some(segment) = type_path.path.segments.last() else {
+        return false;
+    };
+
+    match segment.ident.to_string().as_str() {
+        "Account" | "InterfaceAccount" | "Slab" => true,
+        "Box" => {
+            if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
+                    return type_uses_manual_readonly_cpi_relax(inner);
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+fn field_needs_readonly_cpi_relax(
+    field_summaries: &[FieldSummary],
+    ident: &Ident,
+) -> syn::Result<bool> {
+    field_summaries
+        .iter()
+        .find(|summary| summary.name == *ident)
+        .map(|summary| summary.attrs.is_mut && type_uses_manual_readonly_cpi_relax(&summary.ty))
+        .ok_or_else(|| {
+            syn::Error::new(
+                ident.span(),
+                format!("missing field summary for `{ident}` in account parser"),
+            )
+        })
+}
+
 fn parse_associated_token_init(
     attrs: &AccountAttrs,
     field_names: &[String],
@@ -1335,6 +1373,14 @@ fn emit_associated_token_init_body(
     let system_program_offset = field_offset_expr(field_offsets, &system_program)?;
     let associated_token_program_offset =
         field_offset_expr(field_offsets, &associated_token_program)?;
+    let authority_needs_relax =
+        field_needs_readonly_cpi_relax(field_summaries, &associated_token.authority)?;
+    let mint_needs_relax =
+        field_needs_readonly_cpi_relax(field_summaries, &associated_token.mint)?;
+    let token_program_needs_relax =
+        field_needs_readonly_cpi_relax(field_summaries, &associated_token.token_program)?;
+    let system_program_needs_relax =
+        field_needs_readonly_cpi_relax(field_summaries, &system_program)?;
     let payer_signer_seeds = emit_payer_signer_seeds_binding(payer, field_names, field_summaries)?;
 
     Ok(quote! {
@@ -1378,10 +1424,22 @@ fn emit_associated_token_init_body(
             let __create_accounts = anchor_spl_v2::associated_token::Create {
                 payer: __payer_account.cpi_handle_mut(),
                 associated_token: __associated_token.cpi_handle_mut(),
-                authority: __authority.cpi_handle(),
-                mint: __mint.cpi_handle(),
-                system_program: __system_program.cpi_handle(),
-                token_program: __token_program.cpi_handle(),
+                authority: anchor_lang_v2::__private::readonly_cpi_handle_for_manual_mut_borrow(
+                    __authority.account(),
+                    #authority_needs_relax,
+                ),
+                mint: anchor_lang_v2::__private::readonly_cpi_handle_for_manual_mut_borrow(
+                    __mint.account(),
+                    #mint_needs_relax,
+                ),
+                system_program: anchor_lang_v2::__private::readonly_cpi_handle_for_manual_mut_borrow(
+                    __system_program.account(),
+                    #system_program_needs_relax,
+                ),
+                token_program: anchor_lang_v2::__private::readonly_cpi_handle_for_manual_mut_borrow(
+                    __token_program.account(),
+                    #token_program_needs_relax,
+                ),
             };
             match __payer_signer_seeds {
                 Some(__payer_signer) => {

@@ -84,6 +84,7 @@ pub unsafe fn invoke_signed_unchecked<'a, 'seeds>(
         data: &instruction.data,
     };
     let signers = signers(signer_seeds);
+    let _borrow_guards = crate::enter_cpi(account_handles);
     let cpi_accounts = cpi_accounts(account_handles);
 
     // SAFETY:
@@ -155,7 +156,7 @@ fn validate_handle_borrows(
             if handle.requires_borrow_check() {
                 handle.account_view().check_borrow_mut()?;
             }
-        } else {
+        } else if handle.requires_borrow_check() {
             handle.account_view().check_borrow()?;
         }
 
