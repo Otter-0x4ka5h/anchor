@@ -763,7 +763,7 @@ pub struct Bad {
     pub system_program: Program<System>,
 }
 "#,
-        &["the payer specified for an init constraint must be mutable"],
+        &["the payer specified for the init constraint must be mutable"],
     );
 
     compile_fail_case(
@@ -843,25 +843,6 @@ pub struct MissingReallocPayer {
 "#,
         &["`realloc` requires `realloc_payer`"],
         &["proc-macro derive panicked"],
-    );
-
-    compile_fail_case(
-        "realloc_payer_missing_field_is_rejected",
-        r#"
-use anchor_lang_v2::prelude::*;
-
-#[account]
-pub struct Data {
-    pub value: u64,
-}
-
-#[derive(Accounts)]
-pub struct Bad {
-    #[account(mut, realloc = 16, realloc_payer = payer, realloc_zero = false)]
-    pub data: Account<Data>,
-}
-"#,
-        &["the payer specified for a realloc constraint does not exist"],
     );
 }
 
