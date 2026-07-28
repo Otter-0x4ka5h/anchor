@@ -662,292 +662,31 @@ fn idl_field_ty(field: &parse::AccountField) -> Option<&Type> {
 fn cfg_attrs(attrs: &[syn::Attribute]) -> Vec<syn::Attribute> {
     attrs
         .iter()
-        .filter(|attr| is_cfg_control_attr(attr.path()))
+        .filter(|attr| is_cfg_control_attr(attr))
         .cloned()
         .collect()
 }
 
-fn is_cfg_control_attr(path: &syn::Path) -> bool {
-    path.is_ident("cfg") || path.is_ident("cfg_attr")
+fn is_cfg_control_attr(attr: &syn::Attribute) -> bool {
+    attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr")
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CfgMatch {
-    Enabled,
-    Disabled,
-    Unknown,
-}
-
-impl CfgMatch {
-    fn and(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Disabled, _) | (_, Self::Disabled) => Self::Disabled,
-            (Self::Unknown, _) | (_, Self::Unknown) => Self::Unknown,
-            (Self::Enabled, Self::Enabled) => Self::Enabled,
-        }
-    }
-
-    fn or(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Enabled, _) | (_, Self::Enabled) => Self::Enabled,
-            (Self::Unknown, _) | (_, Self::Unknown) => Self::Unknown,
-            (Self::Disabled, Self::Disabled) => Self::Disabled,
-        }
-    }
-
-    fn not(self) -> Self {
-        match self {
-            Self::Enabled => Self::Disabled,
-            Self::Disabled => Self::Enabled,
-            Self::Unknown => Self::Unknown,
-        }
-    }
-}
-
-fn cfg_attrs_match(attrs: &[syn::Attribute]) -> syn::Result<bool> {
-    let mut first_unknown = None;
-
-    for attr in attrs
-        .iter()
-        .filter(|attr| is_cfg_control_attr(attr.path()))
-    {
-        match cfg_control_attr_matches(attr)? {
-            CfgMatch::Enabled => {}
-            CfgMatch::Disabled => return Ok(false),
-            CfgMatch::Unknown => {
-                first_unknown.get_or_insert(attr);
-            }
-        }
-    }
-
-    if let Some(attr) = first_unknown {
-        Err(unsupported_cfg_error(attr))
-    } else {
-        Ok(true)
-    }
-}
-
-fn cfg_attrs_match_if_known(attrs: &[syn::Attribute]) -> syn::Result<Option<bool>> {
-    let mut saw_unknown = false;
-
-    for attr in attrs
-        .iter()
-        .filter(|attr| is_cfg_control_attr(attr.path()))
-    {
-        match cfg_control_attr_matches(attr)? {
-            CfgMatch::Enabled => {}
-            CfgMatch::Disabled => return Ok(Some(false)),
-            CfgMatch::Unknown => saw_unknown = true,
-        }
-    }
-
-    Ok((!saw_unknown).then_some(true))
-}
-
-fn cfg_control_attr_matches(attr: &syn::Attribute) -> syn::Result<CfgMatch> {
-    if attr.path().is_ident("cfg") {
-        return attr
-            .parse_args::<syn::Meta>()
-            .map(|meta| cfg_meta_matches(&meta));
-    }
-
-    if attr.path().is_ident("cfg_attr") {
-        return attr
-            .parse_args_with(
-                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
-            )
-            .map(|metas| cfg_attr_matches(&metas));
-    }
-
-    Ok(CfgMatch::Enabled)
-}
-
-fn cfg_attr_matches(
-    metas: &syn::punctuated::Punctuated<syn::Meta, syn::Token![,]>,
-) -> CfgMatch {
-    let mut metas = metas.iter();
-    let Some(predicate) = metas.next() else {
-        return CfgMatch::Enabled;
-    };
-
-    match cfg_meta_matches(predicate) {
-        CfgMatch::Enabled => metas.fold(CfgMatch::Enabled, |state, meta| {
-            state.and(cfg_control_meta_matches(meta))
-        }),
-        CfgMatch::Disabled => CfgMatch::Enabled,
-        CfgMatch::Unknown => {
-            if metas.any(cfg_control_meta_affects_presence) {
-                CfgMatch::Unknown
-            } else {
-                CfgMatch::Enabled
-            }
-        }
-    }
-}
-
-fn cfg_control_meta_matches(meta: &syn::Meta) -> CfgMatch {
-    match meta {
-        syn::Meta::List(list) if list.path.is_ident("cfg") => list
-            .parse_args::<syn::Meta>()
-            .map(|meta| cfg_meta_matches(&meta))
-            .unwrap_or(CfgMatch::Unknown),
-        syn::Meta::List(list) if list.path.is_ident("cfg_attr") => list
-            .parse_args_with(
-                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
-            )
-            .map(|metas| cfg_attr_matches(&metas))
-            .unwrap_or(CfgMatch::Unknown),
-        syn::Meta::Path(path) if path.is_ident("cfg") => CfgMatch::Unknown,
-        syn::Meta::NameValue(nv) if nv.path.is_ident("cfg") => cfg_name_value_matches(nv),
-        _ => CfgMatch::Enabled,
-    }
-}
-
-fn cfg_control_meta_affects_presence(meta: &syn::Meta) -> bool {
-    match meta {
-        syn::Meta::List(list) if list.path.is_ident("cfg") => true,
-        syn::Meta::Path(path) if path.is_ident("cfg") => true,
-        syn::Meta::NameValue(nv) if nv.path.is_ident("cfg") => true,
-        syn::Meta::List(list) if list.path.is_ident("cfg_attr") => list
-            .parse_args_with(
-                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
-            )
-            .map(|metas| metas.iter().skip(1).any(cfg_control_meta_affects_presence))
-            .unwrap_or(true),
-        _ => false,
-    }
-}
-
-fn cfg_meta_matches(meta: &syn::Meta) -> CfgMatch {
-    match meta {
-        syn::Meta::Path(path) => cfg_flag_matches(&path_tail(path)),
-        syn::Meta::NameValue(nv) => cfg_name_value_matches(nv),
-        syn::Meta::List(list) => cfg_meta_list_matches(list),
-    }
-}
-
-fn cfg_meta_list_matches(list: &syn::MetaList) -> CfgMatch {
-    let name = path_tail(&list.path);
-    let nested = list
-        .parse_args_with(
-            syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
-        )
-        .unwrap_or_default();
-    match name.as_str() {
-        "all" => nested.iter().fold(CfgMatch::Enabled, |state, meta| {
-            state.and(cfg_meta_matches(meta))
-        }),
-        "any" => nested.iter().fold(CfgMatch::Disabled, |state, meta| {
-            state.or(cfg_meta_matches(meta))
-        }),
-        "not" => nested
-            .first()
-            .map(|meta| cfg_meta_matches(meta).not())
-            .unwrap_or(CfgMatch::Disabled),
-        _ => CfgMatch::Unknown,
-    }
-}
-
-fn cfg_name_value_matches(nv: &syn::MetaNameValue) -> CfgMatch {
-    let name = path_tail(&nv.path);
-    let Some(value) = cfg_literal_value(&nv.value) else {
-        return CfgMatch::Unknown;
-    };
-
-    if name == "feature" {
-        return if std::env::var_os(feature_env_name(&value)).is_some() {
-            CfgMatch::Enabled
-        } else {
-            CfgMatch::Disabled
-        };
-    }
-
-    std::env::var(cfg_env_name(&name))
-        .map(|actual| actual.split(',').any(|candidate| candidate == value))
-        .map(|matches| {
-            if matches {
-                CfgMatch::Enabled
-            } else {
-                CfgMatch::Disabled
-            }
-        })
-        .unwrap_or(CfgMatch::Unknown)
-}
-
-fn cfg_flag_matches(name: &str) -> CfgMatch {
-    if std::env::var_os(cfg_env_name(name)).is_some() {
-        CfgMatch::Enabled
-    } else {
-        CfgMatch::Unknown
-    }
-}
-
-fn unsupported_cfg_error(attr: &syn::Attribute) -> syn::Error {
-    syn::Error::new_spanned(
-        attr,
-        "Anchor cannot safely evaluate this cfg during macro expansion; use a Cargo feature here or move the cfg outside the macro-generated item",
-    )
-}
-
-fn cfg_literal_value(expr: &Expr) -> Option<String> {
-    let Expr::Lit(syn::ExprLit { lit, .. }) = expr else {
-        return None;
-    };
-    match lit {
-        syn::Lit::Str(s) => Some(s.value()),
-        syn::Lit::Int(i) => Some(i.base10_digits().to_owned()),
-        syn::Lit::Bool(b) => Some(b.value.to_string()),
-        _ => None,
-    }
-}
-
-fn cfg_env_name(name: &str) -> String {
-    format!("CARGO_CFG_{}", env_key_fragment(name))
-}
-
-fn feature_env_name(feature: &str) -> String {
-    format!("CARGO_FEATURE_{}", env_key_fragment(feature))
-}
-
-fn env_key_fragment(value: &str) -> String {
-    value.replace('-', "_").to_ascii_uppercase()
-}
-
-fn path_tail(path: &syn::Path) -> String {
-    path.segments
-        .last()
-        .map(|segment| segment.ident.to_string())
-        .unwrap_or_default()
+fn has_cfg_attrs(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(is_cfg_control_attr)
 }
 
 fn cfg_field_dep_walkers(fields: &syn::Fields) -> Vec<TokenStream2> {
-    match fields {
-        syn::Fields::Named(named) => named
-            .named
-            .iter()
-            .map(|field| {
-                let ty = &field.ty;
-                let cfg_attrs = cfg_attrs(&field.attrs);
-                quote! {
-                    #(#cfg_attrs)*
-                    <#ty as anchor_lang_v2::IdlAccountType>::__register_idl_deps(accounts, types);
-                }
-            })
-            .collect(),
-        syn::Fields::Unnamed(unnamed) => unnamed
-            .unnamed
-            .iter()
-            .map(|field| {
-                let ty = &field.ty;
-                let cfg_attrs = cfg_attrs(&field.attrs);
-                quote! {
-                    #(#cfg_attrs)*
-                    <#ty as anchor_lang_v2::IdlAccountType>::__register_idl_deps(accounts, types);
-                }
-            })
-            .collect(),
-        syn::Fields::Unit => Vec::new(),
-    }
+    fields
+        .iter()
+        .map(|field| {
+            let ty = &field.ty;
+            let cfg_attrs = cfg_attrs(&field.attrs);
+            quote! {
+                #(#cfg_attrs)*
+                <#ty as anchor_lang_v2::IdlAccountType>::__register_idl_deps(accounts, types);
+            }
+        })
+        .collect()
 }
 
 fn cfg_variant_dep_walkers(
@@ -4554,13 +4293,12 @@ fn extract_result_return_type(output: &syn::ReturnType) -> syn::Result<Option<Ty
 fn process_handler(
     handler: &syn::ItemFn,
     mod_name: &Ident,
-    use_byte_disc: bool,
     discrim_bytes: Option<&[u8]>,
     program_id: &Expr,
 ) -> HandlerCodegen {
     let fn_name = &handler.sig.ident;
     let fn_name_str = fn_name.to_string();
-    let cfg_attrs = cfg_attrs(&handler.attrs);
+    let handler_cfg_attrs = cfg_attrs(&handler.attrs);
     let return_type = match extract_result_return_type(&handler.sig.output) {
         Ok(return_ty) => return_ty,
         Err(err) => return HandlerCodegen::error(handler, err),
@@ -4591,36 +4329,13 @@ fn process_handler(
     // user-specified executable dispatch, or 8-byte sha256 hash by default.
     use sha2::Digest;
     let hash = sha2::Sha256::digest(format!("global:{fn_name_str}").as_bytes());
-    let (disc_bytes_for_idl, disc_literal_bytes, disc_match_arm_pattern): (
-        Vec<u8>,
-        Vec<TokenStream2>,
-        TokenStream2,
-    ) = if let Some(discrim_bytes) = discrim_bytes {
+    let (disc_bytes_for_idl, disc_literal_bytes) = if let Some(discrim_bytes) = discrim_bytes {
         let lits: Vec<_> = discrim_bytes.iter().map(|b| quote! { #b }).collect();
-        let match_arm = if use_byte_disc {
-            let byte = discrim_bytes[0];
-            quote! { #byte }
-        } else if discrim_bytes.len() == 8 {
-            let disc_u64 = u64::from_le_bytes(
-                discrim_bytes
-                    .try_into()
-                    .expect("checked length before u64 conversion"),
-            );
-            quote! { #disc_u64 }
-        } else {
-            // Non-executable interface mode does not emit dispatch arms.
-            quote! { _ }
-        };
-        (discrim_bytes.to_vec(), lits, match_arm)
+        (discrim_bytes.to_vec(), lits)
     } else {
         let disc_bytes = &hash[..8];
-        let disc_u64 = u64::from_le_bytes(
-            disc_bytes
-                .try_into()
-                .expect("sha256[..8] is always 8 bytes"),
-        );
         let lits: Vec<_> = disc_bytes.iter().map(|b| quote! { #b }).collect();
-        (disc_bytes.to_vec(), lits, quote! { #disc_u64 })
+        (disc_bytes.to_vec(), lits)
     };
     let fn_name_log = format!("Instruction: {fn_name_str}");
 
@@ -4661,15 +4376,59 @@ fn process_handler(
     let extra_arg_types = &extra_arg_types;
 
     // Dispatch arm.
-    let dispatch_arm = quote! {
-        #(#cfg_attrs)*
-        #disc_match_arm_pattern => __handlers::#fn_name(__program_id, &mut __cursor, __ix_data, __num),
+    let dispatch_arm = if let Some(discrim_bytes) = discrim_bytes {
+        if discrim_bytes.len() == 1 {
+            let byte = discrim_bytes[0];
+            quote! {
+                #(#handler_cfg_attrs)*
+                if __ix_data_len >= 1 && *__ix_data_ptr == #byte {
+                    let __ix_data: &[u8] =
+                        ::core::slice::from_raw_parts(__ix_data_ptr.add(1), __ix_data_len - 1);
+                    return __handlers::#fn_name(__program_id, &mut __cursor, __ix_data, __num);
+                }
+            }
+        } else if discrim_bytes.len() == 8 {
+            let disc_u64 = u64::from_le_bytes(
+                discrim_bytes
+                    .try_into()
+                    .expect("checked length before u64 conversion"),
+            );
+            quote! {
+                #(#handler_cfg_attrs)*
+                if __ix_data_len >= 8
+                    && u64::from_le_bytes(*(__ix_data_ptr as *const [u8; 8])) == #disc_u64
+                {
+                    let __ix_data: &[u8] =
+                        ::core::slice::from_raw_parts(__ix_data_ptr.add(8), __ix_data_len - 8);
+                    return __handlers::#fn_name(__program_id, &mut __cursor, __ix_data, __num);
+                }
+            }
+        } else {
+            quote! {}
+        }
+    } else {
+        let disc_u64 = u64::from_le_bytes(
+            disc_bytes_for_idl
+                .as_slice()
+                .try_into()
+                .expect("sha256[..8] is always 8 bytes"),
+        );
+        quote! {
+            #(#handler_cfg_attrs)*
+            if __ix_data_len >= 8
+                && u64::from_le_bytes(*(__ix_data_ptr as *const [u8; 8])) == #disc_u64
+            {
+                let __ix_data: &[u8] =
+                    ::core::slice::from_raw_parts(__ix_data_ptr.add(8), __ix_data_len - 8);
+                return __handlers::#fn_name(__program_id, &mut __cursor, __ix_data, __num);
+            }
+        }
     };
 
     // Handler wrapper.
     let wrapper = if extra_arg_names.is_empty() {
         quote! {
-            #(#cfg_attrs)*
+            #(#handler_cfg_attrs)*
             #[inline(always)]
             pub fn #fn_name<'a>(
                 __program_id: &'a anchor_lang_v2::Address,
@@ -4706,7 +4465,7 @@ fn process_handler(
         let args_deser = emit_args_deser(&extra_args, "__Args", false);
         let deser_args = args_deser.deser;
         quote! {
-            #(#cfg_attrs)*
+            #(#handler_cfg_attrs)*
             #[inline(always)]
             pub fn #fn_name<'a>(
                 __program_id: &'a anchor_lang_v2::Address,
@@ -4765,16 +4524,16 @@ fn process_handler(
         (quote! {}, quote! {})
     };
     let instruction_struct = quote! {
-        #(#cfg_attrs)*
+        #(#handler_cfg_attrs)*
         #[derive(anchor_lang_v2::wincode::SchemaWrite)]
         pub struct #ix_struct_name #ix_lt_decl {
             #(pub #extra_arg_names: #extra_arg_types,)*
         }
-        #(#cfg_attrs)*
+        #(#handler_cfg_attrs)*
         impl #ix_lt_decl anchor_lang_v2::Discriminator for #ix_struct_name #ix_lt_use {
             const DISCRIMINATOR: &'static [u8] = &[#(#disc_literal_bytes),*];
         }
-        #(#cfg_attrs)*
+        #(#handler_cfg_attrs)*
         impl #ix_lt_decl anchor_lang_v2::InstructionData for #ix_struct_name #ix_lt_use {
             fn data(&self) -> alloc::vec::Vec<u8> {
                 let mut data = alloc::vec::Vec::with_capacity(256);
@@ -4788,7 +4547,7 @@ fn process_handler(
                 data
             }
         }
-        #(#cfg_attrs)*
+        #(#handler_cfg_attrs)*
         impl #ix_lt_decl #ix_struct_name #ix_lt_use {
             pub fn to_instruction(
                 self,
@@ -4844,7 +4603,7 @@ fn process_handler(
             (quote! {}, quote! {})
         };
         quote! {
-            #(#cfg_attrs)*
+            #(#handler_cfg_attrs)*
             pub fn #fn_name #lt_decl(
                 __ctx: anchor_lang_v2::CpiContext<'a, accounts::#accounts_ident<'a>>,
                 #(#extra_arg_names: #extra_arg_types,)*
@@ -4907,16 +4666,10 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
     };
 
     let mut handlers = Vec::new();
-    let mut active_handler_indices = Vec::new();
     let mut other_items = Vec::new();
     for item in content {
         if let syn::Item::Fn(func) = item {
             if matches!(&func.vis, syn::Visibility::Public(_)) {
-                match cfg_attrs_match(&func.attrs) {
-                    Ok(true) => active_handler_indices.push(handlers.len()),
-                    Ok(false) => {}
-                    Err(err) => return err.to_compile_error(),
-                }
                 handlers.push(func);
                 continue;
             }
@@ -4937,23 +4690,20 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
         Err(e) => return e.to_compile_error(),
     };
 
-    let active_handlers: Vec<&syn::ItemFn> = active_handler_indices
-        .iter()
-        .map(|&i| handlers[i])
-        .collect();
-    let active_discrim_attrs: Vec<Option<DiscrimAttr>> = active_handler_indices
-        .iter()
-        .map(|&i| discrim_attrs[i].clone())
-        .collect();
-
-    let has_any_discrim = active_discrim_attrs.iter().any(|d| d.is_some());
-    let has_all_discrim = active_discrim_attrs.iter().all(|d| d.is_some());
-    if config.mode == ProgramMode::Executable && has_any_discrim && !has_all_discrim {
+    let has_cfg_gated_handlers = handlers.iter().any(|handler| has_cfg_attrs(&handler.attrs));
+    let has_any_discrim = discrim_attrs.iter().any(|d| d.is_some());
+    let has_all_discrim = discrim_attrs.iter().all(|d| d.is_some());
+    if config.mode == ProgramMode::Executable
+        && has_any_discrim
+        && !has_all_discrim
+        && !has_cfg_gated_handlers
+    {
         // Point at the first handler missing #[discrim = N] for clarity.
-        let missing = active_handler_indices
+        let missing = handlers
             .iter()
-            .find(|&&i| discrim_attrs[i].is_none())
-            .map(|&i| handlers[i].sig.ident.span())
+            .zip(discrim_attrs.iter())
+            .find(|(_, d)| d.is_none())
+            .map(|(handler, _)| handler.sig.ident.span())
             .unwrap_or_else(proc_macro2::Span::call_site);
         return syn::Error::new(
             missing,
@@ -4961,15 +4711,14 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
         )
         .to_compile_error();
     }
-    let use_byte_disc = config.mode == ProgramMode::Executable && has_any_discrim;
 
     if config.mode == ProgramMode::Executable && has_any_discrim {
-        let mut seen: std::collections::HashMap<u8, proc_macro2::Span> =
-            std::collections::HashMap::new();
-        for &i in &active_handler_indices {
-            let d = discrim_attrs[i]
-                .as_ref()
-                .expect("all-or-nothing discrim check guarantees every entry is Some");
+        let mut seen = (!has_cfg_gated_handlers)
+            .then(std::collections::HashMap::<u8, proc_macro2::Span>::new);
+        for (i, d) in discrim_attrs.iter().enumerate() {
+            let Some(d) = d.as_ref() else {
+                continue;
+            };
             if d.bytes.len() != 1 {
                 return syn::Error::new(
                     d.span,
@@ -4980,21 +4729,21 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
             }
             let byte = d.bytes[0];
             let span = d.span;
-            if let Some(_first_span) = seen.insert(byte, span) {
-                return syn::Error::new(
-                    span,
-                    format!(
-                        "duplicate `#[discrim = {}]` on instruction `{}`",
-                        byte, handlers[i].sig.ident
-                    ),
-                )
-                .to_compile_error();
+            if let Some(seen) = &mut seen {
+                if let Some(_first_span) = seen.insert(byte, span) {
+                    return syn::Error::new(
+                        span,
+                        format!(
+                            "duplicate `#[discrim = {}]` on instruction `{}`",
+                            byte, handlers[i].sig.ident
+                        ),
+                    )
+                    .to_compile_error();
+                }
             }
         }
-    } else if config.mode == ProgramMode::Interface {
-        if let Err(err) =
-            validate_instruction_discriminator_prefixes(&active_handlers, &active_discrim_attrs)
-        {
+    } else if config.mode == ProgramMode::Interface && !has_cfg_gated_handlers {
+        if let Err(err) = validate_instruction_discriminator_prefixes(&handlers, &discrim_attrs) {
             return err.to_compile_error();
         }
     }
@@ -5010,7 +4759,6 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
             process_handler(
                 h,
                 mod_name,
-                use_byte_disc,
                 discrim_attrs[i].as_deref(),
                 &config.program_id,
             )
@@ -5026,10 +4774,6 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
     let dispatch_arms: Vec<_> = codegen.iter().map(|c| &c.dispatch_arm).collect();
     let handler_wrappers: Vec<_> = codegen.iter().map(|c| &c.wrapper).collect();
     let instruction_structs: Vec<_> = codegen.iter().map(|c| &c.instruction_struct).collect();
-    let active_codegen: Vec<&HandlerCodegen> = active_handler_indices
-        .iter()
-        .map(|&i| &codegen[i])
-        .collect();
     // Dedupe `accounts` re-exports: multiple handlers sharing the same
     // Accounts struct would otherwise emit duplicate `pub use` statements.
     let accounts_reexports: Vec<_> = {
@@ -5126,88 +4870,6 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
         })
         .collect();
 
-    // Generate disc parsing code based on mode.
-    // Returns u64 error code on failure (not Err) since __anchor_dispatch
-    // returns u64 directly.
-    // Build a const expression for the minimum ix_data length across all
-    // instructions: disc_size + min(serialized args size per ix). Uses a
-    // per-argument scalar-size sum only when ALL args are owned fixed-size
-    // primitives (no references, no dynamic-size). Falls back to 0 for
-    // instructions with references or complex types.
-    fn is_fixed_size_primitive(ty: &syn::Type) -> bool {
-        match ty {
-            syn::Type::Path(p) if p.path.segments.len() == 1 => {
-                let name = p.path.segments[0].ident.to_string();
-                matches!(
-                    name.as_str(),
-                    "u8" | "u16"
-                        | "u32"
-                        | "u64"
-                        | "u128"
-                        | "i8"
-                        | "i16"
-                        | "i32"
-                        | "i64"
-                        | "i128"
-                        | "bool"
-                )
-            }
-            _ => false,
-        }
-    }
-    let active_ix_arg_types: Vec<_> = active_codegen.iter().map(|c| &c.arg_types).collect();
-    let min_args_size_expr = if active_ix_arg_types.is_empty() {
-        quote! { 0usize }
-    } else {
-        let per_ix_sizes: Vec<_> = active_ix_arg_types
-            .iter()
-            .map(|types| {
-                if types.is_empty() || !types.iter().all(is_fixed_size_primitive) {
-                    quote! { 0usize }
-                } else {
-                    quote! { 0usize #( + core::mem::size_of::<#types>() )* }
-                }
-            })
-            .collect();
-        quote! { {
-            const __SIZES: &[usize] = &[#(#per_ix_sizes),*];
-            const fn __const_min(s: &[usize]) -> usize {
-                let mut m = s[0];
-                let mut i = 1;
-                while i < s.len() { if s[i] < m { m = s[i]; } i += 1; }
-                m
-            }
-            __const_min(__SIZES)
-        } }
-    };
-    let disc_size: usize = if use_byte_disc { 1 } else { 8 };
-
-    let disc_parse = if use_byte_disc {
-        quote! {
-            const __MIN_IX_DATA_LEN: usize = #disc_size + #min_args_size_expr;
-            if __ix_data_len < __MIN_IX_DATA_LEN {
-                return anchor_lang_v2::Error::from(
-                    anchor_lang_v2::ErrorCode::InstructionFallbackNotFound,
-                ).into();
-            }
-            let __disc: u8 = *__ix_data_ptr;
-            let __ix_data: &[u8] =
-                ::core::slice::from_raw_parts(__ix_data_ptr.add(1), __ix_data_len - 1);
-        }
-    } else {
-        quote! {
-            if __ix_data_len < 8 {
-                return anchor_lang_v2::Error::from(
-                    anchor_lang_v2::ErrorCode::InstructionFallbackNotFound,
-                ).into();
-            }
-            let __disc: u64 = u64::from_le_bytes(
-                *(__ix_data_ptr as *const [u8; 8])
-            );
-            let __ix_data: &[u8] =
-                ::core::slice::from_raw_parts(__ix_data_ptr.add(8), __ix_data_len - 8);
-        }
-    };
     let event_cpi_dispatch = quote! {
         // Reserve the full event-CPI tag before user dispatch. A custom
         // 1-byte discriminator can overlap the first tag byte, but it
@@ -5428,18 +5090,12 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
             let __num = *(__input as *const u64) as usize;
             #event_cpi_dispatch
 
-            // Parse the discriminator.
-            #disc_parse
-
             let mut __cursor = anchor_lang_v2::AccountCursor::new(__input, __lookup);
 
-            // Each dispatch arm returns u64 directly (0 = success).
-            match __disc {
-                #(#dispatch_arms)*
-                _ => anchor_lang_v2::Error::from(
-                    anchor_lang_v2::ErrorCode::InstructionFallbackNotFound,
-                ).into(),
-            }
+            #(#dispatch_arms)*
+            anchor_lang_v2::Error::from(
+                anchor_lang_v2::ErrorCode::InstructionFallbackNotFound,
+            ).into()
         }
 
         mod __handlers {
@@ -6555,7 +6211,7 @@ mod tests {
         let mod_name: syn::Ident = syn::parse_quote!(my_program);
         let program_id: syn::Expr = syn::parse_quote!(crate::ID);
 
-        let generated = process_handler(&handler, &mod_name, false, None, &program_id);
+        let generated = process_handler(&handler, &mod_name, None, &program_id);
         let wrapper = generated.wrapper.to_string();
 
         assert!(

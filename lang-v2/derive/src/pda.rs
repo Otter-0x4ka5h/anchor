@@ -52,19 +52,12 @@ fn try_discover_program_id() -> Option<[u8; 32]> {
 
     for item in &file.items {
         if let syn::Item::Macro(item_macro) = item {
-            let Some(cfg_matches) =
-                crate::cfg_attrs_match_if_known(&item_macro.attrs).ok()?
-            else {
-                // If we can't prove which `declare_id!` is active, disable
-                // compile-time PDA precomputation and fall back to runtime.
-                return None;
-            };
-            if !cfg_matches {
-                continue;
-            }
             let last = item_macro.mac.path.segments.last()?;
             if last.ident != "declare_id" {
                 continue;
+            }
+            if crate::has_cfg_attrs(&item_macro.attrs) {
+                return None;
             }
             let lit: syn::LitStr = syn::parse2(item_macro.mac.tokens.clone()).ok()?;
             let decoded = bs58::decode(lit.value()).into_vec().ok()?;
@@ -267,10 +260,9 @@ mod tests {
     }
 
     #[test]
-     fn discover_program_id_ignores_cfg_disabled_declarations() {
-         let _guard = ENV_LOCK.lock().unwrap();
-         let original_manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR");
-        let disabled_feature = "CARGO_FEATURE_DISABLED";
+    fn discover_program_id_falls_back_for_cfg_gated_declarations() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let original_manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR");
         let temp_root = std::env::temp_dir().join(format!(
             "anchor-derive-pda-cfg-{}-{}",
             std::process::id(),
@@ -293,16 +285,9 @@ declare_id!("So11111111111111111111111111111111111111112");
         .unwrap();
 
         std::env::set_var("CARGO_MANIFEST_DIR", &temp_root);
-        std::env::remove_var(disabled_feature);
         CACHED_PROGRAM_ID.with(|cell| *cell.borrow_mut() = None);
 
-        let discovered = discover_program_id().expect("expected enabled declare_id! to be used");
-        let expected = bs58::decode("So11111111111111111111111111111111111111112")
-            .into_vec()
-            .expect("valid base58");
-        let mut expected_arr = [0_u8; 32];
-        expected_arr.copy_from_slice(&expected);
-        assert_eq!(discovered, expected_arr);
+        assert_eq!(discover_program_id(), None);
 
         CACHED_PROGRAM_ID.with(|cell| *cell.borrow_mut() = None);
         if let Some(value) = original_manifest_dir {
@@ -314,10 +299,9 @@ declare_id!("So11111111111111111111111111111111111111112");
     }
 
     #[test]
-    fn discover_program_id_ignores_cfg_attr_disabled_declarations() {
+    fn discover_program_id_falls_back_for_cfg_attr_gated_declarations() {
         let _guard = ENV_LOCK.lock().unwrap();
         let original_manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR");
-        let enabled_feature = "CARGO_FEATURE_ENABLED";
         let temp_root = std::env::temp_dir().join(format!(
             "anchor-derive-pda-cfg-attr-{}-{}",
             std::process::id(),
@@ -340,16 +324,9 @@ declare_id!("So11111111111111111111111111111111111111112");
         .unwrap();
 
         std::env::set_var("CARGO_MANIFEST_DIR", &temp_root);
-        std::env::remove_var(enabled_feature);
         CACHED_PROGRAM_ID.with(|cell| *cell.borrow_mut() = None);
 
-        let discovered = discover_program_id().expect("expected enabled declare_id! to be used");
-        let expected = bs58::decode("So11111111111111111111111111111111111111112")
-            .into_vec()
-            .expect("valid base58");
-        let mut expected_arr = [0_u8; 32];
-        expected_arr.copy_from_slice(&expected);
-        assert_eq!(discovered, expected_arr);
+        assert_eq!(discover_program_id(), None);
 
         CACHED_PROGRAM_ID.with(|cell| *cell.borrow_mut() = None);
         if let Some(value) = original_manifest_dir {
