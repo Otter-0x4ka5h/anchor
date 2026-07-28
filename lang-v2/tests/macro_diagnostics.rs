@@ -459,11 +459,11 @@ mod tests {
 
     #[test]
     fn cfg_disabled_members_are_filtered() {
-        let account_json = <CfgAccount as IdlAccountType>::__IDL_TYPE_DEF.unwrap();
+        let account_json = <CfgAccount as IdlAccountType>::__idl_type_def().unwrap();
         assert!(account_json.contains("\"always\""));
         assert!(!account_json.contains("\"hidden\""));
 
-        let event_json = <CfgEvent as IdlAccountType>::__IDL_TYPE_DEF.unwrap();
+        let event_json = <CfgEvent as IdlAccountType>::__idl_type_def().unwrap();
         assert!(event_json.contains("\"always\""));
         assert!(!event_json.contains("\"hidden\""));
 
