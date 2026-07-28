@@ -102,7 +102,9 @@ impl<'a, T: ToCpiAccounts<'a>> CpiContext<'a, T> {
             };
 
             if account.is_writable {
-                handle.account_view().check_borrow_mut()?;
+                if handle.requires_borrow_check() {
+                    handle.account_view().check_borrow_mut()?;
+                }
             } else {
                 handle.account_view().check_borrow()?;
             }

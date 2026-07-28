@@ -2,6 +2,7 @@
 
 use {
     anchor_lang_v2::{
+        accounts::Account,
         prelude::BorshAccount,
         solana_program::{
             instruction::{AccountMeta, Instruction},
@@ -12,6 +13,7 @@ use {
         Address, AnchorAccount, CpiContext, CpiHandle, CpiHandleMut, Discriminator, Owner,
         ToCpiAccounts, ToCpiHandle, ToCpiHandleMut,
     },
+    bytemuck::{Pod, Zeroable},
     solana_program_error::ProgramError,
 };
 
@@ -34,6 +36,20 @@ struct OptionalCpi<'a> {
     optional: Option<CpiHandle<'a>>,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct PodCounter {
+    value: u64,
+}
+
+impl Owner for PodCounter {
+    const OWNER: Address = Address::new_from_array(PROGRAM_ID);
+}
+
+impl Discriminator for PodCounter {
+    const DISCRIMINATOR: &'static [u8] = &[0x4c, 0xde, 0x7f, 0x28, 0x61, 0x2f, 0x07, 0x73];
+}
+
 #[derive(SchemaRead, SchemaWrite, Default, Clone, PartialEq, Debug)]
 struct BorshCounter {
     value: u64,
@@ -50,6 +66,27 @@ impl Discriminator for BorshCounter {
 fn account_view(address: [u8; 32], writable: bool) -> AccountBuffer<{ MIN_ACCOUNT_BUF + 8 }> {
     let buffer = AccountBuffer::new();
     buffer.init(address, [9; 32], 8, false, writable, false);
+    buffer
+}
+
+fn slab_account_view(
+    address: [u8; 32],
+    writable: bool,
+    value: u64,
+) -> AccountBuffer<{ MIN_ACCOUNT_BUF + 8 }> {
+    let buffer = AccountBuffer::new();
+    buffer.init(
+        address,
+        PROGRAM_ID,
+        8 + core::mem::size_of::<PodCounter>(),
+        false,
+        writable,
+        false,
+    );
+    let mut data = [0u8; 16];
+    data[..8].copy_from_slice(PodCounter::DISCRIMINATOR);
+    data[8..16].copy_from_slice(&value.to_le_bytes());
+    buffer.write_data(&data);
     buffer
 }
 
@@ -321,6 +358,21 @@ fn cpi_context_invoke_rejects_live_borrow_for_writable_meta() {
 }
 
 #[test]
+fn cpi_context_invoke_accepts_mutable_slab_handle() {
+    let program = ID;
+    let buffer = slab_account_view([1; 32], true, 9);
+    let view = unsafe { buffer.view() };
+    let mut acct = unsafe { Account::<PodCounter>::load_mut(view) }.unwrap();
+    let accounts = WritableCpi {
+        account: acct.cpi_handle_mut(),
+    };
+
+    CpiContext::new(&program, accounts)
+        .invoke(&[1, 2, 3])
+        .unwrap();
+}
+
+#[test]
 fn invoke_ix_rejects_live_borrow_for_writable_meta() {
     let program = ID;
     let buffer = account_view([1; 32], true);
@@ -342,6 +394,25 @@ fn invoke_ix_rejects_live_borrow_for_writable_meta() {
         .unwrap_err();
 
     assert_eq!(err, ProgramError::AccountBorrowFailed);
+}
+
+#[test]
+fn invoke_ix_accepts_mutable_slab_handle() {
+    let program = ID;
+    let buffer = slab_account_view([1; 32], true, 9);
+    let view = unsafe { buffer.view() };
+    let mut acct = unsafe { Account::<PodCounter>::load_mut(view) }.unwrap();
+    let address = *acct.address();
+    let accounts = WritableCpi {
+        account: acct.cpi_handle_mut(),
+    };
+    let ix = Instruction {
+        program_id: program,
+        accounts: vec![AccountMeta::new(address, false)],
+        data: vec![],
+    };
+
+    CpiContext::new(&program, accounts).invoke_ix(ix).unwrap();
 }
 
 #[test]

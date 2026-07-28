@@ -811,6 +811,12 @@ where
     fn account(&self) -> &AccountView {
         &self.view
     }
+
+    #[inline(always)]
+    fn try_cpi_handle_mut(&mut self) -> Result<crate::CpiHandleMut<'_>, ProgramError> {
+        require!(self.account().is_writable(), ProgramError::InvalidArgument);
+        Ok(crate::CpiHandleMut::without_borrow_check(self.account()))
+    }
 }
 
 impl<H, T> crate::AccountClose for Slab<H, T>
