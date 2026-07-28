@@ -3,11 +3,13 @@
 use {
     anchor_lang_v2::{
         accounts::Account,
+        prelude::BorshAccount,
         solana_program::{
             instruction::{AccountMeta, Instruction},
             program,
         },
         testing::{AccountBuffer, MIN_ACCOUNT_BUF},
+        wincode::{SchemaRead, SchemaWrite},
         Address, AnchorAccount, CpiContext, CpiHandle, CpiHandleMut, Discriminator, Owner,
         ToCpiAccounts, ToCpiHandle, ToCpiHandleMut,
     },
@@ -48,6 +50,19 @@ impl Discriminator for PodCounter {
     const DISCRIMINATOR: &'static [u8] = &[0x4c, 0xde, 0x7f, 0x28, 0x61, 0x2f, 0x07, 0x73];
 }
 
+#[derive(SchemaRead, SchemaWrite, Default, Clone, PartialEq, Debug)]
+struct BorshCounter {
+    value: u64,
+}
+
+impl Owner for BorshCounter {
+    const OWNER: Address = Address::new_from_array(PROGRAM_ID);
+}
+
+impl Discriminator for BorshCounter {
+    const DISCRIMINATOR: &'static [u8] = &[0xff, 0xb0, 0x04, 0xf5, 0xbc, 0xfd, 0x7c, 0x19];
+}
+
 fn account_view(address: [u8; 32], writable: bool) -> AccountBuffer<{ MIN_ACCOUNT_BUF + 8 }> {
     let buffer = AccountBuffer::new();
     buffer.init(address, [9; 32], 8, false, writable, false);
@@ -72,6 +87,17 @@ fn slab_account_view(
     data[..8].copy_from_slice(PodCounter::DISCRIMINATOR);
     data[8..16].copy_from_slice(&value.to_le_bytes());
     buffer.write_data(&data);
+    buffer
+}
+
+fn borsh_account_view(address: [u8; 32], writable: bool, value: u64) -> AccountBuffer<256> {
+    let buffer = AccountBuffer::new();
+    buffer.init(address, PROGRAM_ID, 16, false, writable, false);
+    let mut data = [0u8; 16];
+    data[..8].copy_from_slice(BorshCounter::DISCRIMINATOR);
+    data[8..16].copy_from_slice(&value.to_le_bytes());
+    buffer.write_data(&data);
+    buffer.set_lamports(1_000_000_000);
     buffer
 }
 
@@ -299,7 +325,9 @@ fn cpi_context_invoke_accepts_mutable_slab_handle() {
         account: acct.cpi_handle_mut(),
     };
 
-    CpiContext::new(&program, accounts).invoke(&[1, 2, 3]).unwrap();
+    CpiContext::new(&program, accounts)
+        .invoke(&[1, 2, 3])
+        .unwrap();
 }
 
 #[test]
@@ -343,6 +371,50 @@ fn invoke_ix_accepts_mutable_slab_handle() {
     };
 
     CpiContext::new(&program, accounts).invoke_ix(ix).unwrap();
+}
+
+#[test]
+fn cpi_context_invoke_accepts_mutable_borsh_handle() {
+    let program = ID;
+    let buffer = borsh_account_view([1; 32], true, 9);
+    let view = unsafe { buffer.view() };
+    let mut acct = unsafe { BorshAccount::<BorshCounter>::load_mut(view) }.unwrap();
+
+    {
+        let accounts = WritableCpi {
+            account: acct.cpi_handle_mut(),
+        };
+        CpiContext::new(&program, accounts)
+            .invoke(&[1, 2, 3])
+            .unwrap();
+    }
+
+    acct.value = 11;
+    assert_eq!(acct.value, 11);
+}
+
+#[test]
+fn invoke_ix_accepts_mutable_borsh_handle() {
+    let program = ID;
+    let buffer = borsh_account_view([1; 32], true, 9);
+    let view = unsafe { buffer.view() };
+    let mut acct = unsafe { BorshAccount::<BorshCounter>::load_mut(view) }.unwrap();
+    let address = *acct.address();
+
+    {
+        let accounts = WritableCpi {
+            account: acct.cpi_handle_mut(),
+        };
+        let ix = Instruction {
+            program_id: program,
+            accounts: vec![AccountMeta::new(address, false)],
+            data: vec![],
+        };
+        CpiContext::new(&program, accounts).invoke_ix(ix).unwrap();
+    }
+
+    acct.value = 11;
+    assert_eq!(acct.value, 11);
 }
 
 #[test]

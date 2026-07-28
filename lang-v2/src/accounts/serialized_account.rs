@@ -84,6 +84,27 @@ where
     T: Owner + Discriminator,
     S: AnchorAccountSerialize<T>,
 {
+    #[inline(always)]
+    fn finish_cpi_borrow(&mut self) -> Result<(), ProgramError> {
+        if matches!(self.borrow, SerializedAccountBorrow::Mutable { .. }) {
+            return Ok(());
+        }
+
+        self.reacquire_borrow_mut()
+    }
+
+    #[inline(always)]
+    unsafe fn release_cpi_borrow_erased(state: *mut ()) -> Result<(), ProgramError> {
+        let account = unsafe { &mut *(state as *mut Self) };
+        account.release_borrow()
+    }
+
+    #[inline(always)]
+    unsafe fn reacquire_cpi_borrow_erased(state: *mut ()) -> Result<(), ProgramError> {
+        let account = unsafe { &mut *(state as *mut Self) };
+        account.finish_cpi_borrow()
+    }
+
     /// Returns the account's on-chain address. Inherent method so
     /// `.address()` works uniformly on all wrapper types — `Signer`,
     /// `Account<T>`, `BorshAccount<T>`, `UncheckedAccount`, etc. — without
@@ -270,6 +291,20 @@ where
 
     fn account(&self) -> &AccountView {
         &self.view
+    }
+
+    #[inline(always)]
+    fn try_cpi_handle_mut(&mut self) -> Result<crate::CpiHandleMut<'_>, ProgramError> {
+        let state = core::ptr::from_mut(self).cast::<()>();
+        let view = self.account();
+        require!(view.is_writable(), ProgramError::InvalidArgument);
+        Ok(crate::CpiHandleMut::with_borrow_hook(
+            view,
+            true,
+            state,
+            Self::release_cpi_borrow_erased,
+            Self::reacquire_cpi_borrow_erased,
+        ))
     }
 
     fn close(&mut self, mut destination: AccountView) -> pinocchio::ProgramResult {

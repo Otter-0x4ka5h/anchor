@@ -23,6 +23,17 @@ pub struct CpiHandle<'a> {
     view: &'a AccountView,
     writable: bool,
     borrow_check: bool,
+    borrow_hook: CpiBorrowHook,
+}
+
+#[derive(Clone, Copy)]
+enum CpiBorrowHook {
+    None,
+    Release {
+        state: *mut (),
+        release: unsafe fn(*mut ()) -> ProgramResult,
+        reacquire: unsafe fn(*mut ()) -> ProgramResult,
+    },
 }
 
 /// Typed mutable CPI handle for API-facing CPI account structs.
@@ -41,6 +52,7 @@ impl<'a> CpiHandle<'a> {
             view,
             writable: false,
             borrow_check: true,
+            borrow_hook: CpiBorrowHook::None,
         }
     }
 
@@ -50,14 +62,21 @@ impl<'a> CpiHandle<'a> {
     }
 
     #[inline(always)]
-    pub(crate) fn writable_with_borrow_check(
+    pub(crate) fn writable_with_borrow_check(view: &'a AccountView, borrow_check: bool) -> Self {
+        Self::writable_with_borrow_hook(view, borrow_check, CpiBorrowHook::None)
+    }
+
+    #[inline(always)]
+    fn writable_with_borrow_hook(
         view: &'a AccountView,
         borrow_check: bool,
+        borrow_hook: CpiBorrowHook,
     ) -> Self {
         Self {
             view,
             writable: true,
             borrow_check,
+            borrow_hook,
         }
     }
 
@@ -96,6 +115,24 @@ impl<'a> CpiHandle<'a> {
     pub(crate) fn requires_borrow_check(&self) -> bool {
         self.borrow_check
     }
+
+    #[inline(always)]
+    pub(crate) fn prepare_borrow_for_cpi(&self) -> ProgramResult {
+        match self.borrow_hook {
+            CpiBorrowHook::None => Ok(()),
+            CpiBorrowHook::Release { state, release, .. } => unsafe { release(state) },
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn finish_borrow_after_cpi(&self) -> ProgramResult {
+        match self.borrow_hook {
+            CpiBorrowHook::None => Ok(()),
+            CpiBorrowHook::Release {
+                state, reacquire, ..
+            } => unsafe { reacquire(state) },
+        }
+    }
 }
 
 impl<'a> CpiHandleMut<'a> {
@@ -112,6 +149,27 @@ impl<'a> CpiHandleMut<'a> {
     #[inline(always)]
     pub(crate) fn without_borrow_check(view: &'a AccountView) -> Self {
         Self::writable_with_borrow_check(view, false)
+    }
+
+    #[inline(always)]
+    pub(crate) fn with_borrow_hook(
+        view: &'a AccountView,
+        borrow_check: bool,
+        state: *mut (),
+        release: unsafe fn(*mut ()) -> ProgramResult,
+        reacquire: unsafe fn(*mut ()) -> ProgramResult,
+    ) -> Self {
+        Self {
+            handle: CpiHandle::writable_with_borrow_hook(
+                view,
+                borrow_check,
+                CpiBorrowHook::Release {
+                    state,
+                    release,
+                    reacquire,
+                },
+            ),
+        }
     }
 
     #[inline(always)]

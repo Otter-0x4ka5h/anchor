@@ -39,12 +39,16 @@ pub fn invoke_signed<'a, 'seeds>(
     signer_seeds: &'seeds [&'seeds [&'seeds [u8]]],
 ) -> ProgramResult {
     validate_handles(instruction, account_handles)?;
-    validate_handle_borrows(instruction, account_handles)?;
+    let prepared = prepare_handle_borrows(instruction, account_handles)?;
 
     // SAFETY: Validation above proves every non-sentinel instruction account
     // has a matching handle, writable metas use writable handles, and
     // AccountView borrow state permits the CPI.
-    unsafe { invoke_signed_unchecked(instruction, account_handles, signer_seeds) }
+    let invoke_result =
+        unsafe { invoke_signed_unchecked(instruction, account_handles, signer_seeds) };
+    let restore_result = restore_handle_borrows(prepared);
+
+    invoke_result.and(restore_result)
 }
 
 /// Invoke a cross-program instruction without borrow validation.
@@ -132,29 +136,57 @@ pub(crate) fn validate_handles(
     Ok(())
 }
 
-pub(crate) fn validate_handle_borrows(
-    instruction: &Instruction,
-    account_handles: &[CpiHandle<'_>],
+pub(crate) fn prepare_handle_borrow<'a>(
+    prepared: &mut Vec<CpiHandle<'a>>,
+    handle: &CpiHandle<'a>,
 ) -> ProgramResult {
+    handle.prepare_borrow_for_cpi()?;
+    prepared.push(*handle);
+    Ok(())
+}
+
+pub(crate) fn restore_handle_borrows<'a>(prepared: Vec<CpiHandle<'a>>) -> ProgramResult {
+    for handle in prepared.into_iter().rev() {
+        handle.finish_borrow_after_cpi()?;
+    }
+    Ok(())
+}
+
+pub(crate) fn prepare_handle_borrows<'a>(
+    instruction: &Instruction,
+    account_handles: &[CpiHandle<'a>],
+) -> Result<Vec<CpiHandle<'a>>, ProgramError> {
+    let mut prepared = Vec::new();
     let mut handle_index = 0;
 
-    for meta in &instruction.accounts {
-        if is_optional_account_sentinel(instruction, meta) {
-            continue;
+    let prepare_result: ProgramResult = (|| {
+        for meta in &instruction.accounts {
+            if is_optional_account_sentinel(instruction, meta) {
+                continue;
+            }
+
+            let Some(handle) = account_handles.get(handle_index) else {
+                return Err(ProgramError::NotEnoughAccountKeys);
+            };
+
+            if meta.is_writable {
+                prepare_handle_borrow(&mut prepared, handle)?;
+                if handle.requires_borrow_check() {
+                    handle.account_view().check_borrow_mut()?;
+                }
+            }
+
+            handle_index += 1;
         }
+        Ok(())
+    })();
 
-        let Some(handle) = account_handles.get(handle_index) else {
-            return Err(ProgramError::NotEnoughAccountKeys);
-        };
-
-        if meta.is_writable && handle.requires_borrow_check() {
-            handle.account_view().check_borrow_mut()?;
-        }
-
-        handle_index += 1;
+    if let Err(err) = prepare_result {
+        restore_handle_borrows(prepared)?;
+        return Err(err);
     }
 
-    Ok(())
+    Ok(prepared)
 }
 
 fn required_cpi_account_count(
