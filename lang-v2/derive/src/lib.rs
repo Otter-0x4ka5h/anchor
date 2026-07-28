@@ -4607,7 +4607,10 @@ fn process_handler(
                 },
             )
         } else {
-            (quote! {}, quote! {})
+            (
+                quote! { -> anchor_lang_v2::Result<()> },
+                quote! { Ok(()) },
+            )
         };
         quote! {
             #(#handler_cfg_attrs)*
