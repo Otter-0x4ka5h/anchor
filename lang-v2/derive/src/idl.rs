@@ -402,85 +402,6 @@ pub enum TypeKind {
     BytemuckRepr,
 }
 
-/// Pre-split IDL type strings emitted by the derive at macro-expansion time.
-///
-/// The runtime print test no longer parses JSON — it concatenates these
-/// strings directly. That lets `lang-v2` avoid a runtime `serde_json`
-/// dependency or local `idl-build` feature; derive output still emits
-/// `feature = "idl-build"` cfgs into user crates.
-#[allow(dead_code)]
-pub struct IdlTypeStrings {
-    /// `{"name":"X","discriminator":[…]}` for the program-level
-    /// `accounts[]` array (spec:137-140). `None` when the discriminator
-    /// is empty — i.e. plain `#[derive(IdlType)]` types that only
-    /// contribute to `types[]`.
-    pub account_entry: Option<String>,
-    /// `IdlTypeDef` JSON (spec:176-188) — `name`, optional `docs`, the
-    /// `serialization` / `repr` pair, and the inner `type` object. Never
-    /// carries `discriminator`; that field belongs only on the
-    /// accounts entry.
-    pub type_def: String,
-}
-
-/// Build pre-split IDL type strings from struct fields.
-///
-/// `kind` selects the `serialization` / `repr` metadata emitted onto the
-/// type definition. Zero-copy `#[account]` and `#[event(bytemuck)]` pass
-/// `TypeKind::BytemuckRepr`; borsh/wincode shapes pass `TypeKind::Borsh`
-/// (the default, which suppresses both fields).
-#[allow(dead_code)]
-pub fn build_type_strings(
-    name: &str,
-    disc: &[u8],
-    docs: &[String],
-    fields: &syn::punctuated::Punctuated<syn::Field, syn::token::Comma>,
-    kind: TypeKind,
-) -> IdlTypeStrings {
-    let mut type_def_obj = build_type_def_header(name, docs, kind);
-    let field_values: Vec<Value> = fields.iter().map(named_field_value).collect();
-    type_def_obj.insert(
-        "type".into(),
-        json!({ "kind": "struct", "fields": field_values }),
-    );
-    IdlTypeStrings {
-        account_entry: build_account_entry(name, disc),
-        type_def: Value::Object(type_def_obj).to_string(),
-    }
-}
-
-/// Build pre-split IDL type strings from enum variants. Matches the spec's
-/// `IdlTypeDefTy::Enum { variants }` shape (idl/spec/src/lib.rs:237-248).
-/// Each variant is emitted as `{"name": ..., "fields"?: ...}` where `fields`
-/// is either a named-field object array (struct-like variants), a tuple of
-/// types (tuple-like variants), or omitted entirely (unit variants) —
-/// consistent with `IdlDefinedFields`'s `#[serde(untagged)]` shape.
-///
-/// Only `TypeKind::Borsh` is really meaningful for enums today — bytemuck
-/// enums are rare. We accept the same `kind` parameter for shape symmetry
-/// with `build_type_strings`.
-#[allow(dead_code)]
-pub fn build_enum_type_strings(
-    name: &str,
-    disc: &[u8],
-    docs: &[String],
-    variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
-    kind: TypeKind,
-) -> IdlTypeStrings {
-    let mut type_def_obj = build_type_def_header(name, docs, kind);
-    let variant_values: Vec<Value> = variants
-        .iter()
-        .map(variant_value)
-        .collect();
-    type_def_obj.insert(
-        "type".into(),
-        json!({ "kind": "enum", "variants": variant_values }),
-    );
-    IdlTypeStrings {
-        account_entry: build_account_entry(name, disc),
-        type_def: Value::Object(type_def_obj).to_string(),
-    }
-}
-
 pub fn build_account_entry_string(name: &str, disc: &[u8]) -> Option<String> {
     build_account_entry(name, disc)
 }
@@ -568,7 +489,7 @@ fn type_def_header_prefix(name: &str, docs: &[String], kind: TypeKind, kind_name
 
 fn field_push_stmt(field: &syn::Field) -> TokenStream2 {
     let field_json = named_field_value(field).to_string();
-    let cfg_attrs = crate::cfg_eval::cfg_attrs(&field.attrs);
+    let cfg_attrs = crate::cfg_attrs(&field.attrs);
     quote! {
         #(#cfg_attrs)*
         __entries.push(#field_json);
@@ -577,37 +498,11 @@ fn field_push_stmt(field: &syn::Field) -> TokenStream2 {
 
 fn variant_push_stmt(variant: &syn::Variant) -> TokenStream2 {
     let variant_json = variant_value(variant).to_string();
-    let cfg_attrs = crate::cfg_eval::cfg_attrs(&variant.attrs);
+    let cfg_attrs = crate::cfg_attrs(&variant.attrs);
     quote! {
         #(#cfg_attrs)*
         __entries.push(#variant_json);
     }
-}
-
-/// Shared header construction for the `IdlTypeDef` payload. Emits
-/// `name`, optional `docs`, and the `serialization` / `repr` pair derived
-/// from `kind`. The caller appends the `type` object matching
-/// `IdlTypeDefTy::{Struct, Enum, Type}`. Notably *no* `discriminator` —
-/// that field only belongs on the accounts entry.
-#[allow(dead_code)]
-fn build_type_def_header(
-    name: &str,
-    docs: &[String],
-    kind: TypeKind,
-) -> serde_json::Map<String, Value> {
-    let mut out = serde_json::Map::new();
-    out.insert("name".into(), Value::String(name.to_owned()));
-    if !docs.is_empty() {
-        out.insert("docs".into(), docs_value(docs));
-    }
-    match kind {
-        TypeKind::Borsh => {}
-        TypeKind::BytemuckRepr => {
-            out.insert("serialization".into(), Value::String("bytemuck".into()));
-            out.insert("repr".into(), json!({ "kind": "c" }));
-        }
-    }
-    out
 }
 
 /// Build a named `IdlField` value — `{name, type, docs?}` — for a single

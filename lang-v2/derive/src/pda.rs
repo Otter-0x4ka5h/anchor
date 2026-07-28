@@ -53,7 +53,7 @@ fn try_discover_program_id() -> Option<[u8; 32]> {
     for item in &file.items {
         if let syn::Item::Macro(item_macro) = item {
             let Some(cfg_matches) =
-                crate::cfg_eval::cfg_attrs_match_if_known(&item_macro.attrs).ok()?
+                crate::cfg_attrs_match_if_known(&item_macro.attrs).ok()?
             else {
                 // If we can't prove which `declare_id!` is active, disable
                 // compile-time PDA precomputation and fall back to runtime.

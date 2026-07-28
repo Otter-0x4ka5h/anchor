@@ -1,7 +1,6 @@
 extern crate proc_macro;
 
 mod access_control;
-mod cfg_eval;
 mod constant;
 mod error_code;
 mod idl;
@@ -660,14 +659,186 @@ fn idl_field_ty(field: &parse::AccountField) -> Option<&Type> {
     field.idl_field_ty.as_ref()
 }
 
-fn cfg_filtered_fields(fields: &syn::Fields) -> syn::Result<syn::Fields> {
-    cfg_eval::filter_fields(fields)
+fn cfg_attrs(attrs: &[syn::Attribute]) -> Vec<syn::Attribute> {
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("cfg"))
+        .cloned()
+        .collect()
 }
 
-fn cfg_filtered_variants(
-    variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
-) -> syn::Result<syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>> {
-    cfg_eval::filter_variants(variants)
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CfgMatch {
+    Enabled,
+    Disabled,
+    Unknown,
+}
+
+impl CfgMatch {
+    fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Disabled, _) | (_, Self::Disabled) => Self::Disabled,
+            (Self::Unknown, _) | (_, Self::Unknown) => Self::Unknown,
+            (Self::Enabled, Self::Enabled) => Self::Enabled,
+        }
+    }
+
+    fn or(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Enabled, _) | (_, Self::Enabled) => Self::Enabled,
+            (Self::Unknown, _) | (_, Self::Unknown) => Self::Unknown,
+            (Self::Disabled, Self::Disabled) => Self::Disabled,
+        }
+    }
+
+    fn not(self) -> Self {
+        match self {
+            Self::Enabled => Self::Disabled,
+            Self::Disabled => Self::Enabled,
+            Self::Unknown => Self::Unknown,
+        }
+    }
+}
+
+fn cfg_attrs_match(attrs: &[syn::Attribute]) -> syn::Result<bool> {
+    let mut first_unknown = None;
+
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident("cfg")) {
+        match cfg_attr_matches(attr)? {
+            CfgMatch::Enabled => {}
+            CfgMatch::Disabled => return Ok(false),
+            CfgMatch::Unknown => {
+                first_unknown.get_or_insert(attr);
+            }
+        }
+    }
+
+    if let Some(attr) = first_unknown {
+        Err(unsupported_cfg_error(attr))
+    } else {
+        Ok(true)
+    }
+}
+
+fn cfg_attrs_match_if_known(attrs: &[syn::Attribute]) -> syn::Result<Option<bool>> {
+    let mut saw_unknown = false;
+
+    for attr in attrs.iter().filter(|attr| attr.path().is_ident("cfg")) {
+        match cfg_attr_matches(attr)? {
+            CfgMatch::Enabled => {}
+            CfgMatch::Disabled => return Ok(Some(false)),
+            CfgMatch::Unknown => saw_unknown = true,
+        }
+    }
+
+    Ok((!saw_unknown).then_some(true))
+}
+
+fn cfg_attr_matches(attr: &syn::Attribute) -> syn::Result<CfgMatch> {
+    attr.parse_args::<syn::Meta>()
+        .map(|meta| cfg_meta_matches(&meta))
+}
+
+fn cfg_meta_matches(meta: &syn::Meta) -> CfgMatch {
+    match meta {
+        syn::Meta::Path(path) => cfg_flag_matches(&path_tail(path)),
+        syn::Meta::NameValue(nv) => cfg_name_value_matches(nv),
+        syn::Meta::List(list) => cfg_meta_list_matches(list),
+    }
+}
+
+fn cfg_meta_list_matches(list: &syn::MetaList) -> CfgMatch {
+    let name = path_tail(&list.path);
+    let nested = list
+        .parse_args_with(
+            syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+        )
+        .unwrap_or_default();
+    match name.as_str() {
+        "all" => nested.iter().fold(CfgMatch::Enabled, |state, meta| {
+            state.and(cfg_meta_matches(meta))
+        }),
+        "any" => nested.iter().fold(CfgMatch::Disabled, |state, meta| {
+            state.or(cfg_meta_matches(meta))
+        }),
+        "not" => nested
+            .first()
+            .map(|meta| cfg_meta_matches(meta).not())
+            .unwrap_or(CfgMatch::Disabled),
+        _ => CfgMatch::Unknown,
+    }
+}
+
+fn cfg_name_value_matches(nv: &syn::MetaNameValue) -> CfgMatch {
+    let name = path_tail(&nv.path);
+    let Some(value) = cfg_literal_value(&nv.value) else {
+        return CfgMatch::Unknown;
+    };
+
+    if name == "feature" {
+        return if std::env::var_os(feature_env_name(&value)).is_some() {
+            CfgMatch::Enabled
+        } else {
+            CfgMatch::Disabled
+        };
+    }
+
+    std::env::var(cfg_env_name(&name))
+        .map(|actual| actual.split(',').any(|candidate| candidate == value))
+        .map(|matches| {
+            if matches {
+                CfgMatch::Enabled
+            } else {
+                CfgMatch::Disabled
+            }
+        })
+        .unwrap_or(CfgMatch::Unknown)
+}
+
+fn cfg_flag_matches(name: &str) -> CfgMatch {
+    if std::env::var_os(cfg_env_name(name)).is_some() {
+        CfgMatch::Enabled
+    } else {
+        CfgMatch::Unknown
+    }
+}
+
+fn unsupported_cfg_error(attr: &syn::Attribute) -> syn::Error {
+    syn::Error::new_spanned(
+        attr,
+        "Anchor cannot safely evaluate this cfg during macro expansion; use a Cargo feature here or move the cfg outside the macro-generated item",
+    )
+}
+
+fn cfg_literal_value(expr: &Expr) -> Option<String> {
+    let Expr::Lit(syn::ExprLit { lit, .. }) = expr else {
+        return None;
+    };
+    match lit {
+        syn::Lit::Str(s) => Some(s.value()),
+        syn::Lit::Int(i) => Some(i.base10_digits().to_owned()),
+        syn::Lit::Bool(b) => Some(b.value.to_string()),
+        _ => None,
+    }
+}
+
+fn cfg_env_name(name: &str) -> String {
+    format!("CARGO_CFG_{}", env_key_fragment(name))
+}
+
+fn feature_env_name(feature: &str) -> String {
+    format!("CARGO_FEATURE_{}", env_key_fragment(feature))
+}
+
+fn env_key_fragment(value: &str) -> String {
+    value.replace('-', "_").to_ascii_uppercase()
+}
+
+fn path_tail(path: &syn::Path) -> String {
+    path.segments
+        .last()
+        .map(|segment| segment.ident.to_string())
+        .unwrap_or_default()
 }
 
 fn cfg_field_dep_walkers(fields: &syn::Fields) -> Vec<TokenStream2> {
@@ -677,7 +848,7 @@ fn cfg_field_dep_walkers(fields: &syn::Fields) -> Vec<TokenStream2> {
             .iter()
             .map(|field| {
                 let ty = &field.ty;
-                let cfg_attrs = cfg_eval::cfg_attrs(&field.attrs);
+                let cfg_attrs = cfg_attrs(&field.attrs);
                 quote! {
                     #(#cfg_attrs)*
                     <#ty as anchor_lang_v2::IdlAccountType>::__register_idl_deps(accounts, types);
@@ -689,7 +860,7 @@ fn cfg_field_dep_walkers(fields: &syn::Fields) -> Vec<TokenStream2> {
             .iter()
             .map(|field| {
                 let ty = &field.ty;
-                let cfg_attrs = cfg_eval::cfg_attrs(&field.attrs);
+                let cfg_attrs = cfg_attrs(&field.attrs);
                 quote! {
                     #(#cfg_attrs)*
                     <#ty as anchor_lang_v2::IdlAccountType>::__register_idl_deps(accounts, types);
@@ -706,7 +877,7 @@ fn cfg_variant_dep_walkers(
     variants
         .iter()
         .map(|variant| {
-            let cfg_attrs = cfg_eval::cfg_attrs(&variant.attrs);
+            let cfg_attrs = cfg_attrs(&variant.attrs);
             let field_walkers = cfg_field_dep_walkers(&variant.fields);
             quote! {
                 #(#cfg_attrs)*
@@ -1946,22 +2117,17 @@ pub fn account(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .into()
         }
     };
-    let filtered_idl_fields = match cfg_filtered_fields(fields) {
-        Ok(fields) => fields,
-        Err(err) => return err.to_compile_error().into(),
-    };
-
     use sha2::Digest;
     let hash = sha2::Sha256::digest(format!("account:{name_str}").as_bytes());
     let disc_bytes = &hash[..8];
     let disc_literals: Vec<_> = disc_bytes.iter().map(|b| quote! { #b }).collect();
 
     let struct_docs = idl::extract_doc_lines(attrs);
-    if is_borsh {
-        if let Err(err) = reject_wincode_idl_overrides_in_fields("`#[account(borsh)]`", fields) {
-            return err.to_compile_error().into();
-        }
-    }
+    let idl_validation_tokens = if is_borsh {
+        wincode_idl_override_tokens_for_fields("`#[account(borsh)]`", fields)
+    } else {
+        Vec::new()
+    };
     // `#[account]` has two modes: default zero-copy (Pod + repr(C)) and opt-in
     // borsh (`#[account(borsh)]`). The borsh mode is implemented on top of
     // wincode + `BORSH_CONFIG`, which produces byte-identical output to a
@@ -2058,51 +2224,85 @@ pub fn account(attr: TokenStream, item: TokenStream) -> TokenStream {
             quote! {},
         )
     } else {
-        let field_types: Vec<_> = if let Fields::Named(named) = &filtered_idl_fields {
-            named.named.iter().map(|f| &f.ty).collect()
-        } else {
-            vec![]
-        };
-
         // Targeted diagnostics for common non-Pod field types. Emits a
         // `compile_error!` with a concrete suggestion instead of letting the
         // user hit an opaque `the trait bound Vec<u8>: Pod is not satisfied`.
         // Intentionally avoids recommending `#[account(borsh)]` — borsh is a
         // per-instruction serialization cost, rarely what the user actually
         // wants. The fix is almost always a Pod-compatible alternative.
-        let field_diagnostics: Vec<proc_macro2::TokenStream> =
-            if let Fields::Named(named) = &filtered_idl_fields {
-                named
-                    .named
-                    .iter()
-                    .filter_map(|f| {
-                        let fname = f.ident.as_ref()?.to_string();
-                        let msg = diagnose_non_pod_field(&f.ty, &fname, &name_str)?;
-                        let span = f.ty.span();
-                        Some(quote::quote_spanned!(span=> const _: () = { compile_error!(#msg); };))
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
+        let field_diagnostics: Vec<proc_macro2::TokenStream> = if let Fields::Named(named) = fields {
+            named
+                .named
+                .iter()
+                .filter_map(|field| {
+                    let field_name = field.ident.as_ref()?.to_string();
+                    let msg = diagnose_non_pod_field(&field.ty, &field_name, &name_str)?;
+                    let cfg_attrs = cfg_attrs(&field.attrs);
+                    let span = field.ty.span();
+                    Some(quote::quote_spanned!(span=>
+                        #(#cfg_attrs)*
+                        const _: () = { compile_error!(#msg); };
+                    ))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let field_pod_asserts: Vec<proc_macro2::TokenStream> = if let Fields::Named(named) = fields {
+            named
+                .named
+                .iter()
+                .map(|field| {
+                    let ty = &field.ty;
+                    let cfg_attrs = cfg_attrs(&field.attrs);
+                    quote! {
+                        #(#cfg_attrs)*
+                        const _: fn() = || {
+                            fn assert_pod<T: anchor_lang_v2::bytemuck::Pod>() {}
+                            assert_pod::<#ty>();
+                        };
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let field_size_steps: Vec<proc_macro2::TokenStream> = if let Fields::Named(named) = fields {
+            named
+                .named
+                .iter()
+                .map(|field| {
+                    let ty = &field.ty;
+                    let cfg_attrs = cfg_attrs(&field.attrs);
+                    quote! {
+                        #(#cfg_attrs)*
+                        {
+                            __size += core::mem::size_of::<#ty>();
+                        }
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         (
             quote! { #[derive(Clone, Copy)] #[repr(C)] },
             quote! {
                 #(#field_diagnostics)*
-
-                const _: fn() = || {
-                    fn assert_pod<T: anchor_lang_v2::bytemuck::Pod>() {}
-                    #( assert_pod::<#field_types>(); )*
-                };
+                #(#field_pod_asserts)*
                 // Verify no padding: struct size must equal sum of field sizes.
                 // repr(C) inserts padding between fields with different alignments
                 // (e.g. u8 followed by u64 → 7 bytes of padding). Padding bytes
                 // are uninitialized, violating Pod's all-bytes-initialized requirement.
-                const _: () = assert!(
-                    core::mem::size_of::<#name>() == 0 #(+ core::mem::size_of::<#field_types>())*,
-                    "account struct has padding bytes — reorder fields from largest to smallest alignment to eliminate padding (e.g. u64 before u32 before u8)"
-                );
+                const _: () = {
+                    let mut __size = 0usize;
+                    #(#field_size_steps)*
+                    assert!(
+                        core::mem::size_of::<#name>() == __size,
+                        "account struct has padding bytes — reorder fields from largest to smallest alignment to eliminate padding (e.g. u64 before u32 before u8)"
+                    );
+                };
                 unsafe impl anchor_lang_v2::bytemuck::Pod for #name {}
                 unsafe impl anchor_lang_v2::bytemuck::Zeroable for #name {}
             },
@@ -2114,6 +2314,7 @@ pub fn account(attr: TokenStream, item: TokenStream) -> TokenStream {
         #struct_attrs
         #vis struct #name #fields
 
+        #(#idl_validation_tokens)*
         #pod_impls
 
         impl anchor_lang_v2::Owner for #name {
@@ -2229,17 +2430,8 @@ pub fn derive_idl_type(input: TokenStream) -> TokenStream {
     // `IdlType` is layout-agnostic — users opt into Pod separately via
     // their own `bytemuck::Pod` derive if they need zero-copy. Forcing a
     // `"bytemuck"` tag here would lie in the IDL for non-Pod types.
-    let (idl_type_def, field_dep_walkers) = match &input.data {
+    let (idl_type_def, field_dep_walkers, idl_validation_tokens) = match &input.data {
         Data::Struct(data) => {
-            let filtered_fields = match cfg_filtered_fields(&data.fields) {
-                Ok(fields) => fields,
-                Err(err) => return err.to_compile_error().into(),
-            };
-            if let Err(err) =
-                reject_wincode_idl_overrides_in_fields("`#[derive(IdlType)]`", &filtered_fields)
-            {
-                return err.to_compile_error().into();
-            }
             (
                 idl::build_struct_type_def_emission(
                     &name_str,
@@ -2248,19 +2440,10 @@ pub fn derive_idl_type(input: TokenStream) -> TokenStream {
                     idl::TypeKind::Borsh,
                 ),
                 cfg_field_dep_walkers(&data.fields),
+                wincode_idl_override_tokens_for_fields("`#[derive(IdlType)]`", &data.fields),
             )
         }
         Data::Enum(data) => {
-            let filtered_variants = match cfg_filtered_variants(&data.variants) {
-                Ok(variants) => variants,
-                Err(err) => return err.to_compile_error().into(),
-            };
-            if let Err(err) = reject_wincode_idl_overrides_in_variants(
-                "`#[derive(IdlType)]`",
-                &filtered_variants,
-            ) {
-                return err.to_compile_error().into();
-            }
             (
                 idl::build_enum_type_def_emission(
                     &name_str,
@@ -2269,6 +2452,10 @@ pub fn derive_idl_type(input: TokenStream) -> TokenStream {
                     idl::TypeKind::Borsh,
                 ),
                 cfg_variant_dep_walkers(&data.variants),
+                wincode_idl_override_tokens_for_variants(
+                    "`#[derive(IdlType)]`",
+                    &data.variants,
+                ),
             )
         }
         Data::Union(_) => {
@@ -2289,6 +2476,7 @@ pub fn derive_idl_type(input: TokenStream) -> TokenStream {
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
     TokenStream::from(quote! {
+        #(#idl_validation_tokens)*
         #[cfg(feature = "idl-build")]
         #[doc(hidden)]
         impl #impl_generics anchor_lang_v2::IdlAccountType for #name #ty_generics #where_clause {
@@ -4176,25 +4364,6 @@ fn is_unit_type(ty: &Type) -> bool {
     matches!(ty, Type::Tuple(tuple) if tuple.elems.is_empty())
 }
 
-fn reject_wincode_idl_overrides_in_fields(surface: &str, fields: &syn::Fields) -> syn::Result<()> {
-    for field in fields.iter() {
-        if let Some(err) = unsupported_wincode_idl_attr_error(surface, &field.attrs) {
-            return Err(err);
-        }
-    }
-    Ok(())
-}
-
-fn reject_wincode_idl_overrides_in_variants(
-    surface: &str,
-    variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
-) -> syn::Result<()> {
-    for variant in variants {
-        reject_wincode_idl_overrides_in_fields(surface, &variant.fields)?;
-    }
-    Ok(())
-}
-
 fn unsupported_wincode_idl_attr_error(
     surface: &str,
     attrs: &[syn::Attribute],
@@ -4215,6 +4384,49 @@ fn unsupported_wincode_idl_attr_error(
         Ok(None) => None,
         Err(err) => Some(err),
     }
+}
+
+fn wincode_idl_override_tokens_for_fields(
+    surface: &str,
+    fields: &syn::Fields,
+) -> Vec<TokenStream2> {
+    fields
+        .iter()
+        .filter_map(|field| {
+            let err_tokens = unsupported_wincode_idl_attr_error(surface, &field.attrs)?
+                .to_compile_error();
+            let cfg_attrs = cfg_attrs(&field.attrs);
+            Some(quote! {
+                #(#cfg_attrs)*
+                const _: () = { #err_tokens };
+            })
+        })
+        .collect()
+}
+
+fn wincode_idl_override_tokens_for_variants(
+    surface: &str,
+    variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
+) -> Vec<TokenStream2> {
+    variants
+        .iter()
+        .flat_map(|variant| {
+            let variant_cfg_attrs = cfg_attrs(&variant.attrs);
+            variant
+                .fields
+                .iter()
+                .filter_map(move |field| {
+                    let err_tokens = unsupported_wincode_idl_attr_error(surface, &field.attrs)?
+                        .to_compile_error();
+                    let field_cfg_attrs = cfg_attrs(&field.attrs);
+                    Some(quote! {
+                        #(#variant_cfg_attrs)*
+                        #(#field_cfg_attrs)*
+                        const _: () = { #err_tokens };
+                    })
+                })
+        })
+        .collect()
 }
 
 fn extract_result_return_type(output: &syn::ReturnType) -> syn::Result<Option<Type>> {
@@ -4269,7 +4481,7 @@ fn process_handler(
 ) -> HandlerCodegen {
     let fn_name = &handler.sig.ident;
     let fn_name_str = fn_name.to_string();
-    let cfg_attrs = cfg_eval::cfg_attrs(&handler.attrs);
+    let cfg_attrs = cfg_attrs(&handler.attrs);
     let return_type = match extract_result_return_type(&handler.sig.output) {
         Ok(return_ty) => return_ty,
         Err(err) => return HandlerCodegen::error(handler, err),
@@ -4621,7 +4833,7 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
     for item in content {
         if let syn::Item::Fn(func) = item {
             if matches!(&func.vis, syn::Visibility::Public(_)) {
-                match cfg_eval::cfg_attrs_match(&func.attrs) {
+                match cfg_attrs_match(&func.attrs) {
                     Ok(true) => active_handler_indices.push(handlers.len()),
                     Ok(false) => {}
                     Err(err) => return err.to_compile_error(),
@@ -4762,7 +4974,7 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
         .iter()
         .zip(handlers.iter())
         .map(|(codegen, handler)| {
-            let cfg_attrs = cfg_eval::cfg_attrs(&handler.attrs);
+            let cfg_attrs = cfg_attrs(&handler.attrs);
             let idl_name = &codegen.idl_name;
             let idl_docs = &codegen.idl_docs_json;
             let idl_disc = &codegen.idl_disc;
@@ -4789,7 +5001,7 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
         .iter()
         .zip(handlers.iter())
         .map(|(codegen, handler)| {
-            let cfg_attrs = cfg_eval::cfg_attrs(&handler.attrs);
+            let cfg_attrs = cfg_attrs(&handler.attrs);
             let idl_accounts_type = &codegen.idl_accounts_type;
             quote! {
                 #(#cfg_attrs)*
@@ -4810,7 +5022,7 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
         .iter()
         .zip(handlers.iter())
         .map(|(codegen, handler)| {
-            let cfg_attrs = cfg_eval::cfg_attrs(&handler.attrs);
+            let cfg_attrs = cfg_attrs(&handler.attrs);
             let arg_types = &codegen.arg_types;
             let return_register = codegen.return_type.as_ref().map(|return_type| {
                 quote! {
@@ -5318,11 +5530,6 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .into()
         }
     };
-    let filtered_idl_fields = match cfg_filtered_fields(fields) {
-        Ok(fields) => fields,
-        Err(err) => return err.to_compile_error().into(),
-    };
-
     use sha2::Digest;
     let hash = sha2::Sha256::digest(format!("event:{name_str}").as_bytes());
     let disc_bytes = &hash[..8];
@@ -5345,13 +5552,11 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
         EventMode::Bytemuck => idl::TypeKind::BytemuckRepr,
     };
     let struct_docs = idl::extract_doc_lines(attrs);
-    if matches!(mode, EventMode::Wincode) {
-        if let Err(err) =
-            reject_wincode_idl_overrides_in_fields("`#[event]`", &filtered_idl_fields)
-        {
-            return err.to_compile_error().into();
-        }
-    }
+    let idl_validation_tokens = if matches!(mode, EventMode::Wincode) {
+        wincode_idl_override_tokens_for_fields("`#[event]`", fields)
+    } else {
+        Vec::new()
+    };
     let event_type_def = idl::build_struct_type_def_emission(&name_str, &struct_docs, fields, type_kind);
     let event_disc_json = idl::disc_json(disc_bytes);
     let event_header_json = format!(
@@ -5440,6 +5645,7 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
             #(#attrs)*
             #vis struct #name #fields
 
+            #(#idl_validation_tokens)*
             #discriminator_impl
 
             impl anchor_lang_v2::Event for #name {
@@ -5469,8 +5675,6 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
             #idl_event_print
         }),
         EventMode::Bytemuck => {
-            let field_types: Vec<_> = filtered_idl_fields.iter().map(|f| &f.ty).collect();
-
             // Targeted diagnostics for common non-Pod field types. Fires
             // *before* the generic `assert_pod::<T>` bound so users hit a
             // field-specific migration hint instead of the opaque
@@ -5478,7 +5682,7 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
             // `#[account]` zero-copy codegen. Borsh mode is suggested here
             // because (unlike `#[account]`) events have a correct dynamic
             // fallback — see `diagnose_non_pod_event_field`.
-            let field_diagnostics: Vec<_> = filtered_idl_fields
+            let field_diagnostics: Vec<_> = fields
                 .iter()
                 .filter_map(|field| {
                     let field_name = field
@@ -5487,7 +5691,38 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
                         .map(|i| i.to_string())
                         .unwrap_or_default();
                     let msg = diagnose_non_pod_event_field(&field.ty, &field_name)?;
-                    Some(quote! { ::core::compile_error!(#msg); })
+                    let cfg_attrs = cfg_attrs(&field.attrs);
+                    Some(quote! {
+                        #(#cfg_attrs)*
+                        ::core::compile_error!(#msg);
+                    })
+                })
+                .collect();
+            let field_pod_asserts: Vec<_> = fields
+                .iter()
+                .map(|field| {
+                    let ty = &field.ty;
+                    let cfg_attrs = cfg_attrs(&field.attrs);
+                    quote! {
+                        #(#cfg_attrs)*
+                        const _: fn() = || {
+                            fn assert_pod<T: anchor_lang_v2::bytemuck::Pod>() {}
+                            assert_pod::<#ty>();
+                        };
+                    }
+                })
+                .collect();
+            let field_size_steps: Vec<_> = fields
+                .iter()
+                .map(|field| {
+                    let ty = &field.ty;
+                    let cfg_attrs = cfg_attrs(&field.attrs);
+                    quote! {
+                        #(#cfg_attrs)*
+                        {
+                            __size += ::core::mem::size_of::<#ty>();
+                        }
+                    }
                 })
                 .collect();
 
@@ -5520,10 +5755,7 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
                 // Transitive Pod bound per field — catches fat pointers even
                 // when hidden inside an opaque user-defined struct (the
                 // `Pod` trait propagates through nested types).
-                const _: fn() = || {
-                    fn assert_pod<T: anchor_lang_v2::bytemuck::Pod>() {}
-                    #( assert_pod::<#field_types>(); )*
-                };
+                #(#field_pod_asserts)*
 
                 // `repr(C)` padding is target-dependent: on SBF `u128` is
                 // align-8, so a `{Address (align 1), u64, u128}` struct has
@@ -5534,15 +5766,18 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
                 // ships) and `cargo build-sbf` still enforces the no-
                 // padding invariant.
                 #[cfg(target_os = "solana")]
-                const _: () = ::core::assert!(
-                    ::core::mem::size_of::<#name>()
-                        == 0 #( + ::core::mem::size_of::<#field_types>() )*,
-                    "`#[event]` struct has `repr(C)` alignment padding — \
-                     reorder fields from largest to smallest alignment (u128/u64 \
-                     first, then u32, then u16, then u8/bool), or drop the \
-                     `bytemuck` flag and use the default `#[event]` (wincode) \
-                     for arbitrary layouts"
-                );
+                const _: () = {
+                    let mut __size = 0usize;
+                    #(#field_size_steps)*
+                    ::core::assert!(
+                        ::core::mem::size_of::<#name>() == __size,
+                        "`#[event]` struct has `repr(C)` alignment padding — \
+                         reorder fields from largest to smallest alignment (u128/u64 \
+                         first, then u32, then u16, then u8/bool), or drop the \
+                         `bytemuck` flag and use the default `#[event]` (wincode) \
+                         for arbitrary layouts"
+                    );
+                };
 
                 // SAFETY: `bytemuck::Pod` requires four invariants. Each is
                 // proven by a compile-time check earlier in this block:

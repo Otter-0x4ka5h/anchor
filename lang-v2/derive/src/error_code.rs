@@ -38,7 +38,7 @@ pub fn expand(args: TokenStream, input: TokenStream) -> TokenStream {
             }
         }
         let variant_ident = variant.ident.clone();
-        let cfg_attrs = crate::cfg_eval::cfg_attrs(&variant.attrs);
+        let cfg_attrs = crate::cfg_attrs(&variant.attrs);
         let escaped_name = escape_json(&variant.ident.to_string());
         let suffix = match message {
             Some(message) => {
