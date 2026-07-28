@@ -72,9 +72,9 @@ impl<'a, T: ToCpiAccounts<'a>> CpiContext<'a, T> {
     }
 
     /// Invoke the CPI with the given instruction data. Collects accounts
-    /// from [`ToCpiAccounts`], appends remaining accounts, and calls
-    /// `invoke_signed_unchecked`.
-    pub fn invoke(&self, data: &[u8]) {
+    /// from [`ToCpiAccounts`], appends remaining accounts, validates borrow
+    /// state, then calls `invoke_signed_unchecked`.
+    pub fn invoke(&self, data: &[u8]) -> ProgramResult {
         let mut instruction_accounts = self.accounts.to_instruction_accounts();
         let mut handles = self.accounts.to_cpi_handles();
 
@@ -86,6 +86,28 @@ impl<'a, T: ToCpiAccounts<'a>> CpiContext<'a, T> {
                 handle.is_signer(),
             ));
             handles.push(*handle);
+        }
+
+        let mut handle_index = 0;
+        for account in &instruction_accounts {
+            if !account.is_writable
+                && !account.is_signer
+                && crate::address_eq(account.address, self.program)
+            {
+                continue;
+            }
+
+            let Some(handle) = handles.get(handle_index) else {
+                return Err(ProgramError::NotEnoughAccountKeys);
+            };
+
+            if account.is_writable {
+                handle.account_view().check_borrow_mut()?;
+            } else {
+                handle.account_view().check_borrow()?;
+            }
+
+            handle_index += 1;
         }
 
         let instruction = InstructionView {
@@ -139,6 +161,8 @@ impl<'a, T: ToCpiAccounts<'a>> CpiContext<'a, T> {
                 &signers,
             );
         }
+
+        Ok(())
     }
 
     /// Invoke a fully built instruction using this context's CPI handles.
@@ -154,13 +178,7 @@ impl<'a, T: ToCpiAccounts<'a>> CpiContext<'a, T> {
 
         let mut handles = self.accounts.to_cpi_handles();
         handles.extend(self.remaining_accounts.iter().copied());
-        crate::program::validate_handles(&ix, &handles, self.signer_seeds.is_empty())?;
-
-        // SAFETY: `CpiContext` already ties every handle to a Rust borrow of
-        // the caller's typed account. The account metas have been validated
-        // above; use unchecked CPI to preserve the Slab-backed borrow-state
-        // contract during invocation.
-        unsafe { crate::program::invoke_signed_unchecked(&ix, &handles, self.signer_seeds) }
+        crate::program::invoke_signed(&ix, &handles, self.signer_seeds)
     }
 }
 
