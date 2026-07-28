@@ -314,6 +314,53 @@ declare_id!("So11111111111111111111111111111111111111112");
     }
 
     #[test]
+    fn discover_program_id_ignores_cfg_attr_disabled_declarations() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let original_manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR");
+        let enabled_feature = "CARGO_FEATURE_ENABLED";
+        let temp_root = std::env::temp_dir().join(format!(
+            "anchor-derive-pda-cfg-attr-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let src_dir = temp_root.join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(
+            src_dir.join("lib.rs"),
+            r#"
+#[cfg_attr(not(feature = "enabled"), cfg(any()))]
+declare_id!("11111111111111111111111111111111");
+
+declare_id!("So11111111111111111111111111111111111111112");
+"#,
+        )
+        .unwrap();
+
+        std::env::set_var("CARGO_MANIFEST_DIR", &temp_root);
+        std::env::remove_var(enabled_feature);
+        CACHED_PROGRAM_ID.with(|cell| *cell.borrow_mut() = None);
+
+        let discovered = discover_program_id().expect("expected enabled declare_id! to be used");
+        let expected = bs58::decode("So11111111111111111111111111111111111111112")
+            .into_vec()
+            .expect("valid base58");
+        let mut expected_arr = [0_u8; 32];
+        expected_arr.copy_from_slice(&expected);
+        assert_eq!(discovered, expected_arr);
+
+        CACHED_PROGRAM_ID.with(|cell| *cell.borrow_mut() = None);
+        if let Some(value) = original_manifest_dir {
+            std::env::set_var("CARGO_MANIFEST_DIR", value);
+        } else {
+            std::env::remove_var("CARGO_MANIFEST_DIR");
+        }
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
     fn discover_program_id_skips_target_cfg_gated_declarations_when_cfg_is_unknown() {
         let _guard = ENV_LOCK.lock().unwrap();
         let original_manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR");
@@ -335,6 +382,47 @@ declare_id!("So11111111111111111111111111111111111111112");
 declare_id!("11111111111111111111111111111111");
 
 #[cfg(target_os = "solana")]
+declare_id!("So11111111111111111111111111111111111111112");
+"#,
+        )
+        .unwrap();
+
+        std::env::set_var("CARGO_MANIFEST_DIR", &temp_root);
+        std::env::remove_var(target_os_key);
+        CACHED_PROGRAM_ID.with(|cell| *cell.borrow_mut() = None);
+
+        assert_eq!(discover_program_id(), None);
+
+        CACHED_PROGRAM_ID.with(|cell| *cell.borrow_mut() = None);
+        if let Some(value) = original_manifest_dir {
+            std::env::set_var("CARGO_MANIFEST_DIR", value);
+        } else {
+            std::env::remove_var("CARGO_MANIFEST_DIR");
+        }
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn discover_program_id_skips_cfg_attr_gated_declarations_when_cfg_is_unknown() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let original_manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR");
+        let target_os_key = "CARGO_CFG_TARGET_OS";
+        let temp_root = std::env::temp_dir().join(format!(
+            "anchor-derive-pda-target-cfg-attr-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let src_dir = temp_root.join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(
+            src_dir.join("lib.rs"),
+            r#"
+#[cfg_attr(target_os = "solana", cfg(any()))]
+declare_id!("11111111111111111111111111111111");
+
 declare_id!("So11111111111111111111111111111111111111112");
 "#,
         )

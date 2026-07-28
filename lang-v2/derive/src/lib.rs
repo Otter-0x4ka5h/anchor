@@ -662,9 +662,13 @@ fn idl_field_ty(field: &parse::AccountField) -> Option<&Type> {
 fn cfg_attrs(attrs: &[syn::Attribute]) -> Vec<syn::Attribute> {
     attrs
         .iter()
-        .filter(|attr| attr.path().is_ident("cfg"))
+        .filter(|attr| is_cfg_control_attr(attr.path()))
         .cloned()
         .collect()
+}
+
+fn is_cfg_control_attr(path: &syn::Path) -> bool {
+    path.is_ident("cfg") || path.is_ident("cfg_attr")
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -703,8 +707,11 @@ impl CfgMatch {
 fn cfg_attrs_match(attrs: &[syn::Attribute]) -> syn::Result<bool> {
     let mut first_unknown = None;
 
-    for attr in attrs.iter().filter(|attr| attr.path().is_ident("cfg")) {
-        match cfg_attr_matches(attr)? {
+    for attr in attrs
+        .iter()
+        .filter(|attr| is_cfg_control_attr(attr.path()))
+    {
+        match cfg_control_attr_matches(attr)? {
             CfgMatch::Enabled => {}
             CfgMatch::Disabled => return Ok(false),
             CfgMatch::Unknown => {
@@ -723,8 +730,11 @@ fn cfg_attrs_match(attrs: &[syn::Attribute]) -> syn::Result<bool> {
 fn cfg_attrs_match_if_known(attrs: &[syn::Attribute]) -> syn::Result<Option<bool>> {
     let mut saw_unknown = false;
 
-    for attr in attrs.iter().filter(|attr| attr.path().is_ident("cfg")) {
-        match cfg_attr_matches(attr)? {
+    for attr in attrs
+        .iter()
+        .filter(|attr| is_cfg_control_attr(attr.path()))
+    {
+        match cfg_control_attr_matches(attr)? {
             CfgMatch::Enabled => {}
             CfgMatch::Disabled => return Ok(Some(false)),
             CfgMatch::Unknown => saw_unknown = true,
@@ -734,9 +744,78 @@ fn cfg_attrs_match_if_known(attrs: &[syn::Attribute]) -> syn::Result<Option<bool
     Ok((!saw_unknown).then_some(true))
 }
 
-fn cfg_attr_matches(attr: &syn::Attribute) -> syn::Result<CfgMatch> {
-    attr.parse_args::<syn::Meta>()
-        .map(|meta| cfg_meta_matches(&meta))
+fn cfg_control_attr_matches(attr: &syn::Attribute) -> syn::Result<CfgMatch> {
+    if attr.path().is_ident("cfg") {
+        return attr
+            .parse_args::<syn::Meta>()
+            .map(|meta| cfg_meta_matches(&meta));
+    }
+
+    if attr.path().is_ident("cfg_attr") {
+        return attr
+            .parse_args_with(
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+            )
+            .map(|metas| cfg_attr_matches(&metas));
+    }
+
+    Ok(CfgMatch::Enabled)
+}
+
+fn cfg_attr_matches(
+    metas: &syn::punctuated::Punctuated<syn::Meta, syn::Token![,]>,
+) -> CfgMatch {
+    let mut metas = metas.iter();
+    let Some(predicate) = metas.next() else {
+        return CfgMatch::Enabled;
+    };
+
+    match cfg_meta_matches(predicate) {
+        CfgMatch::Enabled => metas.fold(CfgMatch::Enabled, |state, meta| {
+            state.and(cfg_control_meta_matches(meta))
+        }),
+        CfgMatch::Disabled => CfgMatch::Enabled,
+        CfgMatch::Unknown => {
+            if metas.any(cfg_control_meta_affects_presence) {
+                CfgMatch::Unknown
+            } else {
+                CfgMatch::Enabled
+            }
+        }
+    }
+}
+
+fn cfg_control_meta_matches(meta: &syn::Meta) -> CfgMatch {
+    match meta {
+        syn::Meta::List(list) if list.path.is_ident("cfg") => list
+            .parse_args::<syn::Meta>()
+            .map(|meta| cfg_meta_matches(&meta))
+            .unwrap_or(CfgMatch::Unknown),
+        syn::Meta::List(list) if list.path.is_ident("cfg_attr") => list
+            .parse_args_with(
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+            )
+            .map(|metas| cfg_attr_matches(&metas))
+            .unwrap_or(CfgMatch::Unknown),
+        syn::Meta::Path(path) if path.is_ident("cfg") => CfgMatch::Unknown,
+        syn::Meta::NameValue(nv) if nv.path.is_ident("cfg") => cfg_name_value_matches(nv),
+        _ => CfgMatch::Enabled,
+    }
+}
+
+fn cfg_control_meta_affects_presence(meta: &syn::Meta) -> bool {
+    match meta {
+        syn::Meta::List(list) if list.path.is_ident("cfg") => true,
+        syn::Meta::Path(path) if path.is_ident("cfg") => true,
+        syn::Meta::NameValue(nv) if nv.path.is_ident("cfg") => true,
+        syn::Meta::List(list) if list.path.is_ident("cfg_attr") => list
+            .parse_args_with(
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+            )
+            .map(|metas| metas.iter().skip(1).any(cfg_control_meta_affects_presence))
+            .unwrap_or(true),
+        _ => false,
+    }
 }
 
 fn cfg_meta_matches(meta: &syn::Meta) -> CfgMatch {
