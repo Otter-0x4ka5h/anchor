@@ -88,29 +88,12 @@ impl<'a, T: ToCpiAccounts<'a>> CpiContext<'a, T> {
             handles.push(*handle);
         }
 
-        let mut handle_index = 0;
-        for account in &instruction_accounts {
-            if !account.is_writable
-                && !account.is_signer
-                && crate::address_eq(account.address, self.program)
-            {
-                continue;
-            }
-
-            let Some(handle) = handles.get(handle_index) else {
-                return Err(ProgramError::NotEnoughAccountKeys);
-            };
-
-            if account.is_writable {
-                if handle.requires_borrow_check() {
-                    handle.account_view().check_borrow_mut()?;
-                }
-            } else if handle.requires_borrow_check() {
-                handle.account_view().check_borrow()?;
-            }
-
-            handle_index += 1;
-        }
+        crate::program::validate_instruction_accounts(
+            &instruction_accounts,
+            self.program,
+            &handles,
+            self.signer_seeds.is_empty(),
+        )?;
 
         let instruction = InstructionView {
             program_id: self.program,

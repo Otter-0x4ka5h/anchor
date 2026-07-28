@@ -233,6 +233,15 @@ pub trait AnchorAccount: Deref<Target = Self::Data> + Sized {
     /// check).
     const MIN_DATA_LEN: usize = 0;
 
+    /// Whether readonly CPI handles borrowed from a mutable wrapper need their
+    /// runtime borrow marker temporarily relaxed during CPI entry.
+    ///
+    /// Wrappers that keep an exclusive marker alive after `load_mut()` (for
+    /// example `Account<T>` / `Slab<H, T>` and `SerializedAccount<T, S>`)
+    /// override this so derive-generated readonly CPI accounts can preserve
+    /// compatibility without reopening writable aliasing.
+    const RELAX_READONLY_CPI_BORROW_FROM_MUT: bool = false;
+
     fn load(view: AccountView) -> core::result::Result<Self, ProgramError>;
 
     /// Load an account for mutable access.

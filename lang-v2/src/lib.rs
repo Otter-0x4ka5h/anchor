@@ -292,9 +292,8 @@ pub mod __private {
         [a, b][(a < b) as usize]
     }
 
-    #[doc(hidden)]
     #[inline(always)]
-    pub fn readonly_cpi_handle_for_manual_mut_borrow<'a>(
+    pub fn readonly_cpi_handle_for_account_field<'a>(
         view: &'a AccountView,
         needs_relax: bool,
     ) -> CpiHandle<'a> {

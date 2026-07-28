@@ -762,6 +762,7 @@ where
 {
     type Data = H;
     const MIN_DATA_LEN: usize = Slab::<H, T>::MIN_DATA_LEN;
+    const RELAX_READONLY_CPI_BORROW_FROM_MUT: bool = true;
 
     #[inline(always)]
     fn load(view: AccountView) -> Result<Self, ProgramError> {

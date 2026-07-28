@@ -465,36 +465,45 @@ fn field_offset_expr(
         })
 }
 
-fn type_uses_manual_readonly_cpi_relax(ty: &Type) -> bool {
+fn anchor_account_field_type(ty: &Type) -> &Type {
     let Type::Path(type_path) = ty else {
-        return false;
+        return ty;
     };
     let Some(segment) = type_path.path.segments.last() else {
-        return false;
+        return ty;
     };
 
-    match segment.ident.to_string().as_str() {
-        "Account" | "InterfaceAccount" | "Slab" => true,
-        "Box" => {
-            if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
-                    return type_uses_manual_readonly_cpi_relax(inner);
-                }
+    if matches!(segment.ident.to_string().as_str(), "Box" | "Option") {
+        if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+            if let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
+                return anchor_account_field_type(inner);
             }
-            false
         }
-        _ => false,
     }
+
+    ty
 }
 
-fn field_needs_readonly_cpi_relax(
+fn field_readonly_cpi_handle_expr(
     field_summaries: &[FieldSummary],
     ident: &Ident,
-) -> syn::Result<bool> {
+    view: TokenStream2,
+) -> syn::Result<TokenStream2> {
     field_summaries
         .iter()
         .find(|summary| summary.name == *ident)
-        .map(|summary| summary.attrs.is_mut && type_uses_manual_readonly_cpi_relax(&summary.ty))
+        .map(|summary| {
+            let field_ty = anchor_account_field_type(&summary.ty);
+            let is_mut = summary.attrs.is_mut;
+            quote! {
+                anchor_lang_v2::__private::readonly_cpi_handle_for_account_field(
+                    #view,
+                    #is_mut
+                        && <#field_ty as anchor_lang_v2::AnchorAccount>
+                            ::RELAX_READONLY_CPI_BORROW_FROM_MUT,
+                )
+            }
+        })
         .ok_or_else(|| {
             syn::Error::new(
                 ident.span(),
@@ -1373,14 +1382,26 @@ fn emit_associated_token_init_body(
     let system_program_offset = field_offset_expr(field_offsets, &system_program)?;
     let associated_token_program_offset =
         field_offset_expr(field_offsets, &associated_token_program)?;
-    let authority_needs_relax =
-        field_needs_readonly_cpi_relax(field_summaries, &associated_token.authority)?;
-    let mint_needs_relax =
-        field_needs_readonly_cpi_relax(field_summaries, &associated_token.mint)?;
-    let token_program_needs_relax =
-        field_needs_readonly_cpi_relax(field_summaries, &associated_token.token_program)?;
-    let system_program_needs_relax =
-        field_needs_readonly_cpi_relax(field_summaries, &system_program)?;
+    let authority_handle = field_readonly_cpi_handle_expr(
+        field_summaries,
+        &associated_token.authority,
+        quote! { __authority.account() },
+    )?;
+    let mint_handle = field_readonly_cpi_handle_expr(
+        field_summaries,
+        &associated_token.mint,
+        quote! { __mint.account() },
+    )?;
+    let token_program_handle = field_readonly_cpi_handle_expr(
+        field_summaries,
+        &associated_token.token_program,
+        quote! { __token_program.account() },
+    )?;
+    let system_program_handle = field_readonly_cpi_handle_expr(
+        field_summaries,
+        &system_program,
+        quote! { __system_program.account() },
+    )?;
     let payer_signer_seeds = emit_payer_signer_seeds_binding(payer, field_names, field_summaries)?;
 
     Ok(quote! {
@@ -1424,22 +1445,10 @@ fn emit_associated_token_init_body(
             let __create_accounts = anchor_spl_v2::associated_token::Create {
                 payer: __payer_account.cpi_handle_mut(),
                 associated_token: __associated_token.cpi_handle_mut(),
-                authority: anchor_lang_v2::__private::readonly_cpi_handle_for_manual_mut_borrow(
-                    __authority.account(),
-                    #authority_needs_relax,
-                ),
-                mint: anchor_lang_v2::__private::readonly_cpi_handle_for_manual_mut_borrow(
-                    __mint.account(),
-                    #mint_needs_relax,
-                ),
-                system_program: anchor_lang_v2::__private::readonly_cpi_handle_for_manual_mut_borrow(
-                    __system_program.account(),
-                    #system_program_needs_relax,
-                ),
-                token_program: anchor_lang_v2::__private::readonly_cpi_handle_for_manual_mut_borrow(
-                    __token_program.account(),
-                    #token_program_needs_relax,
-                ),
+                authority: #authority_handle,
+                mint: #mint_handle,
+                system_program: #system_program_handle,
+                token_program: #token_program_handle,
             };
             match __payer_signer_seeds {
                 Some(__payer_signer) => {

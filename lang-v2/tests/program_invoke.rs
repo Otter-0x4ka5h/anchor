@@ -36,6 +36,13 @@ struct OptionalCpi<'a> {
     optional: Option<CpiHandle<'a>>,
 }
 
+#[derive(ToCpiAccounts)]
+struct ThreeReadonlyCpi<'a> {
+    first: CpiHandle<'a>,
+    second: CpiHandle<'a>,
+    third: CpiHandle<'a>,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct PodCounter {
@@ -181,6 +188,32 @@ fn checked_invoke_accepts_optional_none_program_id_sentinel() {
 }
 
 #[test]
+fn checked_invoke_accepts_real_program_id_account_before_later_accounts() {
+    let first_buffer = account_view([1; 32], false);
+    let middle_buffer = account_view([7; 32], false);
+    let third_buffer = account_view([2; 32], false);
+    let first = unsafe { first_buffer.view() };
+    let middle = unsafe { middle_buffer.view() };
+    let third = unsafe { third_buffer.view() };
+    let ix = Instruction {
+        program_id: ID,
+        accounts: vec![
+            AccountMeta::new_readonly(*first.address(), false),
+            AccountMeta::new_readonly(*middle.address(), false),
+            AccountMeta::new_readonly(*third.address(), false),
+        ],
+        data: vec![],
+    };
+    let handles = [
+        first.to_cpi_handle(),
+        middle.to_cpi_handle(),
+        third.to_cpi_handle(),
+    ];
+
+    program::invoke(&ix, &handles).unwrap();
+}
+
+#[test]
 fn checked_invoke_rejects_address_mismatch() {
     let buffer = account_view([1; 32], false);
     let view = unsafe { buffer.view() };
@@ -298,6 +331,24 @@ fn invoke_ix_accepts_optional_none_program_id_sentinel() {
     };
 
     CpiContext::new(&program, accounts).invoke_ix(ix).unwrap();
+}
+
+#[test]
+fn cpi_context_invoke_accepts_real_program_id_account_before_later_accounts() {
+    let program = ID;
+    let first_buffer = account_view([1; 32], false);
+    let middle_buffer = account_view([7; 32], false);
+    let third_buffer = account_view([2; 32], false);
+    let first = unsafe { first_buffer.view() };
+    let middle = unsafe { middle_buffer.view() };
+    let third = unsafe { third_buffer.view() };
+    let accounts = ThreeReadonlyCpi {
+        first: first.to_cpi_handle(),
+        second: middle.to_cpi_handle(),
+        third: third.to_cpi_handle(),
+    };
+
+    CpiContext::new(&program, accounts).invoke(&[]).unwrap();
 }
 
 #[test]
