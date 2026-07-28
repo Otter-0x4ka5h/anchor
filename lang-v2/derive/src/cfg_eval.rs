@@ -59,6 +59,14 @@ pub(crate) fn cfg_attrs_match(attrs: &[Attribute]) -> syn::Result<bool> {
     }
 }
 
+pub(crate) fn cfg_attrs(attrs: &[Attribute]) -> Vec<Attribute> {
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("cfg"))
+        .cloned()
+        .collect()
+}
+
 pub(crate) fn cfg_attrs_match_if_known(attrs: &[Attribute]) -> syn::Result<Option<bool>> {
     let mut saw_unknown = false;
 

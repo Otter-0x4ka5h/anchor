@@ -670,6 +670,54 @@ fn cfg_filtered_variants(
     cfg_eval::filter_variants(variants)
 }
 
+fn cfg_field_dep_walkers(fields: &syn::Fields) -> Vec<TokenStream2> {
+    match fields {
+        syn::Fields::Named(named) => named
+            .named
+            .iter()
+            .map(|field| {
+                let ty = &field.ty;
+                let cfg_attrs = cfg_eval::cfg_attrs(&field.attrs);
+                quote! {
+                    #(#cfg_attrs)*
+                    <#ty as anchor_lang_v2::IdlAccountType>::__register_idl_deps(accounts, types);
+                }
+            })
+            .collect(),
+        syn::Fields::Unnamed(unnamed) => unnamed
+            .unnamed
+            .iter()
+            .map(|field| {
+                let ty = &field.ty;
+                let cfg_attrs = cfg_eval::cfg_attrs(&field.attrs);
+                quote! {
+                    #(#cfg_attrs)*
+                    <#ty as anchor_lang_v2::IdlAccountType>::__register_idl_deps(accounts, types);
+                }
+            })
+            .collect(),
+        syn::Fields::Unit => Vec::new(),
+    }
+}
+
+fn cfg_variant_dep_walkers(
+    variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
+) -> Vec<TokenStream2> {
+    variants
+        .iter()
+        .map(|variant| {
+            let cfg_attrs = cfg_eval::cfg_attrs(&variant.attrs);
+            let field_walkers = cfg_field_dep_walkers(&variant.fields);
+            quote! {
+                #(#cfg_attrs)*
+                {
+                    #(#field_walkers)*
+                }
+            }
+        })
+        .collect()
+}
+
 fn client_meta_signer_expr(field: &parse::AccountField) -> TokenStream2 {
     let init_signer = field.idl_init_signer;
     match idl_field_ty(field) {
@@ -1898,7 +1946,7 @@ pub fn account(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .into()
         }
     };
-    let idl_fields = match cfg_filtered_fields(fields) {
+    let filtered_idl_fields = match cfg_filtered_fields(fields) {
         Ok(fields) => fields,
         Err(err) => return err.to_compile_error().into(),
     };
@@ -1926,33 +1974,12 @@ pub fn account(attr: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         idl::TypeKind::BytemuckRepr
     };
-    let idl_type_strings = if let Fields::Named(named) = &idl_fields {
-        idl::build_type_strings(&name_str, disc_bytes, &struct_docs, &named.named, type_kind)
-    } else {
-        idl::build_type_strings(
-            &name_str,
-            disc_bytes,
-            &struct_docs,
-            &syn::punctuated::Punctuated::new(),
-            type_kind,
-        )
-    };
-    let idl_account_entry = match idl_type_strings.account_entry {
+    let idl_account_entry = match idl::build_account_entry_string(&name_str, disc_bytes) {
         Some(s) => quote! { Some(#s) },
         None => quote! { None },
     };
-    let idl_type_def = idl_type_strings.type_def;
-
-    // Named-field types for the transitive IDL dep walk. `__register_idl_deps`
-    // fans out through each field type so nested user structs land in the
-    // IDL's `types[]` array even when the user never wrote `#[account]` on
-    // them (e.g. a plain `#[derive(IdlType)] struct Inner` embedded in this
-    // account's body).
-    let idl_field_tys: Vec<&Type> = match &idl_fields {
-        Fields::Named(named) => named.named.iter().map(|f| &f.ty).collect(),
-        Fields::Unnamed(unnamed) => unnamed.unnamed.iter().map(|f| &f.ty).collect(),
-        Fields::Unit => Vec::new(),
-    };
+    let idl_type_def = idl::build_struct_type_def_emission(&name_str, &struct_docs, fields, type_kind);
+    let idl_field_dep_walkers = cfg_field_dep_walkers(fields);
 
     // Client-side `AccountDeserialize` impl. Mode-dependent: borsh accounts
     // run wincode (with `BORSH_CONFIG`, borsh-wire-compatible) over the
@@ -2031,7 +2058,7 @@ pub fn account(attr: TokenStream, item: TokenStream) -> TokenStream {
             quote! {},
         )
     } else {
-        let field_types: Vec<_> = if let Fields::Named(named) = &idl_fields {
+        let field_types: Vec<_> = if let Fields::Named(named) = &filtered_idl_fields {
             named.named.iter().map(|f| &f.ty).collect()
         } else {
             vec![]
@@ -2044,7 +2071,7 @@ pub fn account(attr: TokenStream, item: TokenStream) -> TokenStream {
         // per-instruction serialization cost, rarely what the user actually
         // wants. The fix is almost always a Pod-compatible alternative.
         let field_diagnostics: Vec<proc_macro2::TokenStream> =
-            if let Fields::Named(named) = &idl_fields {
+            if let Fields::Named(named) = &filtered_idl_fields {
                 named
                     .named
                     .iter()
@@ -2100,20 +2127,20 @@ pub fn account(attr: TokenStream, item: TokenStream) -> TokenStream {
         #[doc(hidden)]
         impl anchor_lang_v2::IdlAccountType for #name {
             const __IDL_ACCOUNT_ENTRY: Option<&'static str> = #idl_account_entry;
-            const __IDL_TYPE_DEF: Option<&'static str> = Some(#idl_type_def);
+            fn __idl_type_def() -> Option<&'static str> {
+                #idl_type_def
+            }
             fn __register_idl_deps(
                 accounts: &mut ::anchor_lang_v2::__alloc::vec::Vec<&'static str>,
                 types: &mut ::anchor_lang_v2::__alloc::vec::Vec<&'static str>,
             ) {
-                if let Some(a) = <Self as anchor_lang_v2::IdlAccountType>::__IDL_ACCOUNT_ENTRY {
+                if let Some(a) = <Self as anchor_lang_v2::IdlAccountType>::__idl_account_entry() {
                     accounts.push(a);
                 }
-                if let Some(t) = <Self as anchor_lang_v2::IdlAccountType>::__IDL_TYPE_DEF {
+                if let Some(t) = <Self as anchor_lang_v2::IdlAccountType>::__idl_type_def() {
                     types.push(t);
                 }
-                #(
-                    <#idl_field_tys as anchor_lang_v2::IdlAccountType>::__register_idl_deps(accounts, types);
-                )*
+                #(#idl_field_dep_walkers)*
             }
         }
     })
@@ -2198,88 +2225,51 @@ pub fn derive_idl_type(input: TokenStream) -> TokenStream {
     // downstream when splitting accounts vs types entries. The spec's
     // `IdlTypeDef` doesn't carry `discriminator`, so the program-level
     // assembly already elides it when reconstructing types entries.
-    let empty_disc: [u8; 0] = [];
     // Default to `Borsh` serialization (no `serialization` / `repr` fields).
     // `IdlType` is layout-agnostic — users opt into Pod separately via
     // their own `bytemuck::Pod` derive if they need zero-copy. Forcing a
     // `"bytemuck"` tag here would lie in the IDL for non-Pod types.
-        let (idl_type_strings, field_tys): (_, Vec<Type>) = match &input.data {
-            Data::Struct(data) => {
-                let filtered_fields = match cfg_filtered_fields(&data.fields) {
-                    Ok(fields) => fields,
-                    Err(err) => return err.to_compile_error().into(),
-                };
-                if let Err(err) =
-                    reject_wincode_idl_overrides_in_fields("`#[derive(IdlType)]`", &filtered_fields)
-                {
-                    return err.to_compile_error().into();
-                }
-                let strings = match &filtered_fields {
-                    Fields::Named(named) => idl::build_type_strings(
-                        &name_str,
-                    &empty_disc,
-                    &docs,
-                    &named.named,
-                    idl::TypeKind::Borsh,
-                ),
-                // Unnamed (tuple) and unit structs are emitted with an empty
-                // named-fields array. The spec doesn't carry a tuple-struct
-                // distinction at the top level of `IdlTypeDef` — only enum
-                // variants get `IdlDefinedFields::Tuple` — so tuple structs
-                // fall through to struct-with-empty-fields. Users needing
-                // tuple shapes should prefer named fields.
-                _ => idl::build_type_strings(
-                    &name_str,
-                    &empty_disc,
-                    &docs,
-                    &syn::punctuated::Punctuated::new(),
-                    idl::TypeKind::Borsh,
-                ),
+    let (idl_type_def, field_dep_walkers) = match &input.data {
+        Data::Struct(data) => {
+            let filtered_fields = match cfg_filtered_fields(&data.fields) {
+                Ok(fields) => fields,
+                Err(err) => return err.to_compile_error().into(),
             };
-            // Walk fields for the transitive dep registration. Tuple structs
-            // still contribute their field types; unit structs have no inner
-            // fields to recurse into.
-            let field_tys: Vec<Type> = match &filtered_fields {
-                Fields::Named(named) => named.named.iter().map(|f| f.ty.clone()).collect(),
-                Fields::Unnamed(unnamed) => unnamed.unnamed.iter().map(|f| f.ty.clone()).collect(),
-                Fields::Unit => Vec::new(),
-            };
-                (strings, field_tys)
+            if let Err(err) =
+                reject_wincode_idl_overrides_in_fields("`#[derive(IdlType)]`", &filtered_fields)
+            {
+                return err.to_compile_error().into();
             }
-            Data::Enum(data) => {
-                let filtered_variants = match cfg_filtered_variants(&data.variants) {
-                    Ok(variants) => variants,
-                    Err(err) => return err.to_compile_error().into(),
-                };
-                if let Err(err) = reject_wincode_idl_overrides_in_variants(
-                    "`#[derive(IdlType)]`",
-                    &filtered_variants,
-                ) {
-                    return err.to_compile_error().into();
-                }
-                let strings = idl::build_enum_type_strings(
+            (
+                idl::build_struct_type_def_emission(
                     &name_str,
-                    &empty_disc,
-                &docs,
+                    &docs,
+                    &data.fields,
+                    idl::TypeKind::Borsh,
+                ),
+                cfg_field_dep_walkers(&data.fields),
+            )
+        }
+        Data::Enum(data) => {
+            let filtered_variants = match cfg_filtered_variants(&data.variants) {
+                Ok(variants) => variants,
+                Err(err) => return err.to_compile_error().into(),
+            };
+            if let Err(err) = reject_wincode_idl_overrides_in_variants(
+                "`#[derive(IdlType)]`",
                 &filtered_variants,
-                idl::TypeKind::Borsh,
-            );
-            // Every variant's fields contribute dependent types for the
-            // transitive walker — a `Foo::Bar(Inner)` variant needs to pull
-            // `Inner` into `types[]` just like a struct field would.
-            let field_tys: Vec<Type> = filtered_variants
-                .iter()
-                .flat_map(|v| match &v.fields {
-                    Fields::Named(named) => {
-                        named.named.iter().map(|f| f.ty.clone()).collect::<Vec<_>>()
-                    }
-                    Fields::Unnamed(unnamed) => {
-                        unnamed.unnamed.iter().map(|f| f.ty.clone()).collect()
-                    }
-                    Fields::Unit => Vec::new(),
-                })
-                .collect();
-            (strings, field_tys)
+            ) {
+                return err.to_compile_error().into();
+            }
+            (
+                idl::build_enum_type_def_emission(
+                    &name_str,
+                    &docs,
+                    &data.variants,
+                    idl::TypeKind::Borsh,
+                ),
+                cfg_variant_dep_walkers(&data.variants),
+            )
         }
         Data::Union(_) => {
             return syn::Error::new(
@@ -2290,11 +2280,6 @@ pub fn derive_idl_type(input: TokenStream) -> TokenStream {
             .into();
         }
     };
-    // Plain `IdlType` types never carry a discriminator and never appear in
-    // `accounts[]`; only `__IDL_TYPE_DEF` is `Some`. The builder enforces
-    // this via the empty-disc → `account_entry: None` rule.
-    debug_assert!(idl_type_strings.account_entry.is_none());
-    let idl_type_def = idl_type_strings.type_def;
 
     // Thread any generic / lifetime params from the input type through
     // the impl so `#[derive(IdlType)] struct Foo<'a>` lowers to
@@ -2307,7 +2292,9 @@ pub fn derive_idl_type(input: TokenStream) -> TokenStream {
         #[cfg(feature = "idl-build")]
         #[doc(hidden)]
         impl #impl_generics anchor_lang_v2::IdlAccountType for #name #ty_generics #where_clause {
-            const __IDL_TYPE_DEF: Option<&'static str> = Some(#idl_type_def);
+            fn __idl_type_def() -> Option<&'static str> {
+                #idl_type_def
+            }
             fn __register_idl_deps(
                 accounts: &mut ::anchor_lang_v2::__alloc::vec::Vec<&'static str>,
                 types: &mut ::anchor_lang_v2::__alloc::vec::Vec<&'static str>,
@@ -2315,12 +2302,10 @@ pub fn derive_idl_type(input: TokenStream) -> TokenStream {
                 // `IdlType` plain types never push to `accounts[]` —
                 // `__IDL_ACCOUNT_ENTRY` defaults to `None`. We only
                 // contribute to `types[]` and recurse for transitive deps.
-                if let Some(t) = <Self as anchor_lang_v2::IdlAccountType>::__IDL_TYPE_DEF {
+                if let Some(t) = <Self as anchor_lang_v2::IdlAccountType>::__idl_type_def() {
                     types.push(t);
                 }
-                #(
-                    <#field_tys as anchor_lang_v2::IdlAccountType>::__register_idl_deps(accounts, types);
-                )*
+                #(#field_dep_walkers)*
             }
         }
     })
@@ -3774,10 +3759,10 @@ fn gen_declare_program_idl_account_type_impl(
                 accounts: &mut anchor_lang_v2::__alloc::vec::Vec<&'static str>,
                 types: &mut anchor_lang_v2::__alloc::vec::Vec<&'static str>,
             ) {
-                if let Some(a) = <Self as anchor_lang_v2::IdlAccountType>::__IDL_ACCOUNT_ENTRY {
+                if let Some(a) = <Self as anchor_lang_v2::IdlAccountType>::__idl_account_entry() {
                     accounts.push(a);
                 }
-                if let Some(t) = <Self as anchor_lang_v2::IdlAccountType>::__IDL_TYPE_DEF {
+                if let Some(t) = <Self as anchor_lang_v2::IdlAccountType>::__idl_type_def() {
                     types.push(t);
                 }
                 #(
@@ -4284,6 +4269,7 @@ fn process_handler(
 ) -> HandlerCodegen {
     let fn_name = &handler.sig.ident;
     let fn_name_str = fn_name.to_string();
+    let cfg_attrs = cfg_eval::cfg_attrs(&handler.attrs);
     let return_type = match extract_result_return_type(&handler.sig.output) {
         Ok(return_ty) => return_ty,
         Err(err) => return HandlerCodegen::error(handler, err),
@@ -4385,12 +4371,14 @@ fn process_handler(
 
     // Dispatch arm.
     let dispatch_arm = quote! {
+        #(#cfg_attrs)*
         #disc_match_arm_pattern => __handlers::#fn_name(__program_id, &mut __cursor, __ix_data, __num),
     };
 
     // Handler wrapper.
     let wrapper = if extra_arg_names.is_empty() {
         quote! {
+            #(#cfg_attrs)*
             #[inline(always)]
             pub fn #fn_name<'a>(
                 __program_id: &'a anchor_lang_v2::Address,
@@ -4427,6 +4415,7 @@ fn process_handler(
         let args_deser = emit_args_deser(&extra_args, "__Args", false);
         let deser_args = args_deser.deser;
         quote! {
+            #(#cfg_attrs)*
             #[inline(always)]
             pub fn #fn_name<'a>(
                 __program_id: &'a anchor_lang_v2::Address,
@@ -4485,13 +4474,16 @@ fn process_handler(
         (quote! {}, quote! {})
     };
     let instruction_struct = quote! {
+        #(#cfg_attrs)*
         #[derive(anchor_lang_v2::wincode::SchemaWrite)]
         pub struct #ix_struct_name #ix_lt_decl {
             #(pub #extra_arg_names: #extra_arg_types,)*
         }
+        #(#cfg_attrs)*
         impl #ix_lt_decl anchor_lang_v2::Discriminator for #ix_struct_name #ix_lt_use {
             const DISCRIMINATOR: &'static [u8] = &[#(#disc_literal_bytes),*];
         }
+        #(#cfg_attrs)*
         impl #ix_lt_decl anchor_lang_v2::InstructionData for #ix_struct_name #ix_lt_use {
             fn data(&self) -> alloc::vec::Vec<u8> {
                 let mut data = alloc::vec::Vec::with_capacity(256);
@@ -4505,6 +4497,7 @@ fn process_handler(
                 data
             }
         }
+        #(#cfg_attrs)*
         impl #ix_lt_decl #ix_struct_name #ix_lt_use {
             pub fn to_instruction(
                 self,
@@ -4560,6 +4553,7 @@ fn process_handler(
             (quote! {}, quote! {})
         };
         quote! {
+            #(#cfg_attrs)*
             pub fn #fn_name #lt_decl(
                 __ctx: anchor_lang_v2::CpiContext<'a, accounts::#accounts_ident<'a>>,
                 #(#extra_arg_names: #extra_arg_types,)*
@@ -4622,15 +4616,16 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
     };
 
     let mut handlers = Vec::new();
+    let mut active_handler_indices = Vec::new();
     let mut other_items = Vec::new();
     for item in content {
         if let syn::Item::Fn(func) = item {
-            if matches!(&func.vis, syn::Visibility::Public(_))
-                && match cfg_eval::cfg_attrs_match(&func.attrs) {
-                    Ok(matches) => matches,
+            if matches!(&func.vis, syn::Visibility::Public(_)) {
+                match cfg_eval::cfg_attrs_match(&func.attrs) {
+                    Ok(true) => active_handler_indices.push(handlers.len()),
+                    Ok(false) => {}
                     Err(err) => return err.to_compile_error(),
                 }
-            {
                 handlers.push(func);
                 continue;
             }
@@ -4651,15 +4646,23 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
         Err(e) => return e.to_compile_error(),
     };
 
-    let has_any_discrim = discrim_attrs.iter().any(|d| d.is_some());
-    let has_all_discrim = discrim_attrs.iter().all(|d| d.is_some());
+    let active_handlers: Vec<&syn::ItemFn> = active_handler_indices
+        .iter()
+        .map(|&i| handlers[i])
+        .collect();
+    let active_discrim_attrs: Vec<Option<DiscrimAttr>> = active_handler_indices
+        .iter()
+        .map(|&i| discrim_attrs[i].clone())
+        .collect();
+
+    let has_any_discrim = active_discrim_attrs.iter().any(|d| d.is_some());
+    let has_all_discrim = active_discrim_attrs.iter().all(|d| d.is_some());
     if config.mode == ProgramMode::Executable && has_any_discrim && !has_all_discrim {
         // Point at the first handler missing #[discrim = N] for clarity.
-        let missing = handlers
+        let missing = active_handler_indices
             .iter()
-            .zip(discrim_attrs.iter())
-            .find(|(_, d)| d.is_none())
-            .map(|(h, _)| h.sig.ident.span())
+            .find(|&&i| discrim_attrs[i].is_none())
+            .map(|&i| handlers[i].sig.ident.span())
             .unwrap_or_else(proc_macro2::Span::call_site);
         return syn::Error::new(
             missing,
@@ -4672,8 +4675,8 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
     if config.mode == ProgramMode::Executable && has_any_discrim {
         let mut seen: std::collections::HashMap<u8, proc_macro2::Span> =
             std::collections::HashMap::new();
-        for (i, d) in discrim_attrs.iter().enumerate() {
-            let d = d
+        for &i in &active_handler_indices {
+            let d = discrim_attrs[i]
                 .as_ref()
                 .expect("all-or-nothing discrim check guarantees every entry is Some");
             if d.bytes.len() != 1 {
@@ -4698,7 +4701,9 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
             }
         }
     } else if config.mode == ProgramMode::Interface {
-        if let Err(err) = validate_instruction_discriminator_prefixes(&handlers, &discrim_attrs) {
+        if let Err(err) =
+            validate_instruction_discriminator_prefixes(&active_handlers, &active_discrim_attrs)
+        {
             return err.to_compile_error();
         }
     }
@@ -4730,6 +4735,10 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
     let dispatch_arms: Vec<_> = codegen.iter().map(|c| &c.dispatch_arm).collect();
     let handler_wrappers: Vec<_> = codegen.iter().map(|c| &c.wrapper).collect();
     let instruction_structs: Vec<_> = codegen.iter().map(|c| &c.instruction_struct).collect();
+    let active_codegen: Vec<&HandlerCodegen> = active_handler_indices
+        .iter()
+        .map(|&i| &codegen[i])
+        .collect();
     // Dedupe `accounts` re-exports: multiple handlers sharing the same
     // Accounts struct would otherwise emit duplicate `pub use` statements.
     let accounts_reexports: Vec<_> = {
@@ -4749,29 +4758,79 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
             .collect()
     };
     let cpi_wrappers: Vec<_> = codegen.iter().map(|c| &c.cpi_wrapper).collect();
-    let idl_ix_names: Vec<_> = codegen.iter().map(|c| &c.idl_name).collect();
-    let idl_ix_discs: Vec<_> = codegen.iter().map(|c| &c.idl_disc).collect();
-    let idl_ix_args: Vec<_> = codegen.iter().map(|c| &c.idl_args).collect();
-    let idl_ix_returns: Vec<_> = codegen.iter().map(|c| &c.idl_returns_json).collect();
-    let idl_ix_docs: Vec<_> = codegen.iter().map(|c| &c.idl_docs_json).collect();
-    let idl_accounts_types: Vec<_> = codegen.iter().map(|c| &c.idl_accounts_type).collect();
+    let idl_instruction_entries: Vec<_> = codegen
+        .iter()
+        .zip(handlers.iter())
+        .map(|(codegen, handler)| {
+            let cfg_attrs = cfg_eval::cfg_attrs(&handler.attrs);
+            let idl_name = &codegen.idl_name;
+            let idl_docs = &codegen.idl_docs_json;
+            let idl_disc = &codegen.idl_disc;
+            let idl_args = &codegen.idl_args;
+            let idl_returns = &codegen.idl_returns_json;
+            let idl_accounts_type = &codegen.idl_accounts_type;
+            quote! {
+                #(#cfg_attrs)*
+                instructions.push(
+                    format!(
+                        "{{\"name\":\"{}\"{},\"discriminator\":{},\"accounts\":{},\"args\":{}{} }}",
+                        #idl_name,
+                        #idl_docs,
+                        #idl_disc,
+                        #idl_accounts_type::__idl_accounts(),
+                        #idl_args,
+                        #idl_returns,
+                    )
+                );
+            }
+        })
+        .collect();
+    let idl_account_dep_walkers: Vec<_> = codegen
+        .iter()
+        .zip(handlers.iter())
+        .map(|(codegen, handler)| {
+            let cfg_attrs = cfg_eval::cfg_attrs(&handler.attrs);
+            let idl_accounts_type = &codegen.idl_accounts_type;
+            quote! {
+                #(#cfg_attrs)*
+                #idl_accounts_type::__idl_register_deps(
+                    &mut accounts_entries,
+                    &mut types_entries,
+                );
+            }
+        })
+        .collect();
     // One `Vec<Type>` per handler, for the ix-arg transitive IDL walker.
     // Nested `#(...)*` inside the quote! sees this as a Vec<Vec<Type>> and
     // expands the outer level over handlers, the inner level over each
     // handler's arg types. `arg_types` includes every handler parameter
     // past `ctx: &mut Context<...>`, so primitives / &T / Vec / etc. all
     // flow through (with the blanket no-op impls for non-`IdlType` types).
-    let ix_arg_types_per_handler: Vec<&Vec<Type>> = codegen.iter().map(|c| &c.arg_types).collect();
-    let all_ix_arg_types: Vec<_> = codegen.iter().map(|c| &c.arg_types).collect();
-    let ix_return_type_registers: Vec<_> = codegen
+    let ix_arg_type_registers: Vec<_> = codegen
         .iter()
-        .filter_map(|c| c.return_type.as_ref())
-        .map(|return_type| {
+        .zip(handlers.iter())
+        .map(|(codegen, handler)| {
+            let cfg_attrs = cfg_eval::cfg_attrs(&handler.attrs);
+            let arg_types = &codegen.arg_types;
+            let return_register = codegen.return_type.as_ref().map(|return_type| {
+                quote! {
+                    <#return_type as anchor_lang_v2::IdlAccountType>::__register_idl_deps(
+                        &mut accounts_entries,
+                        &mut types_entries,
+                    );
+                }
+            });
             quote! {
-                <#return_type as anchor_lang_v2::IdlAccountType>::__register_idl_deps(
-                    &mut accounts_entries,
-                    &mut types_entries,
-                );
+                #(#cfg_attrs)*
+                {
+                    #(
+                        <#arg_types as anchor_lang_v2::IdlAccountType>::__register_idl_deps(
+                            &mut accounts_entries,
+                            &mut types_entries,
+                        );
+                    )*
+                    #return_register
+                }
             }
         })
         .collect();
@@ -4805,10 +4864,11 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
             _ => false,
         }
     }
-    let min_args_size_expr = if all_ix_arg_types.is_empty() {
+    let active_ix_arg_types: Vec<_> = active_codegen.iter().map(|c| &c.arg_types).collect();
+    let min_args_size_expr = if active_ix_arg_types.is_empty() {
         quote! { 0usize }
     } else {
-        let per_ix_sizes: Vec<_> = all_ix_arg_types
+        let per_ix_sizes: Vec<_> = active_ix_arg_types
             .iter()
             .map(|types| {
                 if types.is_empty() || !types.iter().all(is_fixed_size_primitive) {
@@ -5117,19 +5177,8 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
 
             #[test]
             fn __anchor_private_print_idl_program() {
-                let instructions = vec![
-                    #(
-                        format!(
-                            "{{\"name\":\"{}\"{},\"discriminator\":{},\"accounts\":{},\"args\":{}{} }}",
-                            #idl_ix_names,
-                            #idl_ix_docs,
-                            #idl_ix_discs,
-                            #idl_accounts_types::__idl_accounts(),
-                            #idl_ix_args,
-                            #idl_ix_returns,
-                        )
-                    ),*
-                ];
+                let mut instructions = Vec::new();
+                #(#idl_instruction_entries)*
 
                 // Collect accounts + types from every Accounts struct field
                 // via the transitive dep walker, plus from every handler's
@@ -5152,21 +5201,8 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
                 // reference with no matching `types[]` entry.
                 let mut accounts_entries: Vec<&'static str> = Vec::new();
                 let mut types_entries: Vec<&'static str> = Vec::new();
-                #(
-                    #idl_accounts_types::__idl_register_deps(
-                        &mut accounts_entries,
-                        &mut types_entries,
-                    );
-                )*
-                #(
-                    #(
-                        <#ix_arg_types_per_handler as anchor_lang_v2::IdlAccountType>::__register_idl_deps(
-                            &mut accounts_entries,
-                            &mut types_entries,
-                        );
-                    )*
-                )*
-                #(#ix_return_type_registers)*
+                #(#idl_account_dep_walkers)*
+                #(#ix_arg_type_registers)*
                 accounts_entries.sort();
                 accounts_entries.dedup();
                 types_entries.sort();
@@ -5282,7 +5318,7 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .into()
         }
     };
-    let idl_fields = match cfg_filtered_fields(fields) {
+    let filtered_idl_fields = match cfg_filtered_fields(fields) {
         Ok(fields) => fields,
         Err(err) => return err.to_compile_error().into(),
     };
@@ -5310,22 +5346,13 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
     let struct_docs = idl::extract_doc_lines(attrs);
     if matches!(mode, EventMode::Wincode) {
-        if let Err(err) = reject_wincode_idl_overrides_in_fields("`#[event]`", &idl_fields) {
+        if let Err(err) =
+            reject_wincode_idl_overrides_in_fields("`#[event]`", &filtered_idl_fields)
+        {
             return err.to_compile_error().into();
         }
     }
-    let event_type_strings = if let Fields::Named(named) = &idl_fields {
-        idl::build_type_strings(&name_str, disc_bytes, &struct_docs, &named.named, type_kind)
-    } else {
-        idl::build_type_strings(
-            &name_str,
-            disc_bytes,
-            &struct_docs,
-            &syn::punctuated::Punctuated::new(),
-            type_kind,
-        )
-    };
-    let event_type_def = event_type_strings.type_def;
+    let event_type_def = idl::build_struct_type_def_emission(&name_str, &struct_docs, fields, type_kind);
     let event_disc_json = idl::disc_json(disc_bytes);
     let event_header_json = format!(
         "{{\"event\":{{\"name\":\"{}\",\"discriminator\":{}}},\"types\":[",
@@ -5335,11 +5362,7 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
     // `type_def_json` into the types accumulator via its `__IDL_TYPE_DEF`
     // const; field-type deps fan out from there so plain user structs
     // referenced by `pub inner: Inner` land in `types[]` too.
-    let idl_field_tys: Vec<&Type> = match &idl_fields {
-        Fields::Named(named) => named.named.iter().map(|f| &f.ty).collect(),
-        Fields::Unnamed(unnamed) => unnamed.unnamed.iter().map(|f| &f.ty).collect(),
-        Fields::Unit => Vec::new(),
-    };
+    let idl_field_dep_walkers = cfg_field_dep_walkers(fields);
     let idl_fn_name = quote::format_ident!(
         "__anchor_private_print_idl_event_{}",
         name_str.to_lowercase()
@@ -5392,17 +5415,17 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
         #[cfg(feature = "idl-build")]
         #[doc(hidden)]
         impl anchor_lang_v2::IdlAccountType for #name {
-            const __IDL_TYPE_DEF: Option<&'static str> = Some(#event_type_def);
+            fn __idl_type_def() -> Option<&'static str> {
+                #event_type_def
+            }
             fn __register_idl_deps(
                 accounts: &mut ::anchor_lang_v2::__alloc::vec::Vec<&'static str>,
                 types: &mut ::anchor_lang_v2::__alloc::vec::Vec<&'static str>,
             ) {
-                if let Some(t) = <Self as anchor_lang_v2::IdlAccountType>::__IDL_TYPE_DEF {
+                if let Some(t) = <Self as anchor_lang_v2::IdlAccountType>::__idl_type_def() {
                     types.push(t);
                 }
-                #(
-                    <#idl_field_tys as anchor_lang_v2::IdlAccountType>::__register_idl_deps(accounts, types);
-                )*
+                #(#idl_field_dep_walkers)*
             }
         }
     };
@@ -5446,7 +5469,7 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
             #idl_event_print
         }),
         EventMode::Bytemuck => {
-            let field_types: Vec<_> = idl_fields.iter().map(|f| &f.ty).collect();
+            let field_types: Vec<_> = filtered_idl_fields.iter().map(|f| &f.ty).collect();
 
             // Targeted diagnostics for common non-Pod field types. Fires
             // *before* the generic `assert_pod::<T>` bound so users hit a
@@ -5455,7 +5478,7 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
             // `#[account]` zero-copy codegen. Borsh mode is suggested here
             // because (unlike `#[account]`) events have a correct dynamic
             // fallback — see `diagnose_non_pod_event_field`.
-            let field_diagnostics: Vec<_> = idl_fields
+            let field_diagnostics: Vec<_> = filtered_idl_fields
                 .iter()
                 .filter_map(|field| {
                     let field_name = field

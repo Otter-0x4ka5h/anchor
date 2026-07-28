@@ -408,6 +408,7 @@ pub enum TypeKind {
 /// strings directly. That lets `lang-v2` avoid a runtime `serde_json`
 /// dependency or local `idl-build` feature; derive output still emits
 /// `feature = "idl-build"` cfgs into user crates.
+#[allow(dead_code)]
 pub struct IdlTypeStrings {
     /// `{"name":"X","discriminator":[…]}` for the program-level
     /// `accounts[]` array (spec:137-140). `None` when the discriminator
@@ -427,6 +428,7 @@ pub struct IdlTypeStrings {
 /// type definition. Zero-copy `#[account]` and `#[event(bytemuck)]` pass
 /// `TypeKind::BytemuckRepr`; borsh/wincode shapes pass `TypeKind::Borsh`
 /// (the default, which suppresses both fields).
+#[allow(dead_code)]
 pub fn build_type_strings(
     name: &str,
     disc: &[u8],
@@ -456,6 +458,7 @@ pub fn build_type_strings(
 /// Only `TypeKind::Borsh` is really meaningful for enums today — bytemuck
 /// enums are rare. We accept the same `kind` parameter for shape symmetry
 /// with `build_type_strings`.
+#[allow(dead_code)]
 pub fn build_enum_type_strings(
     name: &str,
     disc: &[u8],
@@ -466,26 +469,7 @@ pub fn build_enum_type_strings(
     let mut type_def_obj = build_type_def_header(name, docs, kind);
     let variant_values: Vec<Value> = variants
         .iter()
-        .map(|v| {
-            let mut obj = serde_json::Map::new();
-            obj.insert("name".into(), Value::String(v.ident.to_string()));
-            match &v.fields {
-                syn::Fields::Unit => {}
-                syn::Fields::Named(named) => {
-                    let fields: Vec<Value> = named.named.iter().map(named_field_value).collect();
-                    obj.insert("fields".into(), Value::Array(fields));
-                }
-                syn::Fields::Unnamed(unnamed) => {
-                    let tys: Vec<Value> = unnamed
-                        .unnamed
-                        .iter()
-                        .map(|f| rust_type_to_idl_value(&f.ty))
-                        .collect();
-                    obj.insert("fields".into(), Value::Array(tys));
-                }
-            }
-            Value::Object(obj)
-        })
+        .map(variant_value)
         .collect();
     type_def_obj.insert(
         "type".into(),
@@ -495,6 +479,36 @@ pub fn build_enum_type_strings(
         account_entry: build_account_entry(name, disc),
         type_def: Value::Object(type_def_obj).to_string(),
     }
+}
+
+pub fn build_account_entry_string(name: &str, disc: &[u8]) -> Option<String> {
+    build_account_entry(name, disc)
+}
+
+pub fn build_struct_type_def_emission(
+    name: &str,
+    docs: &[String],
+    fields: &syn::Fields,
+    kind: TypeKind,
+) -> TokenStream2 {
+    let header = type_def_header_prefix(name, docs, kind, "struct");
+    let field_pushes: Vec<_> = match fields {
+        syn::Fields::Named(named) => named.named.iter().map(field_push_stmt).collect(),
+        syn::Fields::Unnamed(_) => Vec::new(),
+        syn::Fields::Unit => Vec::new(),
+    };
+    build_joined_type_def_emission(header, &field_pushes)
+}
+
+pub fn build_enum_type_def_emission(
+    name: &str,
+    docs: &[String],
+    variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
+    kind: TypeKind,
+) -> TokenStream2 {
+    let header = type_def_header_prefix(name, docs, kind, "enum");
+    let variant_pushes: Vec<_> = variants.iter().map(variant_push_stmt).collect();
+    build_joined_type_def_emission(header, &variant_pushes)
 }
 
 /// Compose the program-level `accounts[]` entry. Returns `None` when the
@@ -513,11 +527,69 @@ fn build_account_entry(name: &str, disc: &[u8]) -> Option<String> {
     )
 }
 
+fn build_joined_type_def_emission(header: String, entries: &[TokenStream2]) -> TokenStream2 {
+    quote! {
+        {
+            let mut __entries: anchor_lang_v2::__alloc::vec::Vec<&'static str> =
+                anchor_lang_v2::__alloc::vec::Vec::new();
+            #(#entries)*
+            let mut __s = anchor_lang_v2::__alloc::string::String::from(#header);
+            let mut __first = true;
+            for __entry in &__entries {
+                if !__first {
+                    __s.push(',');
+                }
+                __first = false;
+                __s.push_str(__entry);
+            }
+            __s.push_str("]}}");
+            ::core::option::Option::Some(
+                anchor_lang_v2::__alloc::boxed::Box::leak(__s.into_boxed_str()) as &'static str
+            )
+        }
+    }
+}
+
+fn type_def_header_prefix(name: &str, docs: &[String], kind: TypeKind, kind_name: &str) -> String {
+    let docs_json = if docs.is_empty() {
+        String::new()
+    } else {
+        format!(",\"docs\":{}", docs_to_json_array(docs))
+    };
+    let kind_json = match kind {
+        TypeKind::Borsh => String::new(),
+        TypeKind::BytemuckRepr => ",\"serialization\":\"bytemuck\",\"repr\":{\"kind\":\"c\"}".into(),
+    };
+    format!(
+        "{{\"name\":\"{}\"{}{},\"type\":{{\"kind\":\"{}\",\"fields\":[",
+        name, docs_json, kind_json, kind_name
+    )
+}
+
+fn field_push_stmt(field: &syn::Field) -> TokenStream2 {
+    let field_json = named_field_value(field).to_string();
+    let cfg_attrs = crate::cfg_eval::cfg_attrs(&field.attrs);
+    quote! {
+        #(#cfg_attrs)*
+        __entries.push(#field_json);
+    }
+}
+
+fn variant_push_stmt(variant: &syn::Variant) -> TokenStream2 {
+    let variant_json = variant_value(variant).to_string();
+    let cfg_attrs = crate::cfg_eval::cfg_attrs(&variant.attrs);
+    quote! {
+        #(#cfg_attrs)*
+        __entries.push(#variant_json);
+    }
+}
+
 /// Shared header construction for the `IdlTypeDef` payload. Emits
 /// `name`, optional `docs`, and the `serialization` / `repr` pair derived
 /// from `kind`. The caller appends the `type` object matching
 /// `IdlTypeDefTy::{Struct, Enum, Type}`. Notably *no* `discriminator` —
 /// that field only belongs on the accounts entry.
+#[allow(dead_code)]
 fn build_type_def_header(
     name: &str,
     docs: &[String],
@@ -554,6 +626,27 @@ fn named_field_value(f: &syn::Field) -> Value {
         obj.insert("docs".into(), docs_value(&field_docs));
     }
     obj.insert("type".into(), rust_type_to_idl_value(&f.ty));
+    Value::Object(obj)
+}
+
+fn variant_value(v: &syn::Variant) -> Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert("name".into(), Value::String(v.ident.to_string()));
+    match &v.fields {
+        syn::Fields::Unit => {}
+        syn::Fields::Named(named) => {
+            let fields: Vec<Value> = named.named.iter().map(named_field_value).collect();
+            obj.insert("fields".into(), Value::Array(fields));
+        }
+        syn::Fields::Unnamed(unnamed) => {
+            let tys: Vec<Value> = unnamed
+                .unnamed
+                .iter()
+                .map(|f| rust_type_to_idl_value(&f.ty))
+                .collect();
+            obj.insert("fields".into(), Value::Array(tys));
+        }
+    }
     Value::Object(obj)
 }
 
