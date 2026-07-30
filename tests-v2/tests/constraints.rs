@@ -30,12 +30,18 @@ const ERR_BAD_CONSTRAINT: u32 = 6003;
 const ERR_BAD_FIRST: u32 = 6004;
 const ERR_BAD_SECOND: u32 = 6005;
 
-/// `ErrorCode::ConstraintRaw` maps to `Custom(2001)`.
-const CONSTRAINT_RAW: u32 = 2001;
-/// `ErrorCode::ConstraintExecutable` maps to `Custom(2002)`.
-const CONSTRAINT_EXECUTABLE: u32 = 2002;
-/// `ErrorCode::ConstraintZero` maps to `Custom(2004)`.
-const CONSTRAINT_ZERO: u32 = 2004;
+/// `ErrorCode::ConstraintRaw` maps to `Custom(2003)`.
+const CONSTRAINT_RAW: u32 = 2003;
+/// `ErrorCode::ConstraintHasOne` maps to `Custom(2001)`.
+const CONSTRAINT_HAS_ONE: u32 = 2001;
+/// `ErrorCode::ConstraintExecutable` maps to `Custom(2007)`.
+const CONSTRAINT_EXECUTABLE: u32 = 2007;
+/// `ErrorCode::ConstraintClose` maps to `Custom(2011)`.
+const CONSTRAINT_CLOSE: u32 = 2011;
+/// `ErrorCode::ConstraintAddress` maps to `Custom(2012)`.
+const CONSTRAINT_ADDRESS: u32 = 2012;
+/// `ErrorCode::ConstraintZero` maps to `Custom(2013)`.
+const CONSTRAINT_ZERO: u32 = 2013;
 
 // Matching the pinned address baked into the program.
 fn pinned_address() -> Pubkey {
@@ -201,8 +207,8 @@ fn address_mismatch_rejected() {
         vec![AccountMeta::new_readonly(wrong, false)],
         &[],
     );
-    // Default `ConstraintAddress` maps to `ProgramError::InvalidAccountData`.
-    assert_err_contains(&result, "InvalidAccountData");
+    // Default `ConstraintAddress` maps to `ProgramError::Custom(2012)`.
+    assert_custom(&result, CONSTRAINT_ADDRESS);
 }
 
 // ---- 2. address = expr @ MyErr --------------------------------------------
@@ -268,8 +274,7 @@ fn has_one_mismatch_rejected() {
         ],
         &[],
     );
-    // Default `ConstraintHasOne` -> `ProgramError::InvalidAccountData`.
-    assert_err_contains(&result, "InvalidAccountData");
+    assert_custom(&result, CONSTRAINT_HAS_ONE);
 }
 
 // ---- 4. has_one = field @ MyErr -------------------------------------------
@@ -330,8 +335,8 @@ fn address_field_path_mismatch_rejected() {
         ],
         &[],
     );
-    // Default `ConstraintAddress` -> `ProgramError::InvalidAccountData`.
-    assert_err_contains(&result, "InvalidAccountData");
+    // Default `ConstraintAddress` -> `ProgramError::Custom(2012)`.
+    assert_custom(&result, CONSTRAINT_ADDRESS);
 }
 
 // ---- 5. owner = expr -------------------------------------------------------
@@ -566,7 +571,7 @@ fn close_self_close_rejected() {
 
     // Pass `data` as both `data` and `receiver`. Both slots are `mut`
     // in `DoClose`, so the duplicate-mutable-account guard fires first
-    // (`Custom(2005)`), before the derive's self-close check would run.
+    // (`Custom(2040)`), before the derive's self-close check would run.
     // Both are derive-level rejections of the same misuse — accept
     // either. (The self-close check only becomes reachable if the
     // receiver slot is read-only, which is not a legitimate close.)
@@ -579,7 +584,8 @@ fn close_self_close_rejected() {
     );
     let rendered = format!("{:?}", result.as_ref().err().expect("should fail").err);
     assert!(
-        rendered.contains("Custom(2005)") || rendered.contains("InvalidAccountData"),
+        rendered.contains("Custom(2040)")
+            || rendered.contains(&format!("Custom({CONSTRAINT_CLOSE})")),
         "expected dup-mut or ConstraintClose rejection, got: {rendered}",
     );
 }
@@ -859,7 +865,7 @@ fn address_into_from_byte_array_mismatch_rejected() {
         vec![AccountMeta::new_readonly(Pubkey::new_unique(), false)],
         &[],
     );
-    assert_err_contains(&result, "InvalidAccountData");
+    assert_custom(&result, CONSTRAINT_ADDRESS);
 }
 
 #[test]
@@ -885,7 +891,7 @@ fn address_into_from_ref_mismatch_rejected() {
         vec![AccountMeta::new_readonly(Pubkey::new_unique(), false)],
         &[],
     );
-    assert_err_contains(&result, "InvalidAccountData");
+    assert_custom(&result, CONSTRAINT_ADDRESS);
 }
 
 // ---- 16. Multiple constraints on a single field --------------------------

@@ -330,18 +330,19 @@ impl From<ErrorCode> for solana_program_error::ProgramError {
             ErrorCode::AccountNotEnoughKeys => {
                 solana_program_error::ProgramError::NotEnoughAccountKeys
             }
+            // Custom codes are aligned with Anchor v1's numbering
             ErrorCode::ConstraintMut => solana_program_error::ProgramError::Custom(2000),
             ErrorCode::ConstraintSigner => {
                 solana_program_error::ProgramError::MissingRequiredSignature
             }
             ErrorCode::ConstraintSeeds => solana_program_error::ProgramError::InvalidSeeds,
-            ErrorCode::ConstraintHasOne => solana_program_error::ProgramError::InvalidAccountData,
-            ErrorCode::ConstraintAddress => solana_program_error::ProgramError::InvalidAccountData,
-            ErrorCode::ConstraintClose => solana_program_error::ProgramError::InvalidAccountData,
+            ErrorCode::ConstraintHasOne => solana_program_error::ProgramError::Custom(2001),
+            ErrorCode::ConstraintAddress => solana_program_error::ProgramError::Custom(2012),
+            ErrorCode::ConstraintClose => solana_program_error::ProgramError::Custom(2011),
             ErrorCode::ConstraintOwner => solana_program_error::ProgramError::IllegalOwner,
-            ErrorCode::ConstraintRaw => solana_program_error::ProgramError::Custom(2001),
-            ErrorCode::ConstraintExecutable => solana_program_error::ProgramError::Custom(2002),
-            ErrorCode::ConstraintZero => solana_program_error::ProgramError::Custom(2004),
+            ErrorCode::ConstraintRaw => solana_program_error::ProgramError::Custom(2003),
+            ErrorCode::ConstraintExecutable => solana_program_error::ProgramError::Custom(2007),
+            ErrorCode::ConstraintZero => solana_program_error::ProgramError::Custom(2013),
             ErrorCode::InstructionDidNotDeserialize => {
                 solana_program_error::ProgramError::InvalidInstructionData
             }
@@ -353,13 +354,13 @@ impl From<ErrorCode> for solana_program_error::ProgramError {
             }
             ErrorCode::RequireViolated => solana_program_error::ProgramError::Custom(2500),
             ErrorCode::RequireEqViolated => solana_program_error::ProgramError::Custom(2501),
-            ErrorCode::RequireNeqViolated => solana_program_error::ProgramError::Custom(2502),
-            ErrorCode::RequireKeysEqViolated => solana_program_error::ProgramError::Custom(2503),
+            ErrorCode::RequireKeysEqViolated => solana_program_error::ProgramError::Custom(2502),
+            ErrorCode::RequireNeqViolated => solana_program_error::ProgramError::Custom(2503),
             ErrorCode::RequireKeysNeqViolated => solana_program_error::ProgramError::Custom(2504),
             ErrorCode::RequireGtViolated => solana_program_error::ProgramError::Custom(2505),
             ErrorCode::RequireGteViolated => solana_program_error::ProgramError::Custom(2506),
             ErrorCode::ConstraintDuplicateMutableAccount => {
-                solana_program_error::ProgramError::Custom(2005)
+                solana_program_error::ProgramError::Custom(2040)
             }
         }
     }

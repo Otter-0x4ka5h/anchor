@@ -11,7 +11,7 @@ mod pod_wrapper;
 
 use {
     proc_macro::TokenStream,
-    proc_macro2::TokenStream as TokenStream2,
+    proc_macro2::{Span, TokenStream as TokenStream2},
     quote::quote,
     syn::{
         parse::Parser, parse_macro_input, spanned::Spanned, Data, DeriveInput, Expr, Fields, FnArg,
@@ -61,6 +61,60 @@ struct SignerExpr {
 struct AccountMetaAttrs {
     skip: bool,
     duplicate_readonly: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum UnsupportedWincodeAttrKind {
+    Skip,
+    With,
+}
+
+pub(crate) fn find_unsupported_wincode_attr(
+    attrs: &[syn::Attribute],
+) -> syn::Result<Option<(UnsupportedWincodeAttrKind, Span)>> {
+    for attr in attrs {
+        if !attr.path().is_ident("wincode") {
+            continue;
+        }
+
+        let mut unsupported = None;
+        let parse = attr.parse_nested_meta(|meta| {
+            let span = meta.path.span();
+            if meta.path.is_ident("skip") {
+                if meta.input.peek(syn::Token![=]) {
+                    let value = meta.value()?;
+                    let _ = value.parse::<Expr>()?;
+                } else if meta.input.peek(syn::token::Paren) {
+                    meta.parse_nested_meta(|nested| {
+                        if nested.path.is_ident("default") {
+                            return Ok(());
+                        }
+                        if nested.path.is_ident("default_val") {
+                            let value = nested.value()?;
+                            let _ = value.parse::<Expr>()?;
+                        }
+                        Ok(())
+                    })?;
+                }
+                unsupported = Some((UnsupportedWincodeAttrKind::Skip, span));
+            } else if meta.path.is_ident("with") {
+                if meta.input.peek(syn::Token![=]) {
+                    let value = meta.value()?;
+                    let _ = value.parse::<Expr>()?;
+                }
+                unsupported = Some((UnsupportedWincodeAttrKind::With, span));
+            }
+            Ok(())
+        });
+
+        parse?;
+
+        if unsupported.is_some() {
+            return Ok(unsupported);
+        }
+    }
+
+    Ok(None)
 }
 
 fn impl_to_cpi_accounts(input: &DeriveInput) -> TokenStream2 {
@@ -913,19 +967,6 @@ fn impl_accounts(input: &DeriveInput) -> TokenStream2 {
         .collect();
     let constraints: Vec<_> = fields.iter().flat_map(|f| &f.constraints).collect();
     let exits: Vec<_> = fields.iter().filter_map(|f| f.exit.as_ref()).collect();
-    // Collect per-field dup checks under a single outer `if let Some(__dups)`
-    // gate so non-dup txs pay one Option-tag branch for the whole struct,
-    // not one per mut field.
-    let dup_checks: Vec<_> = fields.iter().filter_map(|f| f.dup_check.as_ref()).collect();
-    let dup_check_block = if dup_checks.is_empty() {
-        quote::quote! {}
-    } else {
-        quote::quote! {
-            if let Some(__dups) = __duplicates {
-                #(#dup_checks)*
-            }
-        }
-    };
     // Bumps fields. Optional accounts get `Option<u8>` so the default
     // (`None`) maps cleanly to the sentinel-`None` load path; the seeds
     // check assigns `Some(bump)` only when the inner is `Some`. Mirrors
@@ -1126,6 +1167,7 @@ fn impl_accounts(input: &DeriveInput) -> TokenStream2 {
                 pda_json: pda_jsons[i].clone(),
                 field_ty: &f.idl_field_ty,
                 address_override: f.idl_address.as_deref(),
+                address_override_expr: f.idl_address_expr.as_ref(),
                 // `Nested<Inner>` flattens at IDL emission time by calling
                 // into `Inner::__idl_accounts()`. Grab the inner `Type` so
                 // the emitter can synthesize that call.
@@ -1764,7 +1806,6 @@ fn impl_accounts(input: &DeriveInput) -> TokenStream2 {
                 #bumps_init
                 #(#loads)*
                 #(#deferred_loads)*
-                #dup_check_block
                 #(#constraints)*
                 Ok((Self { #(#field_names),* }, __bumps, #ix_args_return))
             }
@@ -1833,6 +1874,11 @@ pub fn account(attr: TokenStream, item: TokenStream) -> TokenStream {
     let disc_literals: Vec<_> = disc_bytes.iter().map(|b| quote! { #b }).collect();
 
     let struct_docs = idl::extract_doc_lines(attrs);
+    if is_borsh {
+        if let Err(err) = reject_wincode_idl_overrides_in_fields("`#[account(borsh)]`", fields) {
+            return err.to_compile_error().into();
+        }
+    }
     // `#[account]` has two modes: default zero-copy (Pod + repr(C)) and opt-in
     // borsh (`#[account(borsh)]`). The borsh mode is implemented on top of
     // wincode + `BORSH_CONFIG`, which produces byte-identical output to a
@@ -2051,6 +2097,12 @@ pub fn account(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// but has no corresponding entry in `types[]` — TS clients then fail to
 /// decode the nested field.
 ///
+/// The same applies to custom structs passed as `#[program]` instruction
+/// arguments: the IDL build resolves every arg type through
+/// `IdlAccountType`, so a plain args struct (typically deriving
+/// `wincode::SchemaRead` / `wincode::SchemaWrite` for the wire format)
+/// additionally needs this derive or `anchor idl build` fails to compile.
+///
 /// Unlike `#[account]`, this derive carries **none** of the account-kind
 /// baggage: no discriminator, no `Owner`, no `Discriminator` trait, no
 /// forced `#[repr(C)]`, no Pod/Zeroable derives. It only emits the
@@ -2080,6 +2132,22 @@ pub fn account(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     Futures(u64),
 ///     Margin { leverage: u8, symbol: [u8; 8] },
 /// }
+///
+/// // Custom instruction-argument struct.
+/// #[derive(Clone, Copy, IdlType, wincode::SchemaRead, wincode::SchemaWrite)]
+/// pub struct MyArgs {
+///     pub amount: u64,
+///     pub tag: [u8; 3],
+/// }
+///
+/// #[program]
+/// pub mod my_program {
+///     use super::*;
+///     pub fn defined_args(ctx: &mut Context<SetValue>, args: MyArgs) -> Result<()> {
+///         /* ... */
+///         Ok(())
+///     }
+/// }
 /// ```
 #[proc_macro_derive(IdlType)]
 pub fn derive_idl_type(input: TokenStream) -> TokenStream {
@@ -2102,6 +2170,11 @@ pub fn derive_idl_type(input: TokenStream) -> TokenStream {
     // `"bytemuck"` tag here would lie in the IDL for non-Pod types.
     let (idl_type_strings, field_tys) = match &input.data {
         Data::Struct(data) => {
+            if let Err(err) =
+                reject_wincode_idl_overrides_in_fields("`#[derive(IdlType)]`", &data.fields)
+            {
+                return err.to_compile_error().into();
+            }
             let strings = match &data.fields {
                 Fields::Named(named) => idl::build_type_strings(
                     &name_str,
@@ -2135,6 +2208,11 @@ pub fn derive_idl_type(input: TokenStream) -> TokenStream {
             (strings, field_tys)
         }
         Data::Enum(data) => {
+            if let Err(err) =
+                reject_wincode_idl_overrides_in_variants("`#[derive(IdlType)]`", &data.variants)
+            {
+                return err.to_compile_error().into();
+            }
             let strings = idl::build_enum_type_strings(
                 &name_str,
                 &empty_disc,
@@ -2403,16 +2481,19 @@ fn gen_declared_program(name: &Ident, idl: &serde_json::Value) -> syn::Result<To
     let type_reexports = type_idents
         .iter()
         .map(|ident| quote! { pub use super::#ident; });
+    let reserved_account_group_names: std::collections::BTreeSet<String> =
+        type_idents.iter().map(ToString::to_string).collect();
     let constants = gen_declare_program_constants(idl)?;
     let events = gen_declare_program_events(idl)?;
     let errors = gen_declare_program_errors(idl, name.span())?;
     let mut account_groups = std::collections::BTreeMap::<String, Vec<DeclareAccountField>>::new();
+    let mut account_group_variants =
+        std::collections::BTreeMap::<String, Vec<DeclareAccountGroupVariant>>::new();
     let mut handlers = Vec::new();
     for ix in instructions {
         let ix_name = json_str(ix, "name", name.span())?;
         let ix_ident = Ident::new(&to_snake_case(ix_name), name.span());
         let accounts_name = to_type_name(ix_name);
-        let accounts_ident = Ident::new(&accounts_name, name.span());
         let accounts = ix
             .get("accounts")
             .and_then(serde_json::Value::as_array)
@@ -2422,7 +2503,15 @@ fn gen_declared_program(name: &Ident, idl: &serde_json::Value) -> syn::Result<To
                     format!("instruction `{ix_name}` is missing accounts array"),
                 )
             })?;
-        collect_declare_account_group(&accounts_name, accounts, &mut account_groups, name.span())?;
+        let generated_accounts_name = collect_declare_account_group(
+            &accounts_name,
+            accounts,
+            &reserved_account_group_names,
+            &mut account_groups,
+            &mut account_group_variants,
+            name.span(),
+        )?;
+        let accounts_ident = Ident::new(&generated_accounts_name, name.span());
 
         let discrim = ix
             .get("discriminator")
@@ -2655,6 +2744,42 @@ fn validate_discriminator_prefixes(
     Ok(())
 }
 
+fn validate_instruction_discriminator_prefixes(
+    handlers: &[&syn::ItemFn],
+    discrim_attrs: &[Option<DiscrimAttr>],
+) -> syn::Result<()> {
+    let discriminators: Vec<_> = handlers
+        .iter()
+        .enumerate()
+        .map(|(i, handler)| {
+            let name = handler.sig.ident.to_string();
+            let bytes = discrim_attrs[i]
+                .as_ref()
+                .map(|d| d.bytes.clone())
+                .unwrap_or_else(|| default_instruction_discriminator(&to_snake_case(&name)));
+            (name, bytes, handler.sig.ident.span())
+        })
+        .collect();
+
+    for (outer_name, outer_disc, outer_span) in &discriminators {
+        for (inner_name, inner_disc, _) in &discriminators {
+            if outer_name != inner_name && outer_disc.starts_with(inner_disc) {
+                return Err(syn::Error::new(
+                    *outer_span,
+                    format!(
+                        "Ambiguous discriminators for instructions: `{inner_name}` discriminator \
+                         {} is a prefix of `{outer_name}` discriminator {}",
+                        format_discriminator_bytes(inner_disc),
+                        format_discriminator_bytes(outer_disc),
+                    ),
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn format_discriminator_bytes(discriminator: &[u8]) -> String {
     let bytes = discriminator
         .iter()
@@ -2682,16 +2807,91 @@ impl DeclareAccountField {
     }
 }
 
+struct DeclareAccountGroupVariant {
+    signature: String,
+    generated_name: String,
+}
+
+fn declare_account_group_signature(
+    accounts: &[serde_json::Value],
+    span: proc_macro2::Span,
+) -> syn::Result<String> {
+    let mut signature = String::new();
+    for account in accounts {
+        signature.push_str(&declare_account_signature(account, span)?);
+        signature.push(';');
+    }
+    Ok(signature)
+}
+
+fn declare_account_signature(
+    account: &serde_json::Value,
+    span: proc_macro2::Span,
+) -> syn::Result<String> {
+    let name = json_str(account, "name", span)?;
+    if let Some(nested) = account.get("accounts").and_then(serde_json::Value::as_array) {
+        return Ok(format!(
+            "nested:{name}:{}",
+            declare_account_group_signature(nested, span)?
+        ));
+    }
+
+    let writable = account
+        .get("writable")
+        .or_else(|| account.get("isMut"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let signer = account
+        .get("signer")
+        .or_else(|| account.get("isSigner"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let optional = account
+        .get("optional")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    Ok(format!("leaf:{name}:{writable}:{signer}:{optional}"))
+}
+
+fn next_declare_account_group_name(
+    base_name: &str,
+    reserved_names: &std::collections::BTreeSet<String>,
+    groups: &std::collections::BTreeMap<String, Vec<DeclareAccountField>>,
+) -> String {
+    if !groups.contains_key(base_name) && !reserved_names.contains(base_name) {
+        return base_name.to_string();
+    }
+
+    let mut suffix = 2usize;
+    loop {
+        let candidate = format!("{base_name}{suffix}");
+        if !groups.contains_key(&candidate) && !reserved_names.contains(&candidate) {
+            return candidate;
+        }
+        suffix += 1;
+    }
+}
+
 fn collect_declare_account_group(
     group_name: &str,
     accounts: &[serde_json::Value],
+    reserved_names: &std::collections::BTreeSet<String>,
     groups: &mut std::collections::BTreeMap<String, Vec<DeclareAccountField>>,
+    variants: &mut std::collections::BTreeMap<String, Vec<DeclareAccountGroupVariant>>,
     span: proc_macro2::Span,
-) -> syn::Result<()> {
-    if groups.contains_key(group_name) {
-        return Ok(());
+) -> syn::Result<String> {
+    let signature = declare_account_group_signature(accounts, span)?;
+    if let Some(existing_name) = variants.get(group_name).and_then(|group_variants| {
+        group_variants
+            .iter()
+            .find(|variant| variant.signature == signature)
+            .map(|variant| variant.generated_name.clone())
+    }) {
+        return Ok(existing_name);
     }
 
+    let generated_name = next_declare_account_group_name(group_name, reserved_names, groups);
     let mut fields = Vec::new();
     for account in accounts {
         let name = json_str(account, "name", span)?;
@@ -2701,8 +2901,15 @@ fn collect_declare_account_group(
             .and_then(serde_json::Value::as_array)
         {
             let nested_name = to_type_name(name);
-            collect_declare_account_group(&nested_name, nested, groups, span)?;
-            let nested_ident = Ident::new(&nested_name, span);
+            let generated_nested_name = collect_declare_account_group(
+                &nested_name,
+                nested,
+                reserved_names,
+                groups,
+                variants,
+                span,
+            )?;
+            let nested_ident = Ident::new(&generated_nested_name, span);
             fields.push(DeclareAccountField {
                 name: ident,
                 ty: quote! { anchor_lang_v2::Nested<#nested_ident> },
@@ -2745,8 +2952,15 @@ fn collect_declare_account_group(
         });
     }
 
-    groups.insert(group_name.to_string(), fields);
-    Ok(())
+    groups.insert(generated_name.clone(), fields);
+    variants
+        .entry(group_name.to_string())
+        .or_default()
+        .push(DeclareAccountGroupVariant {
+            signature,
+            generated_name: generated_name.clone(),
+        });
+    Ok(generated_name)
 }
 
 fn gen_declare_program_types(idl: &serde_json::Value) -> syn::Result<Vec<TokenStream2>> {
@@ -3866,6 +4080,47 @@ fn is_unit_type(ty: &Type) -> bool {
     matches!(ty, Type::Tuple(tuple) if tuple.elems.is_empty())
 }
 
+fn reject_wincode_idl_overrides_in_fields(surface: &str, fields: &syn::Fields) -> syn::Result<()> {
+    for field in fields.iter() {
+        if let Some(err) = unsupported_wincode_idl_attr_error(surface, &field.attrs) {
+            return Err(err);
+        }
+    }
+    Ok(())
+}
+
+fn reject_wincode_idl_overrides_in_variants(
+    surface: &str,
+    variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
+) -> syn::Result<()> {
+    for variant in variants {
+        reject_wincode_idl_overrides_in_fields(surface, &variant.fields)?;
+    }
+    Ok(())
+}
+
+fn unsupported_wincode_idl_attr_error(
+    surface: &str,
+    attrs: &[syn::Attribute],
+) -> Option<syn::Error> {
+    match find_unsupported_wincode_attr(attrs) {
+        Ok(Some((UnsupportedWincodeAttrKind::Skip, span))) => Some(syn::Error::new(
+            span,
+            format!(
+                "{surface} does not support `#[wincode(skip)]` fields because generated IDL would not match the serialized wire layout; remove the override or exclude this type from generated IDL"
+            ),
+        )),
+        Ok(Some((UnsupportedWincodeAttrKind::With, span))) => Some(syn::Error::new(
+            span,
+            format!(
+                "{surface} does not support `#[wincode(with = ...)]` fields because custom wincode codecs can change the serialized wire layout; remove the override or exclude this type from generated IDL"
+            ),
+        )),
+        Ok(None) => None,
+        Err(err) => Some(err),
+    }
+}
+
 fn extract_result_return_type(output: &syn::ReturnType) -> syn::Result<Option<Type>> {
     let syn::ReturnType::Type(_, ty) = output else {
         return Ok(None);
@@ -4336,20 +4591,8 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
             }
         }
     } else if config.mode == ProgramMode::Interface {
-        let mut seen: std::collections::HashMap<Vec<u8>, proc_macro2::Span> =
-            std::collections::HashMap::new();
-        for (i, d) in discrim_attrs.iter().enumerate() {
-            let Some(d) = d else { continue };
-            if let Some(_first_span) = seen.insert(d.bytes.clone(), d.span) {
-                return syn::Error::new(
-                    d.span,
-                    format!(
-                        "duplicate `#[discrim = ...]` on instruction `{}`",
-                        handlers[i].sig.ident
-                    ),
-                )
-                .to_compile_error();
-            }
+        if let Err(err) = validate_instruction_discriminator_prefixes(&handlers, &discrim_attrs) {
+            return err.to_compile_error();
         }
     }
     let discrim_attrs: Vec<Option<Vec<u8>>> = discrim_attrs
@@ -4430,10 +4673,10 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
     // Returns u64 error code on failure (not Err) since __anchor_dispatch
     // returns u64 directly.
     // Build a const expression for the minimum ix_data length across all
-    // instructions: disc_size + min(serialized args size per ix). Uses
-    // `size_of` on a tuple of arg types — only when ALL args are owned
-    // fixed-size types (no references, no dynamic-size). Falls back to 0
-    // for instructions with references or complex types.
+    // instructions: disc_size + min(serialized args size per ix). Uses a
+    // per-argument scalar-size sum only when ALL args are owned fixed-size
+    // primitives (no references, no dynamic-size). Falls back to 0 for
+    // instructions with references or complex types.
     fn is_fixed_size_primitive(ty: &syn::Type) -> bool {
         match ty {
             syn::Type::Path(p) if p.path.segments.len() == 1 => {
@@ -4464,7 +4707,7 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
                 if types.is_empty() || !types.iter().all(is_fixed_size_primitive) {
                     quote! { 0usize }
                 } else {
-                    quote! { core::mem::size_of::<(#(#types,)*)>() }
+                    quote! { 0usize #( + core::mem::size_of::<#types>() )* }
                 }
             })
             .collect();
@@ -4955,6 +5198,11 @@ pub fn event(attr: TokenStream, item: TokenStream) -> TokenStream {
         EventMode::Bytemuck => idl::TypeKind::BytemuckRepr,
     };
     let struct_docs = idl::extract_doc_lines(attrs);
+    if matches!(mode, EventMode::Wincode) {
+        if let Err(err) = reject_wincode_idl_overrides_in_fields("`#[event]`", fields) {
+            return err.to_compile_error().into();
+        }
+    }
     let event_type_strings = if let Fields::Named(named) = fields {
         idl::build_type_strings(&name_str, disc_bytes, &struct_docs, &named.named, type_kind)
     } else {
@@ -5536,6 +5784,9 @@ pub fn constant(_attr: TokenStream, input: TokenStream) -> TokenStream {
 ///
 /// Variable-size fields (`String`, `Vec<T>`) require a `#[max_len(N)]` helper
 /// attribute to specify the reserved capacity.
+/// Fields using `#[wincode(skip)]` or `#[wincode(with = ...)]` are rejected:
+/// those overrides change the wire layout, so the derive cannot infer a safe
+/// `INIT_SPACE` constant.
 ///
 /// # Example
 ///
@@ -5934,6 +6185,41 @@ mod tests {
         assert!(
             !generated.contains("default_allocator"),
             "interface mode must not emit entrypoint runtime: {generated}"
+        );
+    }
+
+    #[test]
+    fn program_interface_mode_rejects_prefix_overlapping_discriminators() {
+        let module: syn::ItemMod = syn::parse_quote! {
+            pub mod external_program {
+                use super::*;
+
+                #[discrim = [1]]
+                pub fn short(_ctx: &mut Context<Short>) -> Result<()> {
+                    unreachable!()
+                }
+
+                #[discrim = [1, 2]]
+                pub fn long(_ctx: &mut Context<Long>) -> Result<()> {
+                    unreachable!()
+                }
+            }
+        };
+        let config = ProgramConfig {
+            mode: ProgramMode::Interface,
+            program_id: syn::parse_quote!(super::ID),
+        };
+
+        let generated = impl_program(&module, &config).to_string();
+
+        assert!(
+            generated.contains("Ambiguous discriminators for instructions"),
+            "expected prefix-overlap rejection: {generated}"
+        );
+        assert!(
+            generated
+                .contains("`short` discriminator [1] is a prefix of `long` discriminator [1, 2]"),
+            "expected targeted prefix diagnostic: {generated}"
         );
     }
 }

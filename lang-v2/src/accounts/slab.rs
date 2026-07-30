@@ -32,7 +32,7 @@ pub(super) fn cold_owner_error(view: &AccountView) -> ProgramError {
 #[cfg(feature = "guardrails")]
 #[inline(always)]
 pub(super) fn cold_not_writable() -> ProgramError {
-    ProgramError::InvalidAccountData
+    crate::ErrorCode::ConstraintMut.into()
 }
 
 /// Capacity from live `data_len` / `items_offset` / `item_size`. Returns 0
@@ -233,6 +233,10 @@ where
                 H::DATA_OFFSET % core::mem::align_of::<H>() == 0,
                 "Slab header DATA_OFFSET is not aligned for the header type",
             );
+            assert!(
+                !Self::HAS_TAIL || core::mem::align_of::<T>() <= 8,
+                "Slab tail alignment exceeds Solana's 8-byte account data alignment",
+            );
         };
     }
 
@@ -247,6 +251,33 @@ where
     #[inline(always)]
     pub fn view(&self) -> &AccountView {
         &self.view
+    }
+
+    /// Re-run the slab's load-time schema checks after a CPI that may have
+    /// changed owner, discriminator, data length, or tail metadata.
+    ///
+    /// Unlike [`super::serialized_account::SerializedAccount::reacquire_borrow_mut`],
+    /// this does not need a preceding `release_borrow()`: `Slab` keeps no
+    /// `Ref` / `RefMut` guard alive, only a raw `AccountView` plus cached
+    /// pointers into the same runtime buffer. Use this when a CPI may have
+    /// mutated the account and you want to ensure the live bytes still
+    /// validate as `Slab<H, T>` before continuing.
+    pub fn revalidate_after_cpi(&mut self) -> Result<(), ProgramError> {
+        let data = unsafe { self.view.borrow_unchecked() };
+        H::validate(&self.view, data)?;
+        if data.len() < Self::ITEMS_OFFSET {
+            return Err(ProgramError::AccountDataTooSmall);
+        }
+        Self::validate_tail(data)?;
+
+        self.header_ptr = if self.is_mutable {
+            let mut view_mut = self.view;
+            (unsafe { view_mut.data_mut_ptr().add(Self::HEADER_OFFSET) }) as *mut H
+        } else {
+            (unsafe { self.view.data_ptr().add(Self::HEADER_OFFSET) }) as *mut H
+        };
+
+        Ok(())
     }
 
     /// Validate `len <= capacity` for the tail region before we do the
@@ -429,18 +460,30 @@ where
 
     /// Read the `len` field without requiring `LEN_OFFSET` alignment —
     /// `from_le_bytes` operates on a copy, so misaligned layouts are fine.
+    ///
+    /// Returns `None` when an external shrink has shortened the live account
+    /// data below the `len` field itself.
     #[inline(always)]
-    fn read_len(&self) -> u32 {
+    fn read_len(&self) -> Option<u32> {
+        if self.view.data_len() < Self::LEN_OFFSET + 4 {
+            return None;
+        }
         let bytes = self.guard_bytes();
         let mut buf = [0u8; 4];
         buf.copy_from_slice(&bytes[Self::LEN_OFFSET..Self::LEN_OFFSET + 4]);
-        u32::from_le_bytes(buf)
+        Some(u32::from_le_bytes(buf))
     }
 
     /// Write the `len` field. Same alignment-free pattern as `read_len`.
+    ///
+    /// If an external shrink has removed the field entirely, this becomes a
+    /// no-op after still validating the mutable-borrow contract.
     #[inline(always)]
     fn write_len(&mut self, new_len: u32) {
         let bytes = self.guard_bytes_mut();
+        if bytes.len() < Self::LEN_OFFSET + 4 {
+            return;
+        }
         bytes[Self::LEN_OFFSET..Self::LEN_OFFSET + 4].copy_from_slice(&new_len.to_le_bytes());
     }
 
@@ -470,9 +513,12 @@ where
     }
 
     /// Current number of items in the tail region.
+    ///
+    /// Returns 0 if an external shrink has shortened the live account data
+    /// below the `len` field.
     #[inline(always)]
     pub fn len(&self) -> usize {
-        self.read_len() as usize
+        self.read_len().unwrap_or(0) as usize
     }
 
     /// How many items the account's tail region can currently hold.
@@ -514,6 +560,9 @@ where
     #[inline]
     pub fn as_slice(&self) -> &[T] {
         let len = self.effective_len();
+        if self.view.data_len() < Self::ITEMS_OFFSET {
+            return &[];
+        }
         let bytes = self.guard_bytes();
         // `ITEMS_OFFSET` is const-computed to be `align_of::<T>()`-aligned,
         // and Pod requires `size_of` is a multiple of `align_of`, so every
@@ -528,6 +577,9 @@ where
     #[inline]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         let len = self.effective_len();
+        if self.view.data_len() < Self::ITEMS_OFFSET {
+            return &mut [];
+        }
         let bytes = self.guard_bytes_mut();
         let items_bytes =
             &mut bytes[Self::ITEMS_OFFSET..Self::ITEMS_OFFSET + len * core::mem::size_of::<T>()];
@@ -924,6 +976,9 @@ impl<H, T> crate::IdlAccountType for Slab<H, T>
 where
     H: Pod + Zeroable + SlabSchema + crate::IdlAccountType,
 {
+    // IDL currently exposes only the header shape. The dynamic tail cannot be
+    // represented faithfully in the existing spec because `Slab` stores
+    // `[len][pad][items..]`, not a plain `Vec<T>` encoding.
     const __IDL_ACCOUNT_ENTRY: Option<&'static str> = H::__IDL_ACCOUNT_ENTRY;
     const __IDL_TYPE_DEF: Option<&'static str> = H::__IDL_TYPE_DEF;
     fn __register_idl_deps(

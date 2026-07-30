@@ -3,6 +3,10 @@ use std::{fs, path::PathBuf, process::Command};
 #[derive(Clone, Copy)]
 enum CargoMode {
     Check,
+    /// `cargo check --tests` — compiles the lib's unit-test target so
+    /// `#[cfg(all(test, feature = "idl-build"))]` codegen (the hidden
+    /// `__anchor_private_idl` module) gets type-checked.
+    CheckTests,
     Build,
 }
 
@@ -37,6 +41,11 @@ impl<'a> CompileCase<'a> {
 
     fn build(mut self) -> Self {
         self.mode = CargoMode::Build;
+        self
+    }
+
+    fn check_tests(mut self) -> Self {
+        self.mode = CargoMode::CheckTests;
         self
     }
 
@@ -78,6 +87,7 @@ wincode = {{ version = "0.5", features = ["derive"] }}
 
 [features]
 cpi = []
+idl-build = []
 
 [workspace]
 "#,
@@ -98,6 +108,7 @@ cpi = []
         let mut command = Command::new("cargo");
         match self.mode {
             CargoMode::Check => command.arg("check"),
+            CargoMode::CheckTests => command.args(["check", "--tests"]),
             CargoMode::Build => command.arg("build"),
         };
         command.args(["--offline", "--manifest-path"]);
@@ -309,7 +320,77 @@ pub mod program_interface_duplicate_discriminator {
 }
 "#,
     )
-    .expect_fail(&["duplicate `#[discrim = ...]`"]);
+    .expect_fail(&["Ambiguous discriminators for instructions"]);
+}
+
+#[test]
+fn program_interface_allows_distinct_discriminators_with_shared_prefix_bytes() {
+    CompileCase::new(
+        "program_interface_shared_prefix_distinct",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+const EXTERNAL_ID: Address =
+    anchor_lang_v2::address!("Con9ukTn9BRPXWcjS2UBbuN3NnCwy1hcaDNZ9Hb8QMNp");
+
+#[derive(Accounts)]
+pub struct Empty {}
+
+#[program(interface, program_id = EXTERNAL_ID)]
+pub mod program_interface_shared_prefix_distinct {
+    use super::*;
+
+    #[discrim = [1, 2, 3]]
+    pub fn first(ctx: &mut Context<Empty>) -> Result<()> {
+        let _ = ctx;
+        Ok(())
+    }
+
+    #[discrim = [1, 2, 4]]
+    pub fn second(ctx: &mut Context<Empty>) -> Result<()> {
+        let _ = ctx;
+        Ok(())
+    }
+}
+"#,
+    )
+    .expect_pass();
+}
+
+#[test]
+fn program_interface_rejects_prefix_overlapping_discriminators() {
+    CompileCase::new(
+        "program_interface_prefix_overlap",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+const EXTERNAL_ID: Address =
+    anchor_lang_v2::address!("Con9ukTn9BRPXWcjS2UBbuN3NnCwy1hcaDNZ9Hb8QMNp");
+
+#[derive(Accounts)]
+pub struct Empty {}
+
+#[program(interface, program_id = EXTERNAL_ID)]
+pub mod program_interface_prefix_overlap {
+    use super::*;
+
+    #[discrim = [1, 2]]
+    pub fn short(ctx: &mut Context<Empty>) -> Result<()> {
+        let _ = ctx;
+        Ok(())
+    }
+
+    #[discrim = [1, 2, 3]]
+    pub fn long(ctx: &mut Context<Empty>) -> Result<()> {
+        let _ = ctx;
+        Ok(())
+    }
+}
+"#,
+    )
+    .expect_fail(&["Ambiguous discriminators for instructions"]);
 }
 
 #[test]
@@ -422,6 +503,34 @@ pub fn build_ix(authority: Address, data: Address, owner: Address) -> anchor_lan
 }"#,
     )
     .expect_pass();
+}
+
+#[test]
+fn declare_program_account_group_variants_do_not_collide_with_existing_types() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let surface_idl_path = manifest_dir.join("programs/declare-program/surface/idls/surface.json");
+    let surface_idl = fs::read_to_string(&surface_idl_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", surface_idl_path.display()));
+    let mut surface: serde_json::Value =
+        serde_json::from_str(&surface_idl).expect("surface fixture should parse");
+    surface["types"]
+        .as_array_mut()
+        .expect("surface types should be an array")
+        .push(serde_json::json!({
+            "name": "Shared2",
+            "type": {
+                "kind": "struct",
+                "fields": [
+                    {
+                        "name": "value",
+                        "type": "u64"
+                    }
+                ]
+            }
+        }));
+    let idl = Box::leak(surface.to_string().into_boxed_str());
+
+    declare_program_case("declare_program_account_group_type_name_collision", idl).expect_pass();
 }
 
 #[test]
@@ -1184,6 +1293,54 @@ pub unsafe fn load_bad(view: AccountView) {
 }
 
 #[test]
+fn slab_overaligned_tail_does_not_compile() {
+    CompileCase::new(
+        "slab_overaligned_tail",
+        r#"
+use anchor_lang_v2::{
+    accounts::{Slab, SlabSchema},
+    prelude::*,
+    AccountView,
+};
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GoodHeader {
+    value: u64,
+}
+
+unsafe impl anchor_lang_v2::bytemuck::Zeroable for GoodHeader {}
+unsafe impl anchor_lang_v2::bytemuck::Pod for GoodHeader {}
+
+impl SlabSchema for GoodHeader {
+    const DATA_OFFSET: usize = 0;
+    const MIN_DATA_LEN: usize = 8;
+
+    fn validate(
+        _view: &AccountView,
+        _data: &[u8],
+    ) -> core::result::Result<(), ProgramError> {
+        Ok(())
+    }
+}
+
+#[repr(C, align(16))]
+#[derive(Clone, Copy)]
+pub struct OveralignedTail([u8; 16]);
+
+unsafe impl anchor_lang_v2::bytemuck::Zeroable for OveralignedTail {}
+unsafe impl anchor_lang_v2::bytemuck::Pod for OveralignedTail {}
+
+pub unsafe fn load_bad(view: AccountView) {
+    let _ = <Slab<GoodHeader, OveralignedTail> as AnchorAccount>::load_mut(view);
+}
+"#,
+    )
+    .build()
+    .expect_fail(&["Slab tail alignment exceeds Solana's 8-byte account data alignment"]);
+}
+
+#[test]
 fn realloc_on_unchecked_account_does_not_compile() {
     CompileCase::new(
         "realloc_on_unchecked_account",
@@ -1373,4 +1530,61 @@ pub struct Resize {
 "#,
     )
     .expect_pass();
+}
+
+// otter-sec/anchor#4850 — a plain arg struct with only the wincode schema
+// derives has no `IdlAccountType` impl, so idl-build compilation must fail
+// with a diagnostic that points at `#[derive(IdlType)]` (the old message
+// suggested `#[account]`, which drags in Pod/discriminator baggage).
+const DEFINED_ARGS_PROGRAM: &str = r#"
+use anchor_lang_v2::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+#[derive(Clone, Copy, DERIVE_LIST)]
+pub struct MyArgs {
+    pub amount: u64,
+    pub tag: [u8; 3],
+}
+
+#[derive(Accounts)]
+pub struct Apply {
+    pub authority: Signer,
+}
+
+#[program]
+pub mod defined_args {
+    use super::*;
+
+    #[discrim = 0]
+    pub fn apply(ctx: &mut Context<Apply>, args: MyArgs) -> Result<()> {
+        let _ = (ctx, args);
+        Ok(())
+    }
+}
+"#;
+
+#[test]
+fn idl_build_rejects_arg_struct_without_idl_type_derive() {
+    let source =
+        DEFINED_ARGS_PROGRAM.replace("DERIVE_LIST", "wincode::SchemaRead, wincode::SchemaWrite");
+    CompileCase::new("idl_build_arg_struct_missing_idl_type", &source)
+        .features(&["idl-build"])
+        .check_tests()
+        .expect_fail(&[
+            "`MyArgs` has no IDL type information",
+            "`#[derive(IdlType)]`",
+        ]);
+}
+
+#[test]
+fn idl_build_accepts_arg_struct_with_idl_type_derive() {
+    let source = DEFINED_ARGS_PROGRAM.replace(
+        "DERIVE_LIST",
+        "IdlType, wincode::SchemaRead, wincode::SchemaWrite",
+    );
+    CompileCase::new("idl_build_arg_struct_with_idl_type", &source)
+        .features(&["idl-build"])
+        .check_tests()
+        .expect_pass();
 }
