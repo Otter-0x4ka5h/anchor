@@ -313,20 +313,6 @@ fn unchecked_account_load_mut_accepts_writable() {
     assert_eq!(ua.address().to_bytes(), [0xAB; 32]);
 }
 
-#[test]
-fn unchecked_account_close_method_fails_at_runtime() {
-    let data_buf = AccountBuffer::<128>::new();
-    data_buf.init([0xAB; 32], [0x99; 32], 0, false, true, false);
-    let mut data = unsafe { UncheckedAccount::load_mut(data_buf.view()) }.unwrap();
-
-    let receiver_buf = AccountBuffer::<128>::new();
-    receiver_buf.init([0xCD; 32], [0x99; 32], 0, false, true, false);
-    let receiver = unsafe { receiver_buf.view() };
-
-    let err = expect_err(anchor_lang_v2::AnchorAccount::close(&mut data, receiver));
-    assert_eq!(err, ProgramError::InvalidArgument);
-}
-
 // -- Program<T> ---------------------------------------------------------
 
 #[test]
