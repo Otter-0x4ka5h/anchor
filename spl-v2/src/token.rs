@@ -402,12 +402,14 @@ pub trait TokenCpiExt {
         T: ToCpiHandleMut + ?Sized,
         A: ToCpiHandle + ?Sized;
 
+    #[allow(clippy::too_many_arguments)]
     fn transfer_checked<'a, F, M, T, A>(
         &'a self,
         from: &'a mut F,
         mint: &'a M,
         to: &'a mut T,
         authority: &'a A,
+        signer_seeds: TokenSignerSeeds<'a>,
         amount: u64,
         decimals: u8,
     ) -> Result<(), ProgramError>
@@ -422,6 +424,7 @@ pub trait TokenCpiExt {
         from: &'a mut F,
         mint: &'a mut M,
         authority: &'a A,
+        signer_seeds: TokenSignerSeeds<'a>,
         amount: u64,
     ) -> Result<(), ProgramError>
     where
@@ -434,6 +437,7 @@ pub trait TokenCpiExt {
         source: &'a mut S,
         delegate: &'a D,
         authority: &'a A,
+        signer_seeds: TokenSignerSeeds<'a>,
         amount: u64,
     ) -> Result<(), ProgramError>
     where
@@ -441,7 +445,12 @@ pub trait TokenCpiExt {
         D: ToCpiHandle + ?Sized,
         A: ToCpiHandle + ?Sized;
 
-    fn revoke<'a, S, A>(&'a self, source: &'a mut S, authority: &'a A) -> Result<(), ProgramError>
+    fn revoke<'a, S, A>(
+        &'a self,
+        source: &'a mut S,
+        authority: &'a A,
+        signer_seeds: TokenSignerSeeds<'a>,
+    ) -> Result<(), ProgramError>
     where
         S: ToCpiHandleMut + ?Sized,
         A: ToCpiHandle + ?Sized;
@@ -451,6 +460,7 @@ pub trait TokenCpiExt {
         account: &'a mut Acc,
         destination: &'a mut Dest,
         authority: &'a A,
+        signer_seeds: TokenSignerSeeds<'a>,
     ) -> Result<(), ProgramError>
     where
         Acc: ToCpiHandleMut + ?Sized,
@@ -462,6 +472,7 @@ pub trait TokenCpiExt {
         mint: &'a mut M,
         to: &'a mut T,
         authority: &'a A,
+        signer_seeds: TokenSignerSeeds<'a>,
         amount: u64,
         decimals: u8,
     ) -> Result<(), ProgramError>
@@ -475,6 +486,7 @@ pub trait TokenCpiExt {
         from: &'a mut F,
         mint: &'a mut M,
         authority: &'a A,
+        signer_seeds: TokenSignerSeeds<'a>,
         amount: u64,
         decimals: u8,
     ) -> Result<(), ProgramError>
@@ -489,6 +501,7 @@ pub trait TokenCpiExt {
         mint: &'a M,
         delegate: &'a D,
         authority: &'a A,
+        signer_seeds: TokenSignerSeeds<'a>,
         amount: u64,
         decimals: u8,
     ) -> Result<(), ProgramError>
@@ -503,6 +516,7 @@ pub trait TokenCpiExt {
         account: &'a mut Acc,
         mint: &'a M,
         authority: &'a A,
+        signer_seeds: TokenSignerSeeds<'a>,
     ) -> Result<(), ProgramError>
     where
         Acc: ToCpiHandleMut + ?Sized,
@@ -514,6 +528,7 @@ pub trait TokenCpiExt {
         account: &'a mut Acc,
         mint: &'a M,
         authority: &'a A,
+        signer_seeds: TokenSignerSeeds<'a>,
     ) -> Result<(), ProgramError>
     where
         Acc: ToCpiHandleMut + ?Sized,
@@ -644,6 +659,7 @@ impl TokenCpiExt for Program<Token> {
         mint: &'a M,
         to: &'a mut T,
         authority: &'a A,
+        signer_seeds: TokenSignerSeeds<'a>,
         amount: u64,
         decimals: u8,
     ) -> Result<(), ProgramError>
@@ -654,7 +670,7 @@ impl TokenCpiExt for Program<Token> {
         A: ToCpiHandle + ?Sized,
     {
         transfer_checked(
-            CpiContext::new(
+            token_cpi_ctx(
                 self.address(),
                 accounts::TransferChecked {
                     from: from.try_to_cpi_handle_mut()?,
@@ -662,6 +678,7 @@ impl TokenCpiExt for Program<Token> {
                     to: to.try_to_cpi_handle_mut()?,
                     authority: authority.to_cpi_handle(),
                 },
+                signer_seeds,
             ),
             amount,
             decimals,
@@ -673,6 +690,7 @@ impl TokenCpiExt for Program<Token> {
         from: &'a mut F,
         mint: &'a mut M,
         authority: &'a A,
+        signer_seeds: TokenSignerSeeds<'a>,
         amount: u64,
     ) -> Result<(), ProgramError>
     where
@@ -681,13 +699,14 @@ impl TokenCpiExt for Program<Token> {
         A: ToCpiHandle + ?Sized,
     {
         burn(
-            CpiContext::new(
+            token_cpi_ctx(
                 self.address(),
                 accounts::Burn {
                     from: from.try_to_cpi_handle_mut()?,
                     mint: mint.try_to_cpi_handle_mut()?,
                     authority: authority.to_cpi_handle(),
                 },
+                signer_seeds,
             ),
             amount,
         )
@@ -698,6 +717,7 @@ impl TokenCpiExt for Program<Token> {
         source: &'a mut S,
         delegate: &'a D,
         authority: &'a A,
+        signer_seeds: TokenSignerSeeds<'a>,
         amount: u64,
     ) -> Result<(), ProgramError>
     where
@@ -706,29 +726,36 @@ impl TokenCpiExt for Program<Token> {
         A: ToCpiHandle + ?Sized,
     {
         approve(
-            CpiContext::new(
+            token_cpi_ctx(
                 self.address(),
                 accounts::Approve {
                     to: source.try_to_cpi_handle_mut()?,
                     delegate: delegate.to_cpi_handle(),
                     authority: authority.to_cpi_handle(),
                 },
+                signer_seeds,
             ),
             amount,
         )
     }
 
-    fn revoke<'a, S, A>(&'a self, source: &'a mut S, authority: &'a A) -> Result<(), ProgramError>
+    fn revoke<'a, S, A>(
+        &'a self,
+        source: &'a mut S,
+        authority: &'a A,
+        signer_seeds: TokenSignerSeeds<'a>,
+    ) -> Result<(), ProgramError>
     where
         S: ToCpiHandleMut + ?Sized,
         A: ToCpiHandle + ?Sized,
     {
-        revoke(CpiContext::new(
+        revoke(token_cpi_ctx(
             self.address(),
             accounts::Revoke {
                 source: source.try_to_cpi_handle_mut()?,
                 authority: authority.to_cpi_handle(),
             },
+            signer_seeds,
         ))
     }
 
@@ -737,19 +764,21 @@ impl TokenCpiExt for Program<Token> {
         account: &'a mut Acc,
         destination: &'a mut Dest,
         authority: &'a A,
+        signer_seeds: TokenSignerSeeds<'a>,
     ) -> Result<(), ProgramError>
     where
         Acc: ToCpiHandleMut + ?Sized,
         Dest: ToCpiHandleMut + ?Sized,
         A: ToCpiHandle + ?Sized,
     {
-        close_account(CpiContext::new(
+        close_account(token_cpi_ctx(
             self.address(),
             accounts::CloseAccount {
                 account: account.try_to_cpi_handle_mut()?,
                 destination: destination.try_to_cpi_handle_mut()?,
                 authority: authority.to_cpi_handle(),
             },
+            signer_seeds,
         ))
     }
 
@@ -758,6 +787,7 @@ impl TokenCpiExt for Program<Token> {
         mint: &'a mut M,
         to: &'a mut T,
         authority: &'a A,
+        signer_seeds: TokenSignerSeeds<'a>,
         amount: u64,
         decimals: u8,
     ) -> Result<(), ProgramError>
@@ -767,13 +797,14 @@ impl TokenCpiExt for Program<Token> {
         A: ToCpiHandle + ?Sized,
     {
         mint_to_checked(
-            CpiContext::new(
+            token_cpi_ctx(
                 self.address(),
                 accounts::MintToChecked {
                     mint: mint.try_to_cpi_handle_mut()?,
                     to: to.try_to_cpi_handle_mut()?,
                     authority: authority.to_cpi_handle(),
                 },
+                signer_seeds,
             ),
             amount,
             decimals,
@@ -785,6 +816,7 @@ impl TokenCpiExt for Program<Token> {
         from: &'a mut F,
         mint: &'a mut M,
         authority: &'a A,
+        signer_seeds: TokenSignerSeeds<'a>,
         amount: u64,
         decimals: u8,
     ) -> Result<(), ProgramError>
@@ -794,13 +826,14 @@ impl TokenCpiExt for Program<Token> {
         A: ToCpiHandle + ?Sized,
     {
         burn_checked(
-            CpiContext::new(
+            token_cpi_ctx(
                 self.address(),
                 accounts::BurnChecked {
                     from: from.try_to_cpi_handle_mut()?,
                     mint: mint.try_to_cpi_handle_mut()?,
                     authority: authority.to_cpi_handle(),
                 },
+                signer_seeds,
             ),
             amount,
             decimals,
@@ -813,6 +846,7 @@ impl TokenCpiExt for Program<Token> {
         mint: &'a M,
         delegate: &'a D,
         authority: &'a A,
+        signer_seeds: TokenSignerSeeds<'a>,
         amount: u64,
         decimals: u8,
     ) -> Result<(), ProgramError>
@@ -823,7 +857,7 @@ impl TokenCpiExt for Program<Token> {
         A: ToCpiHandle + ?Sized,
     {
         approve_checked(
-            CpiContext::new(
+            token_cpi_ctx(
                 self.address(),
                 accounts::ApproveChecked {
                     to: source.try_to_cpi_handle_mut()?,
@@ -831,6 +865,7 @@ impl TokenCpiExt for Program<Token> {
                     delegate: delegate.to_cpi_handle(),
                     authority: authority.to_cpi_handle(),
                 },
+                signer_seeds,
             ),
             amount,
             decimals,
@@ -842,19 +877,21 @@ impl TokenCpiExt for Program<Token> {
         account: &'a mut Acc,
         mint: &'a M,
         authority: &'a A,
+        signer_seeds: TokenSignerSeeds<'a>,
     ) -> Result<(), ProgramError>
     where
         Acc: ToCpiHandleMut + ?Sized,
         M: ToCpiHandle + ?Sized,
         A: ToCpiHandle + ?Sized,
     {
-        freeze_account(CpiContext::new(
+        freeze_account(token_cpi_ctx(
             self.address(),
             accounts::FreezeAccount {
                 account: account.try_to_cpi_handle_mut()?,
                 mint: mint.to_cpi_handle(),
                 authority: authority.to_cpi_handle(),
             },
+            signer_seeds,
         ))
     }
 
@@ -863,19 +900,21 @@ impl TokenCpiExt for Program<Token> {
         account: &'a mut Acc,
         mint: &'a M,
         authority: &'a A,
+        signer_seeds: TokenSignerSeeds<'a>,
     ) -> Result<(), ProgramError>
     where
         Acc: ToCpiHandleMut + ?Sized,
         M: ToCpiHandle + ?Sized,
         A: ToCpiHandle + ?Sized,
     {
-        thaw_account(CpiContext::new(
+        thaw_account(token_cpi_ctx(
             self.address(),
             accounts::ThawAccount {
                 account: account.try_to_cpi_handle_mut()?,
                 mint: mint.to_cpi_handle(),
                 authority: authority.to_cpi_handle(),
             },
+            signer_seeds,
         ))
     }
 

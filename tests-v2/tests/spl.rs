@@ -800,6 +800,166 @@ fn token_cpi_ext_set_authority_supports_pda_authority() {
     );
 }
 
+#[test]
+fn token_cpi_ext_transfer_checked_supports_pda_authority() {
+    let (mut svm, payer) = setup();
+    let recipient = keypair_for("token-cpi-ext-pda-transfer-checked-recipient");
+    let mint = Pubkey::new_unique();
+    let from = Pubkey::new_unique();
+    let to = Pubkey::new_unique();
+    let (authority, _bump) = token_cpi_ext_authority_pda();
+
+    seed_token_owned_account(&mut svm, authority, program_id(), vec![0; 8]);
+    seed_token_owned_account(
+        &mut svm,
+        mint,
+        token_program_id(),
+        pack_base_mint(&authority, 6, 0).to_vec(),
+    );
+    seed_token_owned_account(
+        &mut svm,
+        from,
+        token_program_id(),
+        pack_base_token_account(&mint, &authority, 80).to_vec(),
+    );
+    seed_token_owned_account(
+        &mut svm,
+        to,
+        token_program_id(),
+        pack_base_token_account(&mint, &recipient.pubkey(), 0).to_vec(),
+    );
+
+    let mut data = vec![96];
+    data.extend_from_slice(&25u64.to_le_bytes());
+    data.push(6);
+    let metas = vec![
+        AccountMeta::new(from, false),
+        AccountMeta::new_readonly(mint, false),
+        AccountMeta::new(to, false),
+        AccountMeta::new_readonly(authority, false),
+        AccountMeta::new_readonly(token_program_id(), false),
+    ];
+    send_instruction(&mut svm, program_id(), data, metas, &payer, &[])
+        .expect("TokenCpiExt::transfer_checked should sign for PDA authorities");
+
+    let from_state = SplTokenAccount::unpack(&svm.get_account(&from).unwrap().data).unwrap();
+    let to_state = SplTokenAccount::unpack(&svm.get_account(&to).unwrap().data).unwrap();
+    assert_eq!(from_state.amount, 55);
+    assert_eq!(to_state.amount, 25);
+}
+
+#[test]
+fn token_cpi_ext_burn_supports_pda_authority() {
+    let (mut svm, payer) = setup();
+    let mint = Pubkey::new_unique();
+    let token = Pubkey::new_unique();
+    let (authority, _bump) = token_cpi_ext_authority_pda();
+
+    seed_token_owned_account(&mut svm, authority, program_id(), vec![0; 8]);
+    seed_token_owned_account(
+        &mut svm,
+        mint,
+        token_program_id(),
+        pack_base_mint(&authority, 6, 80).to_vec(),
+    );
+    seed_token_owned_account(
+        &mut svm,
+        token,
+        token_program_id(),
+        pack_base_token_account(&mint, &authority, 80).to_vec(),
+    );
+
+    let mut data = vec![97];
+    data.extend_from_slice(&30u64.to_le_bytes());
+    let metas = vec![
+        AccountMeta::new(token, false),
+        AccountMeta::new(mint, false),
+        AccountMeta::new_readonly(authority, false),
+        AccountMeta::new_readonly(token_program_id(), false),
+    ];
+    send_instruction(&mut svm, program_id(), data, metas, &payer, &[])
+        .expect("TokenCpiExt::burn should sign for PDA authorities");
+
+    let mint_state = SplMint::unpack(&svm.get_account(&mint).unwrap().data).unwrap();
+    let token_state = SplTokenAccount::unpack(&svm.get_account(&token).unwrap().data).unwrap();
+    assert_eq!(mint_state.supply, 50);
+    assert_eq!(token_state.amount, 50);
+}
+
+#[test]
+fn token_cpi_ext_approve_supports_pda_authority() {
+    let (mut svm, payer) = setup();
+    let mint = Pubkey::new_unique();
+    let source = Pubkey::new_unique();
+    let delegate = keypair_for("token-cpi-ext-pda-approve-delegate");
+    let (authority, _bump) = token_cpi_ext_authority_pda();
+
+    seed_token_owned_account(&mut svm, authority, program_id(), vec![0; 8]);
+    seed_token_owned_account(
+        &mut svm,
+        mint,
+        token_program_id(),
+        pack_base_mint(&authority, 6, 0).to_vec(),
+    );
+    seed_token_owned_account(
+        &mut svm,
+        source,
+        token_program_id(),
+        pack_base_token_account(&mint, &authority, 80).to_vec(),
+    );
+
+    let mut data = vec![98];
+    data.extend_from_slice(&40u64.to_le_bytes());
+    let metas = vec![
+        AccountMeta::new(source, false),
+        AccountMeta::new_readonly(delegate.pubkey(), false),
+        AccountMeta::new_readonly(authority, false),
+        AccountMeta::new_readonly(token_program_id(), false),
+    ];
+    send_instruction(&mut svm, program_id(), data, metas, &payer, &[])
+        .expect("TokenCpiExt::approve should sign for PDA authorities");
+
+    let state = SplTokenAccount::unpack(&svm.get_account(&source).unwrap().data).unwrap();
+    assert_eq!(state.delegate, COption::Some(to_spl(&delegate.pubkey())));
+    assert_eq!(state.delegated_amount, 40);
+}
+
+#[test]
+fn token_cpi_ext_thaw_supports_pda_authority() {
+    let (mut svm, payer) = setup();
+    let owner = keypair_for("token-cpi-ext-pda-thaw-owner");
+    let mint = Pubkey::new_unique();
+    let token = Pubkey::new_unique();
+    let (authority, _bump) = token_cpi_ext_authority_pda();
+
+    seed_token_owned_account(&mut svm, authority, program_id(), vec![0; 8]);
+    seed_token_owned_account(
+        &mut svm,
+        mint,
+        token_program_id(),
+        pack_base_mint_with_freeze(&owner.pubkey(), &authority, 6, 0).to_vec(),
+    );
+    seed_token_owned_account(
+        &mut svm,
+        token,
+        token_program_id(),
+        pack_frozen_token_account(&mint, &owner.pubkey(), 10).to_vec(),
+    );
+
+    let data = vec![99];
+    let metas = vec![
+        AccountMeta::new(token, false),
+        AccountMeta::new_readonly(mint, false),
+        AccountMeta::new_readonly(authority, false),
+        AccountMeta::new_readonly(token_program_id(), false),
+    ];
+    send_instruction(&mut svm, program_id(), data, metas, &payer, &[])
+        .expect("TokenCpiExt::thaw_account should sign for PDA authorities");
+
+    let state = SplTokenAccount::unpack(&svm.get_account(&token).unwrap().data).unwrap();
+    assert_eq!(state.state, AccountState::Initialized);
+}
+
 // ---- Accessor methods ------------------------------------------------------
 
 #[test]
@@ -1629,6 +1789,26 @@ fn pack_base_token_account(
         amount,
         delegate: COption::None,
         state: AccountState::Initialized,
+        is_native: COption::None,
+        delegated_amount: 0,
+        close_authority: COption::None,
+    };
+    let mut base = [0u8; SplTokenAccount::LEN];
+    state.pack_into_slice(&mut base);
+    base
+}
+
+fn pack_frozen_token_account(
+    mint: &Pubkey,
+    owner: &Pubkey,
+    amount: u64,
+) -> [u8; SplTokenAccount::LEN] {
+    let state = SplTokenAccount {
+        mint: to_spl(mint),
+        owner: to_spl(owner),
+        amount,
+        delegate: COption::None,
+        state: AccountState::Frozen,
         is_native: COption::None,
         delegated_amount: 0,
         close_authority: COption::None,

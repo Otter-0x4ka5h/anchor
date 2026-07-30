@@ -80,6 +80,7 @@ pub mod spl_test {
             &ctx.accounts.mint,
             &mut ctx.accounts.to,
             &ctx.accounts.authority,
+            &[],
             amount,
             decimals,
         )?;
@@ -93,6 +94,7 @@ pub mod spl_test {
             &mut ctx.accounts.account,
             &mut ctx.accounts.mint,
             &ctx.accounts.authority,
+            &[],
             amount,
         )?;
         Ok(())
@@ -105,6 +107,7 @@ pub mod spl_test {
             &mut ctx.accounts.source,
             &ctx.accounts.delegate,
             &ctx.accounts.authority,
+            &[],
             amount,
         )?;
         Ok(())
@@ -113,9 +116,11 @@ pub mod spl_test {
     /// Revokes the current delegate from `source`.
     #[discrim = 7]
     pub fn do_revoke(ctx: &mut Context<DoRevoke>) -> Result<()> {
-        ctx.accounts
-            .token_program
-            .revoke(&mut ctx.accounts.source, &ctx.accounts.authority)?;
+        ctx.accounts.token_program.revoke(
+            &mut ctx.accounts.source,
+            &ctx.accounts.authority,
+            &[],
+        )?;
         Ok(())
     }
 
@@ -126,6 +131,7 @@ pub mod spl_test {
             &mut ctx.accounts.account,
             &mut ctx.accounts.destination,
             &ctx.accounts.authority,
+            &[],
         )?;
 
         Ok(())
@@ -142,6 +148,7 @@ pub mod spl_test {
             &mut ctx.accounts.mint,
             &mut ctx.accounts.to,
             &ctx.accounts.authority,
+            &[],
             amount,
             decimals,
         )?;
@@ -159,6 +166,7 @@ pub mod spl_test {
             &mut ctx.accounts.account,
             &mut ctx.accounts.mint,
             &ctx.accounts.authority,
+            &[],
             amount,
             decimals,
         )?;
@@ -177,6 +185,7 @@ pub mod spl_test {
             &ctx.accounts.mint,
             &ctx.accounts.delegate,
             &ctx.accounts.authority,
+            &[],
             amount,
             decimals,
         )?;
@@ -191,6 +200,7 @@ pub mod spl_test {
             &mut ctx.accounts.account,
             &ctx.accounts.mint,
             &ctx.accounts.authority,
+            &[],
         )?;
         Ok(())
     }
@@ -201,6 +211,7 @@ pub mod spl_test {
             &mut ctx.accounts.account,
             &ctx.accounts.mint,
             &ctx.accounts.authority,
+            &[],
         )?;
         Ok(())
     }
@@ -337,6 +348,81 @@ pub mod spl_test {
             signer_seeds,
             token::spl_token::instruction::AuthorityType::CloseAccount,
             Some(new_authority),
+        )?;
+        Ok(())
+    }
+
+    /// TransferChecked through TokenCpiExt using a PDA token-account owner.
+    #[discrim = 96]
+    pub fn do_transfer_checked_pda_authority(
+        ctx: &mut Context<DoTransferCheckedPdaAuthority>,
+        amount: u64,
+        decimals: u8,
+    ) -> Result<()> {
+        let bump = [ctx.bumps.authority];
+        let authority_seeds = [TOKEN_CPI_EXT_AUTHORITY_SEED, &bump];
+        let signer_seeds = &[&authority_seeds[..]];
+        ctx.accounts.token_program.transfer_checked(
+            &mut ctx.accounts.from,
+            &ctx.accounts.mint,
+            &mut ctx.accounts.to,
+            &ctx.accounts.authority,
+            signer_seeds,
+            amount,
+            decimals,
+        )?;
+        Ok(())
+    }
+
+    /// Burn through TokenCpiExt using a PDA token-account owner.
+    #[discrim = 97]
+    pub fn do_burn_pda_authority(
+        ctx: &mut Context<DoBurnPdaAuthority>,
+        amount: u64,
+    ) -> Result<()> {
+        let bump = [ctx.bumps.authority];
+        let authority_seeds = [TOKEN_CPI_EXT_AUTHORITY_SEED, &bump];
+        let signer_seeds = &[&authority_seeds[..]];
+        ctx.accounts.token_program.burn(
+            &mut ctx.accounts.account,
+            &mut ctx.accounts.mint,
+            &ctx.accounts.authority,
+            signer_seeds,
+            amount,
+        )?;
+        Ok(())
+    }
+
+    /// Approve through TokenCpiExt using a PDA token-account owner.
+    #[discrim = 98]
+    pub fn do_approve_pda_authority(
+        ctx: &mut Context<DoApprovePdaAuthority>,
+        amount: u64,
+    ) -> Result<()> {
+        let bump = [ctx.bumps.authority];
+        let authority_seeds = [TOKEN_CPI_EXT_AUTHORITY_SEED, &bump];
+        let signer_seeds = &[&authority_seeds[..]];
+        ctx.accounts.token_program.approve(
+            &mut ctx.accounts.source,
+            &ctx.accounts.delegate,
+            &ctx.accounts.authority,
+            signer_seeds,
+            amount,
+        )?;
+        Ok(())
+    }
+
+    /// Thaw through TokenCpiExt using a PDA freeze authority.
+    #[discrim = 99]
+    pub fn do_thaw_account_pda_authority(ctx: &mut Context<DoThawAccountPdaAuthority>) -> Result<()> {
+        let bump = [ctx.bumps.authority];
+        let authority_seeds = [TOKEN_CPI_EXT_AUTHORITY_SEED, &bump];
+        let signer_seeds = &[&authority_seeds[..]];
+        ctx.accounts.token_program.thaw_account(
+            &mut ctx.accounts.account,
+            &ctx.accounts.mint,
+            &ctx.accounts.authority,
+            signer_seeds,
         )?;
         Ok(())
     }
@@ -1741,6 +1827,49 @@ pub struct DoTransferPdaAuthority {
 pub struct DoSetAuthorityPda {
     #[account(mut)]
     pub account_or_mint: Account<TokenAccount>,
+    #[account(seeds = [TOKEN_CPI_EXT_AUTHORITY_SEED], bump)]
+    pub authority: UncheckedAccount,
+    pub token_program: Program<Token>,
+}
+
+#[derive(Accounts)]
+pub struct DoTransferCheckedPdaAuthority {
+    #[account(mut)]
+    pub from: Account<TokenAccount>,
+    pub mint: Account<Mint>,
+    #[account(mut)]
+    pub to: Account<TokenAccount>,
+    #[account(seeds = [TOKEN_CPI_EXT_AUTHORITY_SEED], bump)]
+    pub authority: UncheckedAccount,
+    pub token_program: Program<Token>,
+}
+
+#[derive(Accounts)]
+pub struct DoBurnPdaAuthority {
+    #[account(mut)]
+    pub account: Account<TokenAccount>,
+    #[account(mut)]
+    pub mint: Account<Mint>,
+    #[account(seeds = [TOKEN_CPI_EXT_AUTHORITY_SEED], bump)]
+    pub authority: UncheckedAccount,
+    pub token_program: Program<Token>,
+}
+
+#[derive(Accounts)]
+pub struct DoApprovePdaAuthority {
+    #[account(mut)]
+    pub source: Account<TokenAccount>,
+    pub delegate: UncheckedAccount,
+    #[account(seeds = [TOKEN_CPI_EXT_AUTHORITY_SEED], bump)]
+    pub authority: UncheckedAccount,
+    pub token_program: Program<Token>,
+}
+
+#[derive(Accounts)]
+pub struct DoThawAccountPdaAuthority {
+    #[account(mut)]
+    pub account: Account<TokenAccount>,
+    pub mint: Account<Mint>,
     #[account(seeds = [TOKEN_CPI_EXT_AUTHORITY_SEED], bump)]
     pub authority: UncheckedAccount,
     pub token_program: Program<Token>,
