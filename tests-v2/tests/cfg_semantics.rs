@@ -106,35 +106,6 @@ pub struct Noop {}
     miri,
     ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
 )]
-fn cfg_attr_gated_public_handlers_compile_without_wrapper_errors() {
-    compile_pass_case(
-        "tests_v2_cfg_attr_gated_handler",
-        r#"
-use anchor_lang_v2::prelude::*;
-
-declare_id!("11111111111111111111111111111111");
-
-#[program]
-pub mod gated_program {
-    use super::*;
-
-    #[cfg_attr(not(feature = "live"), cfg(any()))]
-    pub fn live(_ctx: &mut Context<Noop>) -> Result<()> {
-        Ok(())
-    }
-}
-
-#[derive(Accounts)]
-pub struct Noop {}
-"#,
-    );
-}
-
-#[test]
-#[cfg_attr(
-    miri,
-    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
-)]
 fn cfg_disabled_members_drop_out_of_idl_and_error_codes() {
     cargo_test_pass_case(
         "tests_v2_cfg_filtered_idl",
@@ -171,69 +142,6 @@ mod tests {
 
     #[test]
     fn cfg_disabled_members_are_filtered() {
-        let account_json = <CfgAccount as IdlAccountType>::__idl_type_def().unwrap();
-        assert!(account_json.contains("\"always\""));
-        assert!(!account_json.contains("\"hidden\""));
-
-        let event_json = <CfgEvent as IdlAccountType>::__idl_type_def().unwrap();
-        assert!(event_json.contains("\"always\""));
-        assert!(!event_json.contains("\"hidden\""));
-
-        let errors_json = CfgError::__idl_errors();
-        assert!(errors_json.contains("\"name\":\"First\""));
-        assert!(errors_json.contains("\"name\":\"Second\""));
-        assert!(!errors_json.contains("Hidden"));
-        assert!(errors_json.contains("\"code\":6000"));
-        assert!(errors_json.contains("\"code\":6001"));
-        assert!(!errors_json.contains("\"code\":6002"));
-    }
-}
-"#,
-        &["idl-build"],
-    );
-}
-
-#[test]
-#[cfg_attr(
-    miri,
-    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
-)]
-fn cfg_attr_disabled_members_drop_out_of_idl_and_error_codes() {
-    cargo_test_pass_case(
-        "tests_v2_cfg_attr_filtered_idl",
-        r#"
-use anchor_lang_v2::prelude::*;
-
-declare_id!("11111111111111111111111111111111");
-
-#[account]
-pub struct CfgAccount {
-    pub always: u64,
-    #[cfg_attr(not(feature = "extra"), cfg(any()))]
-    pub hidden: u64,
-}
-
-#[event]
-pub struct CfgEvent {
-    pub always: u64,
-    #[cfg_attr(not(feature = "extra"), cfg(any()))]
-    pub hidden: u64,
-}
-
-#[error_code]
-pub enum CfgError {
-    First,
-    #[cfg_attr(not(feature = "extra"), cfg(any()))]
-    Hidden,
-    Second,
-}
-
-#[cfg(all(test, feature = "idl-build"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cfg_attr_disabled_members_are_filtered() {
         let account_json = <CfgAccount as IdlAccountType>::__idl_type_def().unwrap();
         assert!(account_json.contains("\"always\""));
         assert!(!account_json.contains("\"hidden\""));

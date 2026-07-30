@@ -668,7 +668,7 @@ fn cfg_attrs(attrs: &[syn::Attribute]) -> Vec<syn::Attribute> {
 }
 
 fn is_cfg_control_attr(attr: &syn::Attribute) -> bool {
-    attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr")
+    attr.path().is_ident("cfg")
 }
 
 fn has_cfg_attrs(attrs: &[syn::Attribute]) -> bool {
