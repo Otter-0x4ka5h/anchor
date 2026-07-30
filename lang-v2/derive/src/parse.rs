@@ -642,29 +642,6 @@ pub fn extract_option_inner(ty: &Type) -> Option<&Type> {
     None
 }
 
-fn contains_unchecked_account(ty: &Type) -> bool {
-    match ty {
-        Type::Path(tp) => {
-            let Some(seg) = tp.path.segments.last() else {
-                return false;
-            };
-            if seg.ident == "UncheckedAccount" {
-                return true;
-            }
-            if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
-                return args.args.iter().any(|arg| match arg {
-                    syn::GenericArgument::Type(inner) => contains_unchecked_account(inner),
-                    _ => false,
-                });
-            }
-            false
-        }
-        Type::Paren(paren) => contains_unchecked_account(&paren.elem),
-        Type::Reference(reference) => contains_unchecked_account(&reference.elem),
-        _ => false,
-    }
-}
-
 pub struct AccountField {
     pub name: Ident,
     /// The field's original `syn::Type` — used by `impl_accounts` to build
@@ -1438,13 +1415,6 @@ pub fn parse_field(
         return Err(syn::Error::new(
             field_name.span(),
             "mut must be provided when using close",
-        ));
-    }
-    if attrs.close.is_some() && contains_unchecked_account(field_ty) {
-        return Err(syn::Error::new(
-            field_name.span(),
-            "`#[account(close = ...)]` is not supported on `UncheckedAccount`; use a typed \
-             account wrapper or close the raw account manually",
         ));
     }
     let associated_token = parse_associated_token_init(&attrs, field_names)?;
@@ -2287,7 +2257,7 @@ pub fn parse_field(
         });
         Some(quote! {
             #(#constraint_exits)*
-            anchor_lang_v2::AnchorAccount::close(
+            anchor_lang_v2::AccountClose::close(
                 &mut self.#field_name,
                 *self.#close_target.account(),
             )?;
@@ -2312,7 +2282,8 @@ pub fn parse_field(
     // unwrapped inner — we wrap it in `if let Some(#field_name) = #field_name`
     // so `#field_name.account()`, `#field_name.authority`, etc. resolve on the
     // inner `T` (via autoderef). The exit/close path regenerates against the
-    // unwrapped `&mut T` so `AnchorAccount::exit/close` get the right type.
+    // unwrapped `&mut T` so `AnchorAccount::exit` / `AccountClose::close`
+    // get the right type.
     //
     // Mutable fields use `ref mut` so constraint bodies that need `&mut self`
     // (e.g. BorshAccount::release_borrow in the realloc path) can work.
@@ -2394,7 +2365,7 @@ pub fn parse_field(
                 quote! {
                     if let Some(__inner) = self.#field_name.as_mut() {
                         #(#inner_constraint_exits)*
-                        anchor_lang_v2::AnchorAccount::close(
+                        anchor_lang_v2::AccountClose::close(
                             __inner,
                             *self.#close_target.account(),
                         )?;

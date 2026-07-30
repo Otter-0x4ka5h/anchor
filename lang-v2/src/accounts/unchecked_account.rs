@@ -7,7 +7,9 @@ use {
 /// Escape hatch account wrapper with no owner/layout/discriminator validation.
 ///
 /// Because the wrapper provides no lifecycle guarantees, it intentionally
-/// does not support Anchor's generic `#[account(close = ...)]` path.
+/// does not implement [`crate::AccountClose`], so Anchor's generic
+/// `#[account(close = ...)]` path (and manual close) will not compile
+/// against it.
 pub struct UncheckedAccount {
     view: AccountView,
 }
@@ -29,10 +31,6 @@ impl AnchorAccount for UncheckedAccount {
     #[inline(always)]
     fn account(&self) -> &AccountView {
         &self.view
-    }
-
-    fn close(&mut self, _destination: AccountView) -> pinocchio::ProgramResult {
-        Err(ProgramError::InvalidArgument)
     }
 }
 
