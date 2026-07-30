@@ -107,6 +107,10 @@ name = "lamports"
 required-features = ["testing"]
 
 [[test]]
+name = "realloc_payer_target_check"
+required-features = ["testing"]
+
+[[test]]
 name = "cursor_and_remaining_accounts"
 required-features = ["testing"]
 
@@ -148,4 +152,8 @@ required-features = ["testing"]
 
 [[test]]
 name = "pod_native_ops"
+required-features = ["testing"]
+
+[[test]]
+name = "slab_min_data_len_realloc"
 required-features = ["testing"]

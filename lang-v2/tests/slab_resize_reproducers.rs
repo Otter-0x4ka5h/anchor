@@ -148,6 +148,102 @@ fn slab_realloc_clamps_tail_len_to_resized_capacity() {
     assert_eq!(CounterLedger::load(view).unwrap().len(), 1);
 }
 
+#[test]
+fn slab_realloc_shrink_refunds_only_rent_delta_not_vault_balance() {
+    let mut buf = setup_ledger(/*capacity*/ 4, /*len*/ 1);
+    let payer = AccountBuffer::<128>::new();
+    payer.init([0xCC; 32], PROGRAM_ID, 0, true, true, false);
+    payer.set_lamports(25);
+
+    let old_space = ITEMS_OFFSET + 4 * ITEM_SIZE;
+    let new_space = ITEMS_OFFSET + ITEM_SIZE;
+    let old_required = expected_min_lamports(old_space).unwrap();
+    let new_required = expected_min_lamports(new_space).unwrap();
+    let rent_delta = old_required - new_required;
+    let vault_balance = 1_000_000;
+
+    buf.set_lamports(old_required + vault_balance);
+
+    let view = unsafe { buf.view() };
+    let mut slab = unsafe { CounterLedger::load_mut(view) }.unwrap();
+    let payer_view = unsafe { payer.view() };
+
+    slab.realloc_account(new_space, payer_view, false).unwrap();
+
+    assert_eq!(
+        payer_view.lamports(),
+        25 + rent_delta,
+        "shrinking should only refund the rent savings for the removed bytes",
+    );
+    assert_eq!(
+        slab.view().lamports(),
+        new_required + vault_balance,
+        "vault lamports unrelated to rent must remain on the account after shrink",
+    );
+}
+
+#[test]
+fn slab_realloc_shrink_refund_is_capped_by_available_lamports_above_new_floor() {
+    let mut buf = setup_ledger(/*capacity*/ 4, /*len*/ 1);
+    let payer = AccountBuffer::<128>::new();
+    payer.init([0xCC; 32], PROGRAM_ID, 0, true, true, false);
+    payer.set_lamports(25);
+
+    let new_space = ITEMS_OFFSET + ITEM_SIZE;
+    let new_required = expected_min_lamports(new_space).unwrap();
+
+    // Simulate an underfunded oversized account: only 7 lamports are
+    // available above the new rent floor, even though shrinking would save
+    // more than that in ideal rent terms.
+    buf.set_lamports(new_required + 7);
+
+    let view = unsafe { buf.view() };
+    let mut slab = unsafe { CounterLedger::load_mut(view) }.unwrap();
+    let payer_view = unsafe { payer.view() };
+
+    slab.realloc_account(new_space, payer_view, false).unwrap();
+
+    assert_eq!(
+        payer_view.lamports(),
+        25 + 7,
+        "refund must be capped by the lamports actually available above the new rent floor",
+    );
+    assert_eq!(
+        slab.view().lamports(),
+        new_required,
+        "the shrunken account must retain at least the new rent-exempt minimum",
+    );
+}
+
+#[test]
+fn slab_realloc_shrink_with_self_payer_preserves_lamports_and_still_resizes() {
+    let mut buf = setup_ledger(/*capacity*/ 4, /*len*/ 1);
+
+    let old_space = ITEMS_OFFSET + 4 * ITEM_SIZE;
+    let new_space = ITEMS_OFFSET + ITEM_SIZE;
+    let old_required = expected_min_lamports(old_space).unwrap();
+    let vault_balance = 1_000_000;
+
+    buf.set_lamports(old_required + vault_balance);
+
+    let payer_view = unsafe { buf.view() };
+    let view = unsafe { buf.view() };
+    let mut slab = unsafe { CounterLedger::load_mut(view) }.unwrap();
+
+    slab.realloc_account(new_space, payer_view, false).unwrap();
+
+    assert_eq!(
+        slab.view().lamports(),
+        old_required + vault_balance,
+        "when payer == account, shrinking should not burn lamports while refunding to self",
+    );
+    assert_eq!(
+        slab.current_space(),
+        new_space,
+        "self-payer shrink should still resize the account",
+    );
+}
+
 // -- `load_mut` rejects a buffer shrunk below ITEMS_OFFSET -----------
 
 #[test]
@@ -341,8 +437,7 @@ fn swap_remove_panics_when_index_geq_effective_len() {
 
 #[test]
 #[should_panic(
-    expected = "Slab<H, T> mutated through a read-only load. Add #[account(mut)] to your accounts \
-                struct."
+    expected = "Tried to mutate `Slab<H, T>` through a read-only load"
 )]
 fn clear_panics_when_tail_mutation_uses_guard_bytes_mut_on_read_only_slab() {
     let buf = setup_ledger(/*capacity*/ 2, /*len*/ 1);
@@ -350,6 +445,18 @@ fn clear_panics_when_tail_mutation_uses_guard_bytes_mut_on_read_only_slab() {
     let view = unsafe { buf.view() };
     let mut slab = CounterLedger::load(view).unwrap();
     slab.clear();
+}
+
+#[test]
+#[should_panic(
+    expected = "Tried to mutate `Slab<H, T>` through a read-only load"
+)]
+fn resize_to_capacity_panics_when_loaded_read_only() {
+    let buf = setup_ledger(/*capacity*/ 2, /*len*/ 1);
+
+    let view = unsafe { buf.view() };
+    let mut slab = CounterLedger::load(view).unwrap();
+    slab.resize_to_capacity(4).unwrap();
 }
 
 // -- Regression: truncate clamps to effective_len ---------------------
@@ -399,6 +506,61 @@ fn slab_resize_to_capacity_clamps_len() {
     drop(slab);
 }
 
+#[test]
+fn slab_resize_to_capacity_updates_live_capacity_and_supports_push() {
+    let buf = setup_ledger(/*capacity*/ 1, /*len*/ 1);
+
+    let view = unsafe { buf.view() };
+    let mut slab = unsafe { CounterLedger::load_mut(view) }.unwrap();
+
+    slab.resize_to_capacity(3).unwrap();
+
+    assert_eq!(slab.current_space(), ITEMS_OFFSET + 3 * ITEM_SIZE);
+    assert_eq!(slab.capacity(), 3);
+
+    slab.try_push([0x11; 8]).unwrap();
+    slab.try_push([0x22; 8]).unwrap();
+    assert_eq!(slab.len(), 3);
+    assert_eq!(slab.capacity(), 3);
+
+    drop(slab);
+
+    let reloaded = CounterLedger::load(view).unwrap();
+    assert_eq!(reloaded.current_space(), ITEMS_OFFSET + 3 * ITEM_SIZE);
+    assert_eq!(reloaded.capacity(), 3);
+    assert_eq!(reloaded.len(), 3);
+}
+
+#[test]
+fn slab_realloc_growth_updates_live_capacity_and_supports_push() {
+    let buf = setup_ledger(/*capacity*/ 1, /*len*/ 1);
+    let payer = AccountBuffer::<128>::new();
+    payer.init([0xCC; 32], PROGRAM_ID, 0, true, true, false);
+    payer.set_lamports(1_000_000_000);
+
+    let view = unsafe { buf.view() };
+    let mut slab = unsafe { CounterLedger::load_mut(view) }.unwrap();
+    let payer_view = unsafe { payer.view() };
+
+    slab.realloc_account(ITEMS_OFFSET + 3 * ITEM_SIZE, payer_view, false)
+        .unwrap();
+
+    assert_eq!(slab.current_space(), ITEMS_OFFSET + 3 * ITEM_SIZE);
+    assert_eq!(slab.capacity(), 3);
+
+    slab.try_push([0x33; 8]).unwrap();
+    slab.try_push([0x44; 8]).unwrap();
+    assert_eq!(slab.len(), 3);
+    assert_eq!(slab.capacity(), 3);
+
+    drop(slab);
+
+    let reloaded = CounterLedger::load(view).unwrap();
+    assert_eq!(reloaded.current_space(), ITEMS_OFFSET + 3 * ITEM_SIZE);
+    assert_eq!(reloaded.capacity(), 3);
+    assert_eq!(reloaded.len(), 3);
+}
+
 // -- Rent helpers -----------------------------------------------------
 
 #[test]
@@ -437,6 +599,27 @@ fn refund_moves_excess_lamports_to_recipient() {
 }
 
 #[test]
+#[should_panic(
+    expected = "Tried to mutate `Slab<H, T>` through a read-only load"
+)]
+fn refund_panics_when_loaded_read_only() {
+    let mut buf = setup_ledger(/*capacity*/ 4, /*len*/ 1);
+
+    let required = expected_min_lamports(ITEMS_OFFSET + 4 * ITEM_SIZE).unwrap();
+    buf.set_lamports(required + 500);
+
+    let mut recipient = AccountBuffer::<128>::new();
+    recipient.init([0xBB; 32], PROGRAM_ID, 0, false, true, false);
+    recipient.set_lamports(25);
+
+    let view = unsafe { buf.view() };
+    let mut slab = CounterLedger::load(view).unwrap();
+    let mut recipient_view = unsafe { recipient.view() };
+
+    slab.refund(&mut recipient_view).unwrap();
+}
+
+#[test]
 fn refund_is_noop_when_account_is_at_rent_floor() {
     let buf = setup_ledger(/*capacity*/ 4, /*len*/ 1);
 
@@ -455,6 +638,27 @@ fn refund_is_noop_when_account_is_at_rent_floor() {
 
     assert_eq!(slab.view().lamports(), required);
     assert_eq!(recipient_view.lamports(), 25);
+}
+
+#[test]
+#[should_panic(
+    expected = "Tried to mutate `Slab<H, T>` through a read-only load"
+)]
+fn top_up_panics_when_loaded_read_only() {
+    let mut buf = setup_ledger(/*capacity*/ 4, /*len*/ 1);
+
+    let required = expected_min_lamports(ITEMS_OFFSET + 4 * ITEM_SIZE).unwrap();
+    buf.set_lamports(required - 1);
+
+    let payer = AccountBuffer::<128>::new();
+    payer.init([0xCC; 32], PROGRAM_ID, 0, true, true, false);
+    payer.set_lamports(999);
+
+    let view = unsafe { buf.view() };
+    let mut slab = CounterLedger::load(view).unwrap();
+    let payer_view = unsafe { payer.view() };
+
+    slab.top_up(&payer_view).unwrap();
 }
 
 #[test]
