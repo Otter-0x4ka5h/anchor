@@ -4331,7 +4331,11 @@ fn process_handler(
         .map(|return_ty| {
             let idl_type = idl::rust_type_to_idl(return_ty);
             quote! {
-                anchor_lang_v2::__private::concatcp!(",\"returns\":", #idl_type)
+                {
+                    let mut __s = anchor_lang_v2::__alloc::string::String::from(",\"returns\":");
+                    __s.push_str(#idl_type);
+                    __s
+                }
             }
         })
         .unwrap_or_else(|| quote! { "" });

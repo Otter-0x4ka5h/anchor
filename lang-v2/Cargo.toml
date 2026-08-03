@@ -9,7 +9,7 @@ license = "Apache-2.0"
 [features]
 default = ["alloc", "guardrails"]
 alloc = ["pinocchio/alloc"]
-idl-build = ["dep:const_format"]
+idl-build = []
 # Opt-in v1-compat shims for users porting anchor-lang code. Currently
 # exposes v1-style shims such as `debug!`, `error!`, `err!`, and `pubkey!`.
 # Default-off because some shims preserve syntax while keeping v2's cheaper
@@ -54,8 +54,6 @@ solana-sha256-hasher = { version = "3.1", features = ["sha2"] }
 solana-system-interface = { version = "2.0", features = ["bincode"] }
 solana-sysvar = "3.1.1"
 bytemuck = { version = "1", features = ["derive"] }
-# Resolves source-level const array lengths into self-contained IDL JSON.
-const_format = { version = "0.2", optional = true }
 wincode = { version = "0.5", features = ["derive"] }
 
 [target.'cfg(target_os = "solana")'.dependencies]
@@ -68,9 +66,8 @@ sha2 = "0.10"
 level = "warn"
 # `feature = "idl-build"` is emitted by the derive macros in code that
 # expands inside the *user crate*, where it's a real local feature. v2
-# also carries a matching hidden feature so IDL-only helper deps (for
-# example `const_format`) stay out of normal builds while user crates can
-# fan their local `idl-build` through `anchor-lang-v2/idl-build`.
+# also carries a matching hidden feature so user crates can fan their
+# local `idl-build` through `anchor-lang-v2/idl-build`.
 check-cfg = [
     'cfg(target_os, values("solana"))',
     'cfg(feature, values("idl-build"))',

@@ -131,18 +131,34 @@ impl<'a> TypeLowerer<'a> {
             return quote! { #remaining };
         }
 
-        let mut parts = Vec::with_capacity(self.dynamic_lengths.len() * 2 + 1);
+        let mut steps = Vec::with_capacity(self.dynamic_lengths.len() * 2 + 1);
         for (index, expr) in self.dynamic_lengths.iter().enumerate() {
             let marker = json!({ DYNAMIC_LEN_KEY: index }).to_string();
             let (before, after) = remaining
                 .split_once(&marker)
                 .expect("dynamic IDL array marker should exist");
-            parts.push(quote! { #before });
-            parts.push(quote! { ((#expr) as usize) });
+            if !before.is_empty() {
+                steps.push(quote! {
+                    __s.push_str(#before);
+                });
+            }
+            steps.push(quote! {
+                __s.push_str(
+                    &anchor_lang_v2::__alloc::string::ToString::to_string(&((#expr) as usize))
+                );
+            });
             remaining = after.to_owned();
         }
-        parts.push(quote! { #remaining });
-        quote! { anchor_lang_v2::__private::concatcp!(#(#parts),*) }
+        if !remaining.is_empty() {
+            steps.push(quote! {
+                __s.push_str(#remaining);
+            });
+        }
+        quote! {{
+            let mut __s = anchor_lang_v2::__alloc::string::String::new();
+            #(#steps)*
+            anchor_lang_v2::__alloc::boxed::Box::leak(__s.into_boxed_str()) as &'static str
+        }}
     }
 }
 
@@ -1301,7 +1317,8 @@ mod tests {
         let path_len: Type = syn::parse_quote!([u8; limits::ITEMS]);
         let value = lowerer.lower(&path_len);
         let generated = lowerer.finish(value).to_string();
-        assert!(generated.contains("concatcp"));
+        assert!(generated.contains("String :: new"));
+        assert!(generated.contains("Box :: leak"));
         assert!(generated.contains("limits :: ITEMS"));
         assert!(!generated.contains("generic"));
     }

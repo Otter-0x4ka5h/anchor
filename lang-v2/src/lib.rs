@@ -284,8 +284,6 @@ impl<T: Space, const N: usize> Space for [T; N] {
 
 #[doc(hidden)]
 pub mod __private {
-    pub use const_format::concatcp;
-
     /// Used by `#[derive(InitSpace)]` on enums to pick the largest variant size.
     pub const fn max(a: usize, b: usize) -> usize {
         [a, b][(a < b) as usize]
