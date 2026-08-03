@@ -21,8 +21,8 @@
 //!     }
 //!
 //!     asm {
-//!         "asm/errors.s",
-//!         "asm/entrypoint.s",
+//!         include_str!("asm/errors.s"),
+//!         include_str!("asm/entrypoint.s"),
 //!     }
 //! }
 //! ```
@@ -339,6 +339,7 @@ fn to_screaming_snake(s: &str) -> String {
             let prev = s.chars().nth(i - 1).unwrap_or('_');
             let next = s.chars().nth(i + 1);
             if prev.is_lowercase()
+                || prev.is_ascii_digit()
                 || (prev.is_uppercase() && next.map_or(false, |n| n.is_lowercase()))
             {
                 result.push('_');
@@ -384,6 +385,10 @@ mod tests {
     }
 
     #[test]
+    fn test_screaming_snake_splits_digit_to_uppercase_boundaries() {
+        assert_eq!(to_screaming_snake("Ipv4Addr"), "IPV4_ADDR");
+    }
+
     fn test_offsets_require_repr_c() {
         let program = syn::parse_str::<AsmProgram>(
             r#"
@@ -731,5 +736,34 @@ mod tests {
         let asm_tokens = proc_macro2::TokenStream::from_iter(program.asm_tokens);
         assert_eq!(program.items.len(), 1);
         assert_eq!(asm_tokens.to_string(), "include_str ! (\"asm/errors.s\") ,");
+    }
+
+    #[test]
+    fn test_asm_block_accepts_include_str_tokens() {
+        let program = syn::parse_str::<AsmProgram>(
+            r#"
+            asm { include_str!("asm/errors.s"), }
+            "#,
+        )
+        .unwrap();
+
+        let asm_tokens = proc_macro2::TokenStream::from_iter(program.asm_tokens);
+        assert_eq!(asm_tokens.to_string(), "include_str ! (\"asm/errors.s\") ,");
+    }
+
+    #[test]
+    fn test_asm_block_accepts_include_str_concat_tokens() {
+        let program = syn::parse_str::<AsmProgram>(
+            r#"
+            asm { include_str!(concat!(env!("OUT_DIR"), "/combined.s")), }
+            "#,
+        )
+        .unwrap();
+
+        let asm_tokens = proc_macro2::TokenStream::from_iter(program.asm_tokens);
+        assert_eq!(
+            asm_tokens.to_string(),
+            "include_str ! (concat ! (env ! (\"OUT_DIR\") , \"/combined.s\")) ,"
+        );
     }
 }

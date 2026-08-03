@@ -1267,7 +1267,7 @@ pub struct Bad {
 }
 
 #[test]
-fn close_on_unchecked_account_compiles() {
+fn close_on_unchecked_account_does_not_compile() {
     CompileCase::new(
         "close_on_unchecked_account",
         r#"
@@ -1295,11 +1295,14 @@ pub struct Close {
 }
 "#,
     )
-    .expect_pass();
+    .expect_fail(&[
+        "`#[account(close = ...)]` is not supported on `UncheckedAccount`",
+        "close the raw account manually",
+    ]);
 }
 
 #[test]
-fn close_on_boxed_unchecked_account_compiles() {
+fn close_on_boxed_unchecked_account_does_not_compile() {
     CompileCase::new(
         "close_on_boxed_unchecked_account",
         r#"
@@ -1327,11 +1330,14 @@ pub struct Close {
 }
 "#,
     )
-    .expect_pass();
+    .expect_fail(&[
+        "`#[account(close = ...)]` is not supported on `UncheckedAccount`",
+        "close the raw account manually",
+    ]);
 }
 
 #[test]
-fn close_on_optional_unchecked_account_compiles() {
+fn close_on_optional_unchecked_account_does_not_compile() {
     CompileCase::new(
         "close_on_optional_unchecked_account",
         r#"
@@ -1359,7 +1365,10 @@ pub struct Close {
 }
 "#,
     )
-    .expect_pass();
+    .expect_fail(&[
+        "`#[account(close = ...)]` is not supported on `UncheckedAccount`",
+        "close the raw account manually",
+    ]);
 }
 
 #[test]
