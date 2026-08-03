@@ -4916,32 +4916,6 @@ fn impl_program(module: &ItemMod, config: &ProgramConfig) -> TokenStream2 {
     });
     let event_authority_check = event_authority_dispatch_check(precomputed_event_authority);
 
-    let disc_parse = if use_byte_disc {
-        quote! {
-            const __MIN_IX_DATA_LEN: usize = #disc_size + #min_args_size_expr;
-            if __ix_data_len < __MIN_IX_DATA_LEN {
-                return anchor_lang_v2::Error::from(
-                    anchor_lang_v2::ErrorCode::InstructionFallbackNotFound,
-                ).into();
-            }
-            let __disc: u8 = *__ix_data_ptr;
-            let __ix_data: &[u8] =
-                ::core::slice::from_raw_parts(__ix_data_ptr.add(1), __ix_data_len - 1);
-        }
-    } else {
-        quote! {
-            if __ix_data_len < 8 {
-                return anchor_lang_v2::Error::from(
-                    anchor_lang_v2::ErrorCode::InstructionFallbackNotFound,
-                ).into();
-            }
-            let __disc: u64 = u64::from_le_bytes(
-                *(__ix_data_ptr as *const [u8; 8])
-            );
-            let __ix_data: &[u8] =
-                ::core::slice::from_raw_parts(__ix_data_ptr.add(8), __ix_data_len - 8);
-        }
-    };
     let event_cpi_dispatch = quote! {
         // Reserve the full event-CPI tag before user dispatch. A custom
         // 1-byte discriminator can overlap the first tag byte, but it
@@ -6426,6 +6400,7 @@ mod tests {
         );
     }
 
+    #[test]
     fn event_authority_dispatch_uses_precomputed_const_when_available() {
         let generated = event_authority_dispatch_check(Some([7; 32])).to_string();
 
