@@ -119,7 +119,7 @@ fn no_two_variants_share_a_custom_code() {
     }
     // Snapshot — adding a new Custom variant forces a review of this number.
     assert_eq!(
-        custom_count, 13,
+        custom_count, 16,
         "Number of Custom error codes changed; update this snapshot after review"
     );
 }
@@ -186,21 +186,56 @@ fn builtin_groupings_are_stable() {
         ErrorCode::DeclaredProgramIdMismatch.into(),
         IncorrectProgramId,
     );
-    // Grouped under InvalidAccountData
+    check(
+        "RequireViolated",
+        ErrorCode::RequireViolated.into(),
+        Custom(2500),
+    );
+    check(
+        "RequireEqViolated",
+        ErrorCode::RequireEqViolated.into(),
+        Custom(2501),
+    );
+    check(
+        "RequireKeysEqViolated",
+        ErrorCode::RequireKeysEqViolated.into(),
+        Custom(2502),
+    );
+    check(
+        "RequireNeqViolated",
+        ErrorCode::RequireNeqViolated.into(),
+        Custom(2503),
+    );
+    check(
+        "RequireKeysNeqViolated",
+        ErrorCode::RequireKeysNeqViolated.into(),
+        Custom(2504),
+    );
+    check(
+        "RequireGtViolated",
+        ErrorCode::RequireGtViolated.into(),
+        Custom(2505),
+    );
+    check(
+        "RequireGteViolated",
+        ErrorCode::RequireGteViolated.into(),
+        Custom(2506),
+    );
+
     check(
         "ConstraintHasOne",
         ErrorCode::ConstraintHasOne.into(),
-        InvalidAccountData,
+        Custom(2001),
     );
     check(
         "ConstraintAddress",
         ErrorCode::ConstraintAddress.into(),
-        InvalidAccountData,
+        Custom(2012),
     );
     check(
         "ConstraintClose",
         ErrorCode::ConstraintClose.into(),
-        InvalidAccountData,
+        Custom(2011),
     );
 
     // Grouped under InvalidInstructionData

@@ -337,10 +337,10 @@ impl From<ErrorCode> for solana_program_error::ProgramError {
                 solana_program_error::ProgramError::MissingRequiredSignature
             }
             ErrorCode::ConstraintSeeds => solana_program_error::ProgramError::InvalidSeeds,
-            ErrorCode::ConstraintHasOne => solana_program_error::ProgramError::InvalidAccountData,
-            ErrorCode::ConstraintAddress => solana_program_error::ProgramError::InvalidAccountData,
+            ErrorCode::ConstraintHasOne => solana_program_error::ProgramError::Custom(2001),
+            ErrorCode::ConstraintAddress => solana_program_error::ProgramError::Custom(2012),
             ErrorCode::ConstraintAccountIsNone => solana_program_error::ProgramError::Custom(2020),
-            ErrorCode::ConstraintClose => solana_program_error::ProgramError::InvalidAccountData,
+            ErrorCode::ConstraintClose => solana_program_error::ProgramError::Custom(2011),
             ErrorCode::ConstraintOwner => solana_program_error::ProgramError::IllegalOwner,
             ErrorCode::ConstraintRaw => solana_program_error::ProgramError::Custom(2003),
             ErrorCode::ConstraintExecutable => solana_program_error::ProgramError::Custom(2007),
