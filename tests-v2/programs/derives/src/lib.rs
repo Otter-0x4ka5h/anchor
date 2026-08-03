@@ -272,7 +272,7 @@ mod idl_tests {
 
     #[test]
     fn idl_type_lowering_is_self_contained() {
-        let type_def = <QualifiedUserTypeHolder<4> as IdlAccountType>::__IDL_TYPE_DEF
+        let type_def = <QualifiedUserTypeHolder<4> as IdlAccountType>::__idl_type_def()
             .expect("QualifiedUserTypeHolder should emit an IDL type");
         assert!(type_def.contains("\"name\":\"authority\",\"type\":\"pubkey\""));
         assert!(type_def.contains("\"name\":\"pinocchio_authority\",\"type\":\"pubkey\""));
