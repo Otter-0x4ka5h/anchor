@@ -1349,7 +1349,7 @@ fn dotted_address_hint(
     } else {
         None
     }
-
+}
 
 fn require_summary_field<'a>(
     fields: &'a [FieldSummary],
@@ -1501,17 +1501,6 @@ pub fn validate_account_fields(fields: &[FieldSummary]) -> syn::Result<()> {
     }
 
     Ok(())
-}
-
-/// Turn the RHS of `#[account(address = <expr>)]` into the string form the
-/// IDL emits. Whitespace from `quote!`'s token reassembly is stripped so
-/// `crate :: ID` → `crate::ID`, `data . authority` → `data.authority`, and
-/// `crate :: id ()` → `crate::id()` — matching what a user would hand-write
-/// and what downstream tooling (the Anchor CLI resolver, TS client path
-/// walkers) expect to parse.
-fn stringify_address_expr(expr: &Expr) -> String {
-    let s = quote!(#expr).to_string();
-    s.split_whitespace().collect()
 }
 
 /// If `expr` is the v1-encodable shape `<sibling>.<field>` where both:
@@ -3587,7 +3576,7 @@ mod tests {
                 pub program: UncheckedAccount
             })
             .unwrap();
-        let parsed = parse_field(&field, &[], &[], quote::quote!(0usize), &[], &[]).unwrap();
+        let parsed = parse_test_field(&field).unwrap();
 
         assert!(parsed.idl_address.is_none());
         assert!(parsed.idl_address_expr.is_some());
@@ -3604,8 +3593,10 @@ mod tests {
                 pub program: UncheckedAccount
             })
             .unwrap();
+        let attrs = parse_account_attrs(&field.attrs).unwrap();
         let parsed = parse_field(
             &field,
+            &attrs,
             &["data".into(), "program".into()],
             &[],
             quote::quote!(0usize),
