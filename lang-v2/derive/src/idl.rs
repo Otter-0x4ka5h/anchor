@@ -528,6 +528,29 @@ pub fn build_type_strings(
     }
 }
 
+pub fn build_account_entry_string(name: &str, disc: &[u8]) -> Option<String> {
+    build_account_entry(name, disc)
+}
+
+pub fn build_struct_type_def_emission(
+    name: &str,
+    docs: &[String],
+    fields: &syn::Fields,
+    kind: TypeKind,
+    generics: &Generics,
+) -> TokenStream2 {
+    let (header, suffix) = type_def_header_parts(name, docs, kind, generics, "struct");
+    let field_pushes: Vec<_> = match fields {
+        syn::Fields::Named(named) => named
+            .named
+            .iter()
+            .map(|field| field_push_stmt(field, generics))
+            .collect(),
+        syn::Fields::Unnamed(_) | syn::Fields::Unit => Vec::new(),
+    };
+    build_joined_type_def_emission(header, suffix, &field_pushes)
+}
+
 /// Build pre-split IDL type strings from enum variants. Mirrors `build_type_strings`
 /// with `build_enum_type_strings`.
 pub fn build_enum_type_strings(
@@ -577,6 +600,21 @@ pub fn build_enum_type_strings(
     }
 }
 
+pub fn build_enum_type_def_emission(
+    name: &str,
+    docs: &[String],
+    variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
+    kind: TypeKind,
+    generics: &Generics,
+) -> TokenStream2 {
+    let (header, suffix) = type_def_header_parts(name, docs, kind, generics, "enum");
+    let variant_pushes: Vec<_> = variants
+        .iter()
+        .map(|variant| variant_push_stmt(variant, generics))
+        .collect();
+    build_joined_type_def_emission(header, suffix, &variant_pushes)
+}
+
 /// Compose the program-level `accounts[]` entry. Returns `None` when the
 /// discriminator is empty (plain `IdlType` types that don't appear in
 /// `accounts[]`).
@@ -591,6 +629,154 @@ fn build_account_entry(name: &str, disc: &[u8]) -> Option<String> {
         })
         .to_string(),
     )
+}
+
+fn build_joined_type_def_emission(
+    header: String,
+    suffix: String,
+    entries: &[TokenStream2],
+) -> TokenStream2 {
+    quote! {
+        {
+            let mut __entries: anchor_lang_v2::__alloc::vec::Vec<&'static str> =
+                anchor_lang_v2::__alloc::vec::Vec::new();
+            #(#entries)*
+            let mut __s = anchor_lang_v2::__alloc::string::String::from(#header);
+            let mut __first = true;
+            for __entry in &__entries {
+                if !__first {
+                    __s.push(',');
+                }
+                __first = false;
+                __s.push_str(__entry);
+            }
+            __s.push_str(#suffix);
+            ::core::option::Option::Some(
+                anchor_lang_v2::__alloc::boxed::Box::leak(__s.into_boxed_str()) as &'static str
+            )
+        }
+    }
+}
+
+fn build_joined_entry_emission(
+    header: String,
+    entries: &[TokenStream2],
+    suffix: String,
+) -> TokenStream2 {
+    quote! {
+        {
+            let mut __entries: anchor_lang_v2::__alloc::vec::Vec<&'static str> =
+                anchor_lang_v2::__alloc::vec::Vec::new();
+            #(#entries)*
+            let mut __s = anchor_lang_v2::__alloc::string::String::from(#header);
+            let mut __first = true;
+            for __entry in &__entries {
+                if !__first {
+                    __s.push(',');
+                }
+                __first = false;
+                __s.push_str(__entry);
+            }
+            __s.push_str(#suffix);
+            anchor_lang_v2::__alloc::boxed::Box::leak(__s.into_boxed_str()) as &'static str
+        }
+    }
+}
+
+fn type_def_header_parts(
+    name: &str,
+    docs: &[String],
+    kind: TypeKind,
+    generics: &Generics,
+    kind_name: &str,
+) -> (String, String) {
+    const FIELD_MARKER: &str = "__anchor_private_fields__";
+    let mut type_def_obj = build_type_def_header(name, docs, kind, generics);
+    type_def_obj.insert(
+        "type".into(),
+        json!({ "kind": kind_name, "fields": [FIELD_MARKER] }),
+    );
+    let header = Value::Object(type_def_obj).to_string();
+    let marker = Value::String(FIELD_MARKER.to_owned()).to_string();
+    let (prefix, suffix) = header
+        .split_once(&marker)
+        .expect("type definition header should contain the field marker");
+    (prefix.to_owned(), suffix.to_owned())
+}
+
+fn field_push_stmt(field: &syn::Field, generics: &Generics) -> TokenStream2 {
+    let field_json = named_field_emission(field, generics);
+    let cfg_attrs = crate::cfg_attrs(&field.attrs);
+    quote! {
+        #(#cfg_attrs)*
+        __entries.push(#field_json);
+    }
+}
+
+fn variant_push_stmt(variant: &syn::Variant, generics: &Generics) -> TokenStream2 {
+    let variant_json = variant_emission(variant, generics);
+    let cfg_attrs = crate::cfg_attrs(&variant.attrs);
+    quote! {
+        #(#cfg_attrs)*
+        __entries.push(#variant_json);
+    }
+}
+
+fn named_field_emission(field: &syn::Field, generics: &Generics) -> TokenStream2 {
+    let mut lowerer = TypeLowerer::with_generics(generics);
+    let value = named_field_value(field, &mut lowerer);
+    lowerer.finish(value)
+}
+
+fn unnamed_field_emission(field: &syn::Field, generics: &Generics) -> TokenStream2 {
+    let mut lowerer = TypeLowerer::with_generics(generics);
+    let value = lowerer.lower(&field.ty);
+    lowerer.finish(value)
+}
+
+fn variant_emission(variant: &syn::Variant, generics: &Generics) -> TokenStream2 {
+    let name = variant.ident.to_string();
+    match &variant.fields {
+        syn::Fields::Unit => {
+            let variant_json = json!({ "name": name }).to_string();
+            quote! { #variant_json }
+        }
+        syn::Fields::Named(named) => {
+            const FIELD_MARKER: &str = "__anchor_private_variant_fields__";
+            let header = json!({ "name": name, "fields": [FIELD_MARKER] }).to_string();
+            let marker = Value::String(FIELD_MARKER.to_owned()).to_string();
+            let (header, suffix) = header
+                .split_once(&marker)
+                .expect("variant header should contain the field marker");
+            let field_pushes: Vec<_> = named
+                .named
+                .iter()
+                .map(|field| field_push_stmt(field, generics))
+                .collect();
+            build_joined_entry_emission(header.to_owned(), &field_pushes, suffix.to_owned())
+        }
+        syn::Fields::Unnamed(unnamed) => {
+            const FIELD_MARKER: &str = "__anchor_private_variant_fields__";
+            let header = json!({ "name": name, "fields": [FIELD_MARKER] }).to_string();
+            let marker = Value::String(FIELD_MARKER.to_owned()).to_string();
+            let (header, suffix) = header
+                .split_once(&marker)
+                .expect("variant header should contain the field marker");
+            let field_pushes: Vec<_> = unnamed
+                .unnamed
+                .iter()
+                .map(|field| {
+                    let field_json = unnamed_field_emission(field, generics);
+                    let cfg_attrs = crate::cfg_attrs(&field.attrs);
+                    quote! {
+                        #(#cfg_attrs)*
+                        __entries.push(#field_json);
+                    }
+                })
+                .collect();
+            build_joined_entry_emission(header.to_owned(), &field_pushes, suffix.to_owned())
+        }
+    }
 }
 
 /// Shared header construction for the `IdlTypeDef` payload. Emits
@@ -1359,7 +1545,13 @@ mod tests {
 
     #[test]
     fn float_primitives_do_not_fall_back_to_defined_types() {
-        assert_ne!(type_str_to_idl_value("f32"), json!({ "defined": { "name": "f32" } }));
-        assert_ne!(type_str_to_idl_value("f64"), json!({ "defined": { "name": "f64" } }));
+        assert_ne!(
+            type_str_to_idl_value("f32"),
+            json!({ "defined": { "name": "f32" } })
+        );
+        assert_ne!(
+            type_str_to_idl_value("f64"),
+            json!({ "defined": { "name": "f64" } })
+        );
     }
 }
