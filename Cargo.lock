@@ -410,6 +410,7 @@ dependencies = [
  "quote",
  "serde_json",
  "sha2 0.10.9",
+ "solana-address 2.6.0",
  "syn 2.0.117",
 ]
 
@@ -3903,6 +3904,18 @@ checksum = "f7c44f8e672c00fe5308fa235f821cb4198414e1c77935c1ab6948d3fd78550e"
 dependencies = [
  "mime",
  "unicase",
+]
+
+[[package]]
+name = "min-ix-data-len"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang-v2",
+ "bytemuck",
+ "pinocchio",
+ "pinocchio-system",
+ "solana-program-error 3.0.0",
+ "wincode 0.5.4",
 ]
 
 [[package]]
@@ -9258,6 +9271,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "borsh-realloc",
+ "bytemuck",
  "callee",
  "caller",
  "client-builders",
@@ -9280,6 +9294,7 @@ dependencies = [
  "init-space-usability",
  "ix-macro",
  "litesvm",
+ "min-ix-data-len",
  "optional-accounts",
  "pinocchio",
  "program-interface",

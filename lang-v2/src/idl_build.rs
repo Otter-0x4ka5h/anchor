@@ -3,10 +3,12 @@
 //!
 //! Dispatches on the wrapper type: default returns `None` (elides
 //! sysvar/signer/program/unchecked from IDL types). Data-bearing wrappers
-//! (`Box<T>`, `Account<T>`, `BorshAccount<T>`, `Slab<H, T>`, `Nested<T>`)
-//! delegate to the inner type. User `#[account]`/`#[event]`/`#[derive(IdlType)]`
-//! structs get auto-generated impls with both `__IDL_ACCOUNT_ENTRY` and
-//! `__IDL_TYPE_DEF` set at macro-expansion time.
+//! (`Box<T>`, `Account<T>`, `BorshAccount<T>`, `Nested<T>`) delegate to the
+//! inner type. `Slab<H, T>` is a special case: today it forwards only the
+//! header `H`, because the current IDL has no faithful way to describe the
+//! alignment-padded dynamic tail. User `#[account]`/`#[event]`/
+//! `#[derive(IdlType)]` structs get auto-generated impls with both
+//! `__IDL_ACCOUNT_ENTRY` and `__IDL_TYPE_DEF` set at macro-expansion time.
 //!
 //! The trait + helpers are unconditionally compiled — empty default-method
 //! impls cost nothing in BPF. End-user crates opt into IDL emission via
@@ -35,7 +37,10 @@ extern crate alloc;
 /// pushes its own pair of strings, then recurses into field types so a
 /// nested `#[derive(IdlType)] struct Inner` referenced from an `#[account]`
 /// data type lands in `types[]` too.
-#[diagnostic::on_unimplemented(message = "Ensure that `{Self}` has an `#[account]` attribute")]
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` has no IDL type information",
+    note = "plain structs used as instruction arguments or nested fields need `#[derive(IdlType)]`; account and event types get this automatically from `#[account]` / `#[event]`"
+)]
 pub trait IdlAccountType {
     /// `{"name":"X","discriminator":[…]}` for the program-level `accounts[]`.
     /// `None` for types that don't appear there (`IdlType` plain types,
@@ -47,14 +52,29 @@ pub trait IdlAccountType {
     const __IDL_IS_SIGNER: bool = false;
     const __IDL_ADDRESS: Option<&'static str> = None;
 
+    /// Dynamic accessor for the `accounts[]` entry. Defaults to the trait
+    /// const, but derive-generated impls can override it when the final IDL
+    /// string depends on cfg-pruned items.
+    fn __idl_account_entry() -> Option<&'static str> {
+        Self::__IDL_ACCOUNT_ENTRY
+    }
+
+    /// Dynamic accessor for the `types[]` entry. Defaults to the trait const,
+    /// but derive-generated impls can override it when the final IDL string
+    /// depends on cfg-pruned fields or variants.
+    fn __idl_type_def() -> Option<&'static str> {
+        Self::__IDL_TYPE_DEF
+    }
+
     /// Push this type's accounts/types entries (if any) and recursively
     /// register every user-defined type its fields reference. Default: no-op.
     ///
-    /// Wrappers (`Box<T>`, `BorshAccount<T>`, `Slab<H, T>`, `Nested<T>`)
-    /// forward to the inner type; collection impls (`Vec<T>`, `Option<T>`,
-    /// `[T; N]`, `[T]`, `&T`, `PodVec<T, N>`) forward to the element type.
-    /// Primitive impls (bool, u*, i*, f*, String, Address, etc.) use the
-    /// default no-op — they never appear in `types[]`.
+    /// Wrappers (`Box<T>`, `BorshAccount<T>`, `Nested<T>`) forward to the
+    /// inner type. `Slab<H, T>` currently forwards only the header `H`;
+    /// see [`crate::accounts::Slab`] for the limitation. Collection impls
+    /// (`Vec<T>`, `Option<T>`, `[T; N]`, `[T]`, `&T`, `PodVec<T, N>`) forward
+    /// to the element type. Primitive impls (bool, u*, i*, f*, String,
+    /// Address, etc.) use the default no-op — they never appear in `types[]`.
     fn __register_idl_deps(
         _accounts: &mut alloc::vec::Vec<&'static str>,
         _types: &mut alloc::vec::Vec<&'static str>,

@@ -11,7 +11,7 @@ proc-macro = true
 [dependencies]
 proc-macro2 = "1"
 quote = "1"
-syn = { version = "2", features = ["full", "parsing", "extra-traits"] }
+syn = { version = "2", features = ["full", "parsing", "extra-traits", "visit"] }
 # Host-only deps used at macro-expansion time to precompute the canonical
 # PDA bump when `#[account(seeds = [b"..."], bump)]` has all byte-literal
 # seeds, or to assemble IDL JSON. Not part of user programs' runtime —
@@ -20,4 +20,5 @@ sha2 = "0.10"
 curve25519-dalek = { version = "4", default-features = false, features = ["alloc"] }
 bs58 = "0.5"
 serde_json = "1"
+solana-address = "2.0"
 anchor-lang-idl = { path = "../../idl", version = "0.1.2", features = ["convert"] }

@@ -17,7 +17,7 @@ use {
     proc_macro2::TokenStream as TokenStream2,
     quote::quote,
     serde_json::{json, Value},
-    syn::{Expr, Lit, Type},
+    syn::{visit::Visit, Expr, Lit, Type},
 };
 
 /// Convert a Rust type to its IDL JSON representation (as a `serde_json`
@@ -38,9 +38,8 @@ fn type_str_to_idl_value(s: &str) -> Value {
     let s = strip_ref_and_lifetime(s);
     let s = s.as_str();
     match s {
-        "u8" | "u16" | "u32" | "u64" | "u128" | "i8" | "i16" | "i32" | "i64" | "i128" | "bool" => {
-            Value::String(s.to_owned())
-        }
+        "u8" | "u16" | "u32" | "u64" | "u128" | "i8" | "i16" | "i32" | "i64" | "i128"
+        | "f32" | "f64" | "bool" => Value::String(s.to_owned()),
         // Pod wrappers drop alignment to 1 for zero-copy accounts but
         // the byte representation matches the primitive (LE). Report
         // as primitives so the TS coder's default borsh path decodes
@@ -169,10 +168,12 @@ pub struct AccountsJsonField<'a> {
     pub field_ty: &'a Option<Type>,
     /// Stringified RHS of `#[account(address = <expr>)]`. When `Some`,
     /// takes precedence over `IdlAccountType::__IDL_ADDRESS` at emission.
-    /// Holds either a resolvable constant path / const-fn call (which the
-    /// Anchor CLI can turn into a base58 pubkey) or a dotted field path
-    /// like `data.authority` that clients walk at resolution time.
+    /// Holds only dotted field paths like `data.authority` that clients walk
+    /// at resolution time.
     pub address_override: Option<&'a str>,
+    /// Runtime-resolved static address expression. Evaluated inside
+    /// `__idl_accounts()` and rendered as base58.
+    pub address_override_expr: Option<&'a TokenStream2>,
     /// Set when this field is a `Nested<Inner>`, carrying the inner
     /// struct type. The emission splices the inner struct's own
     /// `__idl_accounts()` into the outer array instead of producing a
@@ -255,17 +256,23 @@ pub fn build_accounts_emission(fields: &[AccountsJsonField<'_>]) -> TokenStream2
                         anchor_lang_v2::__alloc::string::String::new();
                 },
             };
-            // `#[account(address = <expr>)]` override, pre-formatted as a
-            // JSON fragment. When set, takes precedence over the wrapper
-            // type's `__IDL_ADDRESS` — emitted at macro time so no runtime
-            // branch is needed to pick one.
+            // `#[account(address = <expr>)]` override. Static address
+            // expressions are evaluated at IDL-build time; dotted field
+            // paths stay as pre-formatted client-side hints.
             let address_override_json = f
                 .address_override
                 .map(|s| format!(",\"address\":\"{s}\""))
                 .unwrap_or_default();
             let init_signer = f.init_signer;
             if let Some(ty) = f.field_ty {
-                let addr_json_expr = if f.address_override.is_some() {
+                let addr_json_expr = if let Some(address_expr) = f.address_override_expr {
+                    quote! {
+                        let __addr: anchor_lang_v2::Address =
+                            ::core::convert::Into::into(#address_expr);
+                        let __addr_json: anchor_lang_v2::__alloc::string::String =
+                            anchor_lang_v2::__alloc::format!(",\"address\":\"{}\"", __addr);
+                    }
+                } else if f.address_override.is_some() {
                     quote! {
                         let __addr_json: anchor_lang_v2::__alloc::string::String =
                             anchor_lang_v2::__alloc::string::String::from(#address_override_json);
@@ -395,99 +402,34 @@ pub enum TypeKind {
     BytemuckRepr,
 }
 
-/// Pre-split IDL type strings emitted by the derive at macro-expansion time.
-///
-/// The runtime print test no longer parses JSON — it concatenates these
-/// strings directly. That lets `lang-v2` avoid a runtime `serde_json`
-/// dependency or local `idl-build` feature; derive output still emits
-/// `feature = "idl-build"` cfgs into user crates.
-pub struct IdlTypeStrings {
-    /// `{"name":"X","discriminator":[…]}` for the program-level
-    /// `accounts[]` array (spec:137-140). `None` when the discriminator
-    /// is empty — i.e. plain `#[derive(IdlType)]` types that only
-    /// contribute to `types[]`.
-    pub account_entry: Option<String>,
-    /// `IdlTypeDef` JSON (spec:176-188) — `name`, optional `docs`, the
-    /// `serialization` / `repr` pair, and the inner `type` object. Never
-    /// carries `discriminator`; that field belongs only on the
-    /// accounts entry.
-    pub type_def: String,
+pub fn build_account_entry_string(name: &str, disc: &[u8]) -> Option<String> {
+    build_account_entry(name, disc)
 }
 
-/// Build pre-split IDL type strings from struct fields.
-///
-/// `kind` selects the `serialization` / `repr` metadata emitted onto the
-/// type definition. Zero-copy `#[account]` and `#[event(bytemuck)]` pass
-/// `TypeKind::BytemuckRepr`; borsh/wincode shapes pass `TypeKind::Borsh`
-/// (the default, which suppresses both fields).
-pub fn build_type_strings(
+pub fn build_struct_type_def_emission(
     name: &str,
-    disc: &[u8],
     docs: &[String],
-    fields: &syn::punctuated::Punctuated<syn::Field, syn::token::Comma>,
+    fields: &syn::Fields,
     kind: TypeKind,
-) -> IdlTypeStrings {
-    let mut type_def_obj = build_type_def_header(name, docs, kind);
-    let field_values: Vec<Value> = fields.iter().map(named_field_value).collect();
-    type_def_obj.insert(
-        "type".into(),
-        json!({ "kind": "struct", "fields": field_values }),
-    );
-    IdlTypeStrings {
-        account_entry: build_account_entry(name, disc),
-        type_def: Value::Object(type_def_obj).to_string(),
-    }
+) -> TokenStream2 {
+    let header = type_def_header_prefix(name, docs, kind, "struct");
+    let field_pushes: Vec<_> = match fields {
+        syn::Fields::Named(named) => named.named.iter().map(field_push_stmt).collect(),
+        syn::Fields::Unnamed(_) => Vec::new(),
+        syn::Fields::Unit => Vec::new(),
+    };
+    build_joined_type_def_emission(header, &field_pushes)
 }
 
-/// Build pre-split IDL type strings from enum variants. Matches the spec's
-/// `IdlTypeDefTy::Enum { variants }` shape (idl/spec/src/lib.rs:237-248).
-/// Each variant is emitted as `{"name": ..., "fields"?: ...}` where `fields`
-/// is either a named-field object array (struct-like variants), a tuple of
-/// types (tuple-like variants), or omitted entirely (unit variants) —
-/// consistent with `IdlDefinedFields`'s `#[serde(untagged)]` shape.
-///
-/// Only `TypeKind::Borsh` is really meaningful for enums today — bytemuck
-/// enums are rare. We accept the same `kind` parameter for shape symmetry
-/// with `build_type_strings`.
-pub fn build_enum_type_strings(
+pub fn build_enum_type_def_emission(
     name: &str,
-    disc: &[u8],
     docs: &[String],
     variants: &syn::punctuated::Punctuated<syn::Variant, syn::token::Comma>,
     kind: TypeKind,
-) -> IdlTypeStrings {
-    let mut type_def_obj = build_type_def_header(name, docs, kind);
-    let variant_values: Vec<Value> = variants
-        .iter()
-        .map(|v| {
-            let mut obj = serde_json::Map::new();
-            obj.insert("name".into(), Value::String(v.ident.to_string()));
-            match &v.fields {
-                syn::Fields::Unit => {}
-                syn::Fields::Named(named) => {
-                    let fields: Vec<Value> = named.named.iter().map(named_field_value).collect();
-                    obj.insert("fields".into(), Value::Array(fields));
-                }
-                syn::Fields::Unnamed(unnamed) => {
-                    let tys: Vec<Value> = unnamed
-                        .unnamed
-                        .iter()
-                        .map(|f| rust_type_to_idl_value(&f.ty))
-                        .collect();
-                    obj.insert("fields".into(), Value::Array(tys));
-                }
-            }
-            Value::Object(obj)
-        })
-        .collect();
-    type_def_obj.insert(
-        "type".into(),
-        json!({ "kind": "enum", "variants": variant_values }),
-    );
-    IdlTypeStrings {
-        account_entry: build_account_entry(name, disc),
-        type_def: Value::Object(type_def_obj).to_string(),
-    }
+) -> TokenStream2 {
+    let header = type_def_header_prefix(name, docs, kind, "enum");
+    let variant_pushes: Vec<_> = variants.iter().map(variant_push_stmt).collect();
+    build_joined_type_def_emission(header, &variant_pushes)
 }
 
 /// Compose the program-level `accounts[]` entry. Returns `None` when the
@@ -506,29 +448,61 @@ fn build_account_entry(name: &str, disc: &[u8]) -> Option<String> {
     )
 }
 
-/// Shared header construction for the `IdlTypeDef` payload. Emits
-/// `name`, optional `docs`, and the `serialization` / `repr` pair derived
-/// from `kind`. The caller appends the `type` object matching
-/// `IdlTypeDefTy::{Struct, Enum, Type}`. Notably *no* `discriminator` —
-/// that field only belongs on the accounts entry.
-fn build_type_def_header(
-    name: &str,
-    docs: &[String],
-    kind: TypeKind,
-) -> serde_json::Map<String, Value> {
-    let mut out = serde_json::Map::new();
-    out.insert("name".into(), Value::String(name.to_owned()));
-    if !docs.is_empty() {
-        out.insert("docs".into(), docs_value(docs));
-    }
-    match kind {
-        TypeKind::Borsh => {}
-        TypeKind::BytemuckRepr => {
-            out.insert("serialization".into(), Value::String("bytemuck".into()));
-            out.insert("repr".into(), json!({ "kind": "c" }));
+fn build_joined_type_def_emission(header: String, entries: &[TokenStream2]) -> TokenStream2 {
+    quote! {
+        {
+            let mut __entries: anchor_lang_v2::__alloc::vec::Vec<&'static str> =
+                anchor_lang_v2::__alloc::vec::Vec::new();
+            #(#entries)*
+            let mut __s = anchor_lang_v2::__alloc::string::String::from(#header);
+            let mut __first = true;
+            for __entry in &__entries {
+                if !__first {
+                    __s.push(',');
+                }
+                __first = false;
+                __s.push_str(__entry);
+            }
+            __s.push_str("]}}");
+            ::core::option::Option::Some(
+                anchor_lang_v2::__alloc::boxed::Box::leak(__s.into_boxed_str()) as &'static str
+            )
         }
     }
-    out
+}
+
+fn type_def_header_prefix(name: &str, docs: &[String], kind: TypeKind, kind_name: &str) -> String {
+    let docs_json = if docs.is_empty() {
+        String::new()
+    } else {
+        format!(",\"docs\":{}", docs_to_json_array(docs))
+    };
+    let kind_json = match kind {
+        TypeKind::Borsh => String::new(),
+        TypeKind::BytemuckRepr => ",\"serialization\":\"bytemuck\",\"repr\":{\"kind\":\"c\"}".into(),
+    };
+    format!(
+        "{{\"name\":\"{}\"{}{},\"type\":{{\"kind\":\"{}\",\"fields\":[",
+        name, docs_json, kind_json, kind_name
+    )
+}
+
+fn field_push_stmt(field: &syn::Field) -> TokenStream2 {
+    let field_json = named_field_value(field).to_string();
+    let cfg_attrs = crate::cfg_attrs(&field.attrs);
+    quote! {
+        #(#cfg_attrs)*
+        __entries.push(#field_json);
+    }
+}
+
+fn variant_push_stmt(variant: &syn::Variant) -> TokenStream2 {
+    let variant_json = variant_value(variant).to_string();
+    let cfg_attrs = crate::cfg_attrs(&variant.attrs);
+    quote! {
+        #(#cfg_attrs)*
+        __entries.push(#variant_json);
+    }
 }
 
 /// Build a named `IdlField` value — `{name, type, docs?}` — for a single
@@ -547,6 +521,27 @@ fn named_field_value(f: &syn::Field) -> Value {
         obj.insert("docs".into(), docs_value(&field_docs));
     }
     obj.insert("type".into(), rust_type_to_idl_value(&f.ty));
+    Value::Object(obj)
+}
+
+fn variant_value(v: &syn::Variant) -> Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert("name".into(), Value::String(v.ident.to_string()));
+    match &v.fields {
+        syn::Fields::Unit => {}
+        syn::Fields::Named(named) => {
+            let fields: Vec<Value> = named.named.iter().map(named_field_value).collect();
+            obj.insert("fields".into(), Value::Array(fields));
+        }
+        syn::Fields::Unnamed(unnamed) => {
+            let tys: Vec<Value> = unnamed
+                .unnamed
+                .iter()
+                .map(|f| rust_type_to_idl_value(&f.ty))
+                .collect();
+            obj.insert("fields".into(), Value::Array(tys));
+        }
+    }
     Value::Object(obj)
 }
 
@@ -650,11 +645,80 @@ pub fn classify_program_seed(
 ) -> SeedJson {
     let seed = classify_seed_inner(expr, field_names, ix_arg_names);
     match seed {
-        SeedJson::Static(ref s) if s == r#"{"kind":"expr"}"# => SeedJson::Runtime(quote! {
-            anchor_lang_v2::idl_build::__idl_const_seed_json(#expr)
-        }),
+        SeedJson::Static(ref s) if s == r#"{"kind":"expr"}"# => {
+            if expr_contains_macro(expr)
+                || expr_references_local_binding(expr, field_names, ix_arg_names)
+            {
+                seed
+            } else {
+                SeedJson::Runtime(quote! {
+                    anchor_lang_v2::idl_build::__idl_const_seed_json(#expr)
+                })
+            }
+        }
         _ => seed,
     }
+}
+
+pub fn expr_contains_macro(expr: &Expr) -> bool {
+    struct MacroFinder {
+        found: bool,
+    }
+
+    impl<'ast> Visit<'ast> for MacroFinder {
+        fn visit_expr_macro(&mut self, _expr: &'ast syn::ExprMacro) {
+            self.found = true;
+        }
+    }
+
+    let mut finder = MacroFinder { found: false };
+    finder.visit_expr(expr);
+    finder.found
+}
+
+pub fn expr_references_local_binding(
+    expr: &Expr,
+    field_names: &[String],
+    ix_arg_names: &[String],
+) -> bool {
+    struct LocalBindingFinder<'a> {
+        field_names: &'a [String],
+        ix_arg_names: &'a [String],
+        found: bool,
+    }
+
+    impl LocalBindingFinder<'_> {
+        fn is_local_name(&self, ident: &str) -> bool {
+            self.field_names.iter().any(|name| name == ident)
+                || self.ix_arg_names.iter().any(|name| name == ident)
+        }
+    }
+
+    impl<'ast> Visit<'ast> for LocalBindingFinder<'_> {
+        fn visit_expr_path(&mut self, expr: &'ast syn::ExprPath) {
+            if self.found {
+                return;
+            }
+            if expr.qself.is_none()
+                && expr.path.leading_colon.is_none()
+                && expr.path.segments.len() == 1
+                && expr.path.segments[0].arguments.is_empty()
+                && self.is_local_name(&expr.path.segments[0].ident.to_string())
+            {
+                self.found = true;
+                return;
+            }
+            syn::visit::visit_expr_path(self, expr);
+        }
+    }
+
+    let mut finder = LocalBindingFinder {
+        field_names,
+        ix_arg_names,
+        found: false,
+    };
+    finder.visit_expr(expr);
+    finder.found
 }
 
 fn static_seed(value: Value) -> SeedJson {
@@ -1037,6 +1101,54 @@ mod tests {
     }
 
     #[test]
+    fn local_field_program_seed_stays_opaque_expr() {
+        let fields = vec!["config".to_string()];
+        let args = Vec::new();
+        let s = expect_static(classify_program_seed(
+            &syn::parse_quote!(config.program_id),
+            &fields,
+            &args,
+        ));
+        assert_eq!(s, r#"{"kind":"expr"}"#);
+    }
+
+    #[test]
+    fn macro_wrapped_local_field_program_seed_stays_opaque_expr() {
+        let fields = vec!["config".to_string()];
+        let args = Vec::new();
+        let s = expect_static(classify_program_seed(
+            &syn::parse_quote!(wrap!(config.program_id)),
+            &fields,
+            &args,
+        ));
+        assert_eq!(s, r#"{"kind":"expr"}"#);
+    }
+
+    #[test]
+    fn local_binding_detector_sees_sibling_field_access() {
+        let fields = vec!["config".to_string()];
+        let args = Vec::new();
+        assert!(expr_references_local_binding(
+            &syn::parse_quote!(config.program_id),
+            &fields,
+            &args,
+        ));
+        assert!(!expr_references_local_binding(
+            &syn::parse_quote!(System::id()),
+            &fields,
+            &args,
+        ));
+    }
+
+    #[test]
+    fn macro_detector_sees_expr_macro() {
+        assert!(expr_contains_macro(&syn::parse_quote!(wrap!(
+            config.program_id
+        ))));
+        assert!(!expr_contains_macro(&syn::parse_quote!(System::id())));
+    }
+
+    #[test]
     fn unknown_marker_id_call_is_opaque_expr() {
         let s = expect_static(classify(syn::parse_quote!(MyCustomProgram::id()), &[], &[]));
         assert_eq!(s, r#"{"kind":"expr"}"#);
@@ -1075,5 +1187,17 @@ mod tests {
         // The program override gets its own runtime push under the
         // "program" key.
         assert!(ts.contains(r#",\"program\":"#), "missing program key: {ts}");
+    }
+
+    #[test]
+    fn float_primitives_map_to_scalar_idl_types() {
+        assert_eq!(type_str_to_idl_value("f32"), Value::String("f32".into()));
+        assert_eq!(type_str_to_idl_value("f64"), Value::String("f64".into()));
+    }
+
+    #[test]
+    fn float_primitives_do_not_fall_back_to_defined_types() {
+        assert_ne!(type_str_to_idl_value("f32"), json!({ "defined": { "name": "f32" } }));
+        assert_ne!(type_str_to_idl_value("f64"), json!({ "defined": { "name": "f64" } }));
     }
 }

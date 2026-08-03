@@ -1,6 +1,11 @@
 use std::{fs, path::PathBuf, process::Command};
 
-fn compile_fail_case(name: &str, source: &str, snippets: &[&str]) {
+fn cargo_case(
+    name: &str,
+    source: &str,
+    command: &str,
+    extra_args: &[&str],
+) -> std::process::Output {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let crate_dir = manifest_dir.join("target/macro-diagnostics").join(name);
     let src_dir = crate_dir.join("src");
@@ -18,6 +23,11 @@ publish = false
 anchor-lang-v2 = {{ path = "{}" }}
 wincode = {{ version = "0.5", features = ["derive"] }}
 
+[features]
+idl-build = []
+extra = []
+live = []
+
 [workspace]
 "#,
             manifest_dir.display()
@@ -26,11 +36,18 @@ wincode = {{ version = "0.5", features = ["derive"] }}
     .unwrap();
     fs::write(src_dir.join("lib.rs"), source).unwrap();
 
-    let output = Command::new("cargo")
-        .args(["check", "--offline", "--manifest-path"])
+    Command::new("cargo")
+        .arg(command)
+        .arg("--offline")
+        .arg("--manifest-path")
         .arg(crate_dir.join("Cargo.toml"))
+        .args(extra_args)
         .output()
-        .unwrap_or_else(|err| panic!("failed to run cargo check for {name}: {err}"));
+        .unwrap_or_else(|err| panic!("failed to run cargo {command} for {name}: {err}"))
+}
+
+fn compile_fail_case(name: &str, source: &str, snippets: &[&str]) {
+    let output = cargo_case(name, source, "check", &[]);
 
     assert!(
         !output.status.success(),
@@ -43,6 +60,34 @@ wincode = {{ version = "0.5", features = ["derive"] }}
             "{name} stderr did not contain {snippet:?}\n\nstderr:\n{stderr}"
         );
     }
+}
+
+fn compile_pass_case(name: &str, source: &str) {
+    let output = cargo_case(name, source, "check", &[]);
+
+    assert!(
+        output.status.success(),
+        "{name} failed to compile\n\nstdout:\n{}\n\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+fn cargo_test_pass_case(name: &str, source: &str, features: &[&str]) {
+    let mut args = Vec::new();
+    if !features.is_empty() {
+        args.push("--features");
+        args.push(features.join(",").leak());
+    }
+
+    let output = cargo_case(name, source, "test", &args);
+
+    assert!(
+        output.status.success(),
+        "{name} tests failed\n\nstdout:\n{}\n\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
 }
 
 #[test]
@@ -155,6 +200,136 @@ pub struct Bad<'a> {
     miri,
     ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
 )]
+fn init_space_rejects_wincode_field_overrides() {
+    compile_fail_case(
+        "init_space_wincode_skip",
+        r#"
+use anchor_lang_v2::InitSpace;
+
+#[derive(InitSpace, wincode::SchemaRead, wincode::SchemaWrite)]
+pub struct Bad {
+    #[wincode(skip)]
+    pub skipped: u64,
+    pub kept: u8,
+}
+"#,
+        &[
+            "#[derive(InitSpace)] does not support `#[wincode(skip)]` fields",
+            "serialized layout",
+        ],
+    );
+
+    compile_fail_case(
+        "init_space_wincode_skip_default_val",
+        r#"
+use anchor_lang_v2::InitSpace;
+
+#[derive(InitSpace, wincode::SchemaRead, wincode::SchemaWrite)]
+pub struct Bad {
+    #[wincode(skip(default_val = 9))]
+    pub skipped: u64,
+    pub kept: u8,
+}
+"#,
+        &[
+            "#[derive(InitSpace)] does not support `#[wincode(skip)]` fields",
+            "serialized layout",
+        ],
+    );
+
+    compile_fail_case(
+        "init_space_wincode_with",
+        r#"
+use anchor_lang_v2::InitSpace;
+
+#[derive(InitSpace, wincode::SchemaRead, wincode::SchemaWrite)]
+pub struct Bad {
+    #[wincode(with = "shim::ByteCodec")]
+    pub packed: u64,
+}
+
+mod shim {
+    pub struct ByteCodec;
+}
+"#,
+        &[
+            "#[derive(InitSpace)] does not support `#[wincode(with = ...)]` fields",
+            "custom wincode codecs can change the serialized layout",
+        ],
+    );
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
+fn idl_generation_rejects_wincode_field_overrides() {
+    compile_fail_case(
+        "idl_type_wincode_skip",
+        r#"
+use anchor_lang_v2::IdlType;
+
+#[derive(IdlType, wincode::SchemaRead, wincode::SchemaWrite)]
+pub struct Bad {
+    #[wincode(skip)]
+    pub skipped: u64,
+    pub kept: u8,
+}
+"#,
+        &[
+            "`#[derive(IdlType)]` does not support `#[wincode(skip)]` fields",
+            "generated IDL would not match the serialized wire layout",
+        ],
+    );
+
+    compile_fail_case(
+        "account_borsh_wincode_skip",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+#[account(borsh)]
+pub struct Bad {
+    #[wincode(skip)]
+    pub skipped: u64,
+    pub kept: u8,
+}
+"#,
+        &[
+            "`#[account(borsh)]` does not support `#[wincode(skip)]` fields",
+            "generated IDL would not match the serialized wire layout",
+        ],
+    );
+
+    compile_fail_case(
+        "event_wincode_with",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[event]
+pub struct Bad {
+    #[wincode(with = "shim::ByteCodec")]
+    pub packed: u64,
+}
+
+mod shim {
+    pub struct ByteCodec;
+}
+"#,
+        &[
+            "`#[event]` does not support `#[wincode(with = ...)]` fields",
+            "custom wincode codecs can change the serialized wire layout",
+        ],
+    );
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
 fn malformed_discriminator_attribute_has_targeted_message() {
     compile_fail_case(
         "bad_discriminator",
@@ -219,6 +394,122 @@ pub struct Bad {
     miri,
     ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
 )]
+fn instruction_args_reject_generated_name_namespace() {
+    compile_fail_case(
+        "reserved_instruction_arg",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+#[derive(Accounts)]
+#[instruction(__base_offset: usize)]
+pub struct Bad {
+    #[account(mut)]
+    pub data: Option<UncheckedAccount>,
+}
+"#,
+        &[
+            "instruction argument names beginning with `__` are reserved for generated code",
+        ],
+    );
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
+fn cfg_gated_public_handlers_do_not_emit_missing_wrappers() {
+    compile_pass_case(
+        "cfg_gated_handler",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+#[program]
+pub mod gated_program {
+    use super::*;
+
+    #[cfg(feature = "live")]
+    pub fn live(_ctx: &mut Context<Noop>) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Accounts)]
+pub struct Noop {}
+"#,
+    );
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
+fn cfg_disabled_members_are_omitted_from_idl_and_error_codes() {
+    cargo_test_pass_case(
+        "cfg_filtered_idl",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+#[account]
+pub struct CfgAccount {
+    pub always: u64,
+    #[cfg(feature = "extra")]
+    pub hidden: u64,
+}
+
+#[event]
+pub struct CfgEvent {
+    pub always: u64,
+    #[cfg(feature = "extra")]
+    pub hidden: u64,
+}
+
+#[error_code]
+pub enum CfgError {
+    First,
+    #[cfg(feature = "extra")]
+    Hidden,
+    Second,
+}
+
+#[cfg(all(test, feature = "idl-build"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cfg_disabled_members_are_filtered() {
+        let account_json = <CfgAccount as IdlAccountType>::__idl_type_def().unwrap();
+        assert!(account_json.contains("\"always\""));
+        assert!(!account_json.contains("\"hidden\""));
+
+        let event_json = <CfgEvent as IdlAccountType>::__idl_type_def().unwrap();
+        assert!(event_json.contains("\"always\""));
+        assert!(!event_json.contains("\"hidden\""));
+
+        let errors_json = CfgError::__idl_errors();
+        assert!(errors_json.contains("\"name\":\"First\""));
+        assert!(errors_json.contains("\"name\":\"Second\""));
+        assert!(!errors_json.contains("Hidden"));
+        assert!(errors_json.contains("\"code\":6000"));
+        assert!(errors_json.contains("\"code\":6001"));
+        assert!(!errors_json.contains("\"code\":6002"));
+    }
+}
+"#,
+        &["idl-build"],
+    );
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
 fn slot_hashes_is_not_a_supported_sysvar_account() {
     compile_fail_case(
         "unsupported_slot_hashes_sysvar",
@@ -234,6 +525,58 @@ fn check() {
 }
 "#,
         &["SlotHashes", "SysvarId"],
+    );
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
+fn qualified_accounts_paths_compile() {
+    compile_pass_case(
+        "qualified_accounts_paths",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+pub mod shared {
+    use super::*;
+
+    #[derive(Accounts)]
+    pub struct Inner {
+        pub signer: Signer,
+    }
+
+    #[derive(Accounts)]
+    pub struct Outer {
+        pub inner: Nested<crate::shared2::Leaf>,
+    }
+}
+
+pub mod shared2 {
+    use super::*;
+
+    #[derive(Accounts)]
+    pub struct Leaf {
+        pub signer: Signer,
+    }
+}
+
+#[program]
+pub mod qualified_paths {
+    use super::*;
+
+    pub fn use_qualified_ctx(_ctx: &mut Context<shared::Inner>) -> Result<()> {
+        Ok(())
+    }
+
+    pub fn use_nested(_ctx: &mut Context<shared::Outer>) -> Result<()> {
+        Ok(())
+    }
+}
+"#,
     );
 }
 
@@ -293,6 +636,133 @@ pub struct Bad {
 }
 "#,
         &["PDA init payers must be declared as `SystemAccount`"],
+    );
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
+fn init_and_init_if_needed_reject_seeds_program() {
+    compile_fail_case(
+        "init_seeds_program_rejected",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+pub const OTHER_PROGRAM: Address =
+    Address::from_str_const("Gue5TpR6sstSyGhSvmVeH2TeKqBYYqmXpRCacB9jAk8u");
+
+#[account]
+pub struct Data {
+    pub value: u64,
+}
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(
+        init,
+        payer = payer,
+        space = 8 + core::mem::size_of::<Data>(),
+        seeds = [b"data"],
+        bump,
+        seeds::program = OTHER_PROGRAM,
+    )]
+    pub data: Account<Data>,
+    #[account(mut)]
+    pub payer: Signer,
+    pub system_program: Program<System>,
+}
+"#,
+        &["`seeds::program` cannot be used with `init`"],
+    );
+
+    compile_fail_case(
+        "init_if_needed_seeds_program_rejected",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+pub const OTHER_PROGRAM: Address =
+    Address::from_str_const("Gue5TpR6sstSyGhSvmVeH2TeKqBYYqmXpRCacB9jAk8u");
+
+#[account]
+pub struct Data {
+    pub value: u64,
+}
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(
+        init_if_needed,
+        payer = payer,
+        space = 8 + core::mem::size_of::<Data>(),
+        seeds = [b"data"],
+        bump,
+        seeds::program = OTHER_PROGRAM,
+    )]
+    pub data: Account<Data>,
+    #[account(mut)]
+    pub payer: Signer,
+    pub system_program: Program<System>,
+}
+"#,
+        &["`seeds::program` cannot be used with `init_if_needed`"],
+    );
+}
+
+#[test]
+#[cfg_attr(
+    miri,
+    ignore = "spawns cargo and writes temporary workspaces; covered by normal cargo test"
+)]
+fn seeds_program_requires_seeds_and_rejects_duplicates() {
+    compile_fail_case(
+        "seeds_program_without_seeds",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+pub const OTHER_PROGRAM: Address =
+    Address::from_str_const("Gue5TpR6sstSyGhSvmVeH2TeKqBYYqmXpRCacB9jAk8u");
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(seeds::program = OTHER_PROGRAM)]
+    pub data: UncheckedAccount,
+}
+"#,
+        &["`seeds::program` requires `seeds`"],
+    );
+
+    compile_fail_case(
+        "duplicate_seeds_program_rejected",
+        r#"
+use anchor_lang_v2::prelude::*;
+
+declare_id!("11111111111111111111111111111111");
+
+pub const OTHER_PROGRAM_A: Address =
+    Address::from_str_const("Gue5TpR6sstSyGhSvmVeH2TeKqBYYqmXpRCacB9jAk8u");
+pub const OTHER_PROGRAM_B: Address =
+    Address::from_str_const("HmbTQ4MSEFuTMdM7x5TW5tsanTzQKB8CS7QdQ8qJbYQL");
+
+#[derive(Accounts)]
+pub struct Bad {
+    #[account(
+        seeds = [b"data"],
+        bump,
+        seeds::program = OTHER_PROGRAM_A,
+        seeds::program = OTHER_PROGRAM_B,
+    )]
+    pub data: UncheckedAccount,
+}
+"#,
+        &["`seeds::program` already provided"],
     );
 }
 

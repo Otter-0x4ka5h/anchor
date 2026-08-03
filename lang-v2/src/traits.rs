@@ -570,7 +570,7 @@ pub trait ForeignOwnerInit: AccountInitialize {}
 /// | `init, ns::key = v`                                | `init`                |
 /// | `init_if_needed, ns::key = v` (creating)           | `init`, then `check`  |
 /// | `init_if_needed, ns::key = v` (already exists)     | `check`               |
-/// | `update(ns::key = v)`                              | `update`              |
+/// | `update(ns::key = v)`                              | `update` (post-validation) |
 /// | Any of the above                                    | `exit` (exit phase)  |
 ///
 /// There is deliberately **no blanket `impl<T: AccountConstraint<A>>
@@ -641,7 +641,8 @@ pub trait AccountConstraint<A> {
     /// inside an `update(...)` wrapper, e.g.
     /// `#[account(update(my_ns::field = value))]`. Intended for
     /// constraints that set / rewrite on-chain state rather than
-    /// validating it.
+    /// validating it. Runs after `try_accounts` has finished all
+    /// account validations, but before the instruction handler.
     #[inline(always)]
     fn update(_account: &mut A, _value: &Self::Value) -> core::result::Result<(), ProgramError> {
         Ok(())
@@ -676,6 +677,12 @@ impl<T> core::ops::DerefMut for Nested<T> {
 impl<T: crate::IdlAccountType> crate::IdlAccountType for Nested<T> {
     const __IDL_ACCOUNT_ENTRY: Option<&'static str> = T::__IDL_ACCOUNT_ENTRY;
     const __IDL_TYPE_DEF: Option<&'static str> = T::__IDL_TYPE_DEF;
+    fn __idl_account_entry() -> Option<&'static str> {
+        T::__idl_account_entry()
+    }
+    fn __idl_type_def() -> Option<&'static str> {
+        T::__idl_type_def()
+    }
     fn __register_idl_deps(
         accounts: &mut ::alloc::vec::Vec<&'static str>,
         types: &mut ::alloc::vec::Vec<&'static str>,

@@ -24,6 +24,13 @@ const SYSTEM_TRANSFER_VARIANT: u8 = 2;
 // the same constant).
 const _: () = assert!(SYSTEM_TRANSFER_VARIANT == 2);
 
+/// Solana PDA derivation accepts at most 16 total seeds, each no longer than
+/// 32 bytes. Finder APIs append the bump as an extra seed, so callers may only
+/// provide 15 seed slices on those paths.
+const MAX_PDA_SEEDS_TOTAL: usize = solana_address::MAX_SEEDS;
+const MAX_PDA_SEED_LEN: usize = solana_address::MAX_SEED_LEN;
+const MAX_PDA_SEEDS_WITHOUT_BUMP: usize = MAX_PDA_SEEDS_TOTAL - 1;
+
 /// Encode a System program `Transfer` instruction body.
 ///
 /// Extracted as a pure helper so the Kani harness in this module can verify
@@ -36,6 +43,14 @@ fn encode_system_transfer(lamports: u64) -> [u8; 12] {
     data[0] = SYSTEM_TRANSFER_VARIANT;
     data[4..12].copy_from_slice(&lamports.to_le_bytes());
     data
+}
+
+#[inline(always)]
+fn validate_pda_seeds(seeds: &[&[u8]], max_seed_count: usize) -> Result<(), ProgramError> {
+    if seeds.len() > max_seed_count || seeds.iter().any(|seed| seed.len() > MAX_PDA_SEED_LEN) {
+        return Err(ProgramError::MaxSeedLengthExceeded);
+    }
+    Ok(())
 }
 
 /// Transfer lamports via the System program without consulting Pinocchio's
@@ -164,9 +179,7 @@ pub fn try_find_program_address(
     seeds: &[&[u8]],
     program_id: &Address,
 ) -> Result<(Address, u8), ProgramError> {
-    if seeds.len() > 16 {
-        return Err(ProgramError::InvalidSeeds);
-    }
+    validate_pda_seeds(seeds, MAX_PDA_SEEDS_WITHOUT_BUMP)?;
 
     #[cfg(target_os = "solana")]
     {
@@ -189,9 +202,7 @@ pub fn find_and_verify_program_address(
     program_id: &Address,
     expected: &Address,
 ) -> Result<u8, ProgramError> {
-    if seeds.len() > 16 {
-        return Err(ProgramError::InvalidSeeds);
-    }
+    validate_pda_seeds(seeds, MAX_PDA_SEEDS_WITHOUT_BUMP)?;
 
     #[cfg(target_os = "solana")]
     {
@@ -226,6 +237,8 @@ pub fn create_program_address(
     seeds: &[&[u8]],
     program_id: &Address,
 ) -> Result<Address, ProgramError> {
+    validate_pda_seeds(seeds, MAX_PDA_SEEDS_TOTAL)?;
+
     #[cfg(target_os = "solana")]
     {
         let computed = hash_pda_seeds(seeds, program_id)?;
@@ -241,111 +254,38 @@ pub fn create_program_address(
 
 /// Verify that `expected` matches the PDA derived from `seeds` and `program_id`.
 ///
-/// On-chain this is hash-only and assumes the seeds are runtime-valid and the
-/// bump is canonical. Off-chain it uses `Address::create_program_address`,
-/// which also performs host-side seed and curve validation. For untrusted bumps
-/// use `find_and_verify_program_address`. Seeds should already include the bump
-/// byte.
+/// This verifies the exact PDA for the provided seeds, including the runtime's
+/// off-curve requirement. Use [`find_and_verify_program_address`] when the bump
+/// is not already included in `seeds` and needs to be discovered canonically.
 #[inline(always)]
 pub fn verify_program_address(
     seeds: &[&[u8]],
     program_id: &Address,
     expected: &Address,
 ) -> Result<(), ProgramError> {
-    #[cfg(target_os = "solana")]
-    {
-        let computed = hash_pda_seeds(seeds, program_id)?;
-        if pinocchio::address::address_eq(&computed, expected) {
-            Ok(())
-        } else {
-            Err(ProgramError::InvalidSeeds)
-        }
-    }
+    validate_pda_seeds(seeds, MAX_PDA_SEEDS_TOTAL)?;
 
-    #[cfg(not(target_os = "solana"))]
-    {
-        let computed = Address::create_program_address(seeds, program_id)
-            .map_err(|_| ProgramError::InvalidSeeds)?;
-        if pinocchio::address::address_eq(&computed, expected) {
-            Ok(())
-        } else {
-            Err(ProgramError::InvalidSeeds)
-        }
+    let computed =
+        create_program_address(seeds, program_id).map_err(|_| ProgramError::InvalidSeeds)?;
+    if pinocchio::address::address_eq(&computed, expected) {
+        Ok(())
+    } else {
+        Err(ProgramError::InvalidSeeds)
     }
 }
 
-/// Like [`find_and_verify_program_address`] but skips `sol_curve_validate_point`.
+/// Compatibility alias for [`find_and_verify_program_address`].
 ///
-/// Safe when the account was signed for (`MIN_DATA_LEN > 0` or `init`):
-/// signing goes through `invoke_signed` → `create_program_address` which
-/// includes the runtime's own curve check. The loop tries all 256 bumps
-/// via hash-and-compare; SHA-256 collision resistance ensures only the
-/// canonical bump matches.
+/// This historically skipped curve checks for initialized data accounts, but
+/// doing so accepted any matching off-curve bump rather than the canonical
+/// first off-curve bump.
 #[inline(always)]
 pub fn find_and_verify_program_address_skip_curve(
     seeds: &[&[u8]],
     program_id: &Address,
     expected: &Address,
 ) -> Result<u8, ProgramError> {
-    if seeds.len() > 16 {
-        return Err(ProgramError::InvalidSeeds);
-    }
-
-    #[cfg(target_os = "solana")]
-    {
-        use solana_define_syscall::definitions::sol_sha256;
-        const PDA_MARKER: &[u8; 21] = b"ProgramDerivedAddress";
-
-        let n = seeds.len();
-        let mut slices = core::mem::MaybeUninit::<[&[u8]; 19]>::uninit();
-        let sptr = slices.as_mut_ptr() as *mut &[u8];
-        let mut i = 0;
-        while i < n {
-            unsafe { sptr.add(i).write(seeds[i]) };
-            i += 1;
-        }
-        unsafe {
-            sptr.add(n + 1).write(program_id.as_ref());
-            sptr.add(n + 2).write(PDA_MARKER.as_slice());
-        }
-        let mut bump_arr = [u8::MAX];
-        let bump_ptr = bump_arr.as_mut_ptr();
-        unsafe { sptr.add(n).write(core::slice::from_raw_parts(bump_ptr, 1)) };
-        let input = unsafe { core::slice::from_raw_parts(sptr, n + 3) };
-        let mut hash = core::mem::MaybeUninit::<[u8; 32]>::uninit();
-        let mut bump: u64 = u8::MAX as u64;
-
-        loop {
-            unsafe { bump_ptr.write(bump as u8) };
-            unsafe {
-                sol_sha256(
-                    input as *const _ as *const u8,
-                    input.len() as u64,
-                    hash.as_mut_ptr() as *mut u8,
-                )
-            };
-            let h = unsafe { hash.assume_init() };
-            let derived = Address::new_from_array(h);
-            if pinocchio::address::address_eq(&derived, expected) {
-                return Ok(bump as u8);
-            }
-            if bump == 0 {
-                break;
-            }
-            bump -= 1;
-        }
-        Err(ProgramError::InvalidSeeds)
-    }
-
-    #[cfg(not(target_os = "solana"))]
-    {
-        let (pda, bump) = Address::find_program_address(seeds, program_id);
-        if pinocchio::address::address_eq(&pda, expected) {
-            Ok(bump)
-        } else {
-            Err(ProgramError::InvalidSeeds)
-        }
-    }
+    find_and_verify_program_address(seeds, program_id, expected)
 }
 
 /// Verify that `addr` is off the Ed25519 curve (i.e. a valid PDA).
@@ -376,9 +316,7 @@ fn hash_pda_seeds(seeds: &[&[u8]], program_id: &Address) -> Result<Address, Prog
     use solana_define_syscall::definitions::sol_sha256;
     const PDA_MARKER: &[u8; 21] = b"ProgramDerivedAddress";
 
-    if seeds.len() > 17 {
-        return Err(ProgramError::InvalidSeeds);
-    }
+    validate_pda_seeds(seeds, MAX_PDA_SEEDS_TOTAL)?;
 
     let n = seeds.len();
     let mut slices = core::mem::MaybeUninit::<[&[u8]; 19]>::uninit();
@@ -406,6 +344,88 @@ fn hash_pda_seeds(seeds: &[&[u8]], program_id: &Address) -> Result<Address, Prog
     }
 
     Ok(Address::new_from_array(unsafe { hash.assume_init() }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+
+    fn program_id() -> Address {
+        Address::new_from_array([7; 32])
+    }
+
+    #[test]
+    fn finder_paths_reject_more_than_fifteen_user_seeds() {
+        let program_id = program_id();
+        let seeds = vec![b"x".as_ref(); MAX_PDA_SEEDS_TOTAL];
+
+        let err = try_find_program_address(&seeds, &program_id).unwrap_err();
+        assert_eq!(err, ProgramError::MaxSeedLengthExceeded);
+
+        let err =
+            find_and_verify_program_address(&seeds, &program_id, &Address::new_from_array([0; 32]))
+                .unwrap_err();
+        assert_eq!(err, ProgramError::MaxSeedLengthExceeded);
+
+        let err = find_and_verify_program_address_skip_curve(
+            &seeds,
+            &program_id,
+            &Address::new_from_array([0; 32]),
+        )
+        .unwrap_err();
+        assert_eq!(err, ProgramError::MaxSeedLengthExceeded);
+    }
+
+    #[test]
+    fn compatibility_finder_rejects_noncanonical_off_curve_bump() {
+        let program_id = program_id();
+        let seeds = [b"vault".as_ref()];
+        let (_, canonical_bump) = Address::find_program_address(&seeds, &program_id);
+        let alias = (0..canonical_bump).rev().find_map(|bump| {
+            Address::create_program_address(&[seeds[0], &[bump]], &program_id)
+                .ok()
+                .map(|address| (address, bump))
+        });
+        let (alias, alias_bump) = alias.expect("expected a lower off-curve bump");
+
+        assert_ne!(alias_bump, canonical_bump);
+        assert_eq!(
+            find_and_verify_program_address_skip_curve(&seeds, &program_id, &alias),
+            Err(ProgramError::InvalidSeeds),
+        );
+    }
+
+    #[test]
+    fn explicit_bump_paths_reject_more_than_sixteen_total_seeds() {
+        let program_id = program_id();
+        let seeds = vec![b"x".as_ref(); MAX_PDA_SEEDS_TOTAL + 1];
+
+        let err = create_program_address(&seeds, &program_id).unwrap_err();
+        assert_eq!(err, ProgramError::MaxSeedLengthExceeded);
+
+        let err = verify_program_address(&seeds, &program_id, &Address::new_from_array([0; 32]))
+            .unwrap_err();
+        assert_eq!(err, ProgramError::MaxSeedLengthExceeded);
+    }
+
+    #[test]
+    fn pda_helpers_reject_seed_longer_than_thirty_two_bytes() {
+        let program_id = program_id();
+        let long_seed = [9u8; MAX_PDA_SEED_LEN + 1];
+        let explicit = [&long_seed[..]];
+        let finder = [&long_seed[..]];
+
+        let err = create_program_address(&explicit, &program_id).unwrap_err();
+        assert_eq!(err, ProgramError::MaxSeedLengthExceeded);
+
+        let err = verify_program_address(&explicit, &program_id, &Address::new_from_array([0; 32]))
+            .unwrap_err();
+        assert_eq!(err, ProgramError::MaxSeedLengthExceeded);
+
+        let err = try_find_program_address(&finder, &program_id).unwrap_err();
+        assert_eq!(err, ProgramError::MaxSeedLengthExceeded);
+    }
 }
 
 /// Create a new account via system program CPI (no PDA signing).
@@ -569,29 +589,48 @@ pub fn realloc_account(
 ) -> Result<(), ProgramError> {
     use pinocchio::Resize;
 
+    let payer_is_account = pinocchio::address::address_eq(payer.address(), account.address());
     let old_space = account.data_len();
-    let required = rent_exempt_lamports(new_space)?;
+    let new_rent_minimum = rent_exempt_lamports(new_space)?;
     let current_lamports = account.lamports();
 
     if new_space > old_space {
-        let deficit = required.saturating_sub(current_lamports);
+        let deficit = new_rent_minimum.saturating_sub(current_lamports);
         if deficit > 0 {
+            require!(!payer_is_account, ProgramError::InvalidArgument);
             transfer_lamports_unchecked(payer, &*account as &AccountView, deficit)?;
         }
     } else if new_space < old_space {
-        let excess = current_lamports.saturating_sub(required);
-        if excess > 0 {
-            let mut payer_mut = *payer;
-            // `checked_add` rather than `+`: overflow-checks is disabled in
-            // release builds, and this arithmetic is on user-supplied account
-            // lamports. The total SOL supply is bounded so overflow is
-            // unreachable in practice, but silent wrap would be a downgrade.
-            let new_payer_lamports = payer_mut
-                .lamports()
-                .checked_add(excess)
-                .ok_or(ProgramError::ArithmeticOverflow)?;
-            payer_mut.set_lamports(new_payer_lamports);
-            account.set_lamports(required);
+        let old_rent_minimum = rent_exempt_lamports(old_space)?;
+        // Shrinking should only reclaim rent that was reserved for bytes we are
+        // removing, not unrelated lamports the account might be holding.
+        let reclaimable_rent = old_rent_minimum.saturating_sub(new_rent_minimum);
+        // Cap the refund by the lamports actually available above the new rent
+        // floor so underfunded oversized accounts cannot underflow here.
+        let lamports_above_new_minimum =
+            current_lamports.saturating_sub(new_rent_minimum);
+        let refund = reclaimable_rent.min(lamports_above_new_minimum);
+        if refund > 0 {
+            // When the payer aliases the resized account, the refund is a
+            // no-op transfer. Skip the lamport writes so we do not overwrite
+            // the first write with the second and accidentally burn lamports.
+            if !payer_is_account {
+                let mut payer_mut = *payer;
+                // `checked_add` rather than `+`: overflow-checks is disabled in
+                // release builds, and this arithmetic is on user-supplied account
+                // lamports. The total SOL supply is bounded so overflow is
+                // unreachable in practice, but silent wrap would be a downgrade.
+                let new_payer_lamports = payer_mut
+                    .lamports()
+                    .checked_add(refund)
+                    .ok_or(ProgramError::ArithmeticOverflow)?;
+                payer_mut.set_lamports(new_payer_lamports);
+                account.set_lamports(
+                    current_lamports
+                        .checked_sub(refund)
+                        .ok_or(ProgramError::ArithmeticOverflow)?,
+                );
+            }
         }
     }
 

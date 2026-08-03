@@ -272,6 +272,13 @@ where
         &self.view
     }
 
+    #[inline(always)]
+    fn try_cpi_handle_mut(&mut self) -> Result<crate::CpiHandleMut<'_>, ProgramError> {
+        require!(self.account().is_writable(), ProgramError::InvalidArgument);
+        self.release_borrow()?;
+        Ok(crate::CpiHandleMut::writable(&mut self.view))
+    }
+
     fn close(&mut self, mut destination: AccountView) -> pinocchio::ProgramResult {
         let mut self_view = self.view;
         let dest_lamports = destination
@@ -313,8 +320,10 @@ where
     }
 
     fn exit(&mut self) -> pinocchio::ProgramResult {
-        // Skip serialization if account was closed (lamports == 0, reassigned to system program).
-        if self.view.lamports() == 0 {
+        // Skip serialization only after close() has cleared the account header.
+        // A zero lamport balance can be transient when a later exit refunds this
+        // account, so lamports alone do not prove that write-back is unnecessary.
+        if super::slab::is_closed(&self.view) {
             return Ok(());
         }
         // Belt-and-braces: the derive's `realloc` constraint does
@@ -451,6 +460,12 @@ where
 {
     const __IDL_ACCOUNT_ENTRY: Option<&'static str> = T::__IDL_ACCOUNT_ENTRY;
     const __IDL_TYPE_DEF: Option<&'static str> = T::__IDL_TYPE_DEF;
+    fn __idl_account_entry() -> Option<&'static str> {
+        T::__idl_account_entry()
+    }
+    fn __idl_type_def() -> Option<&'static str> {
+        T::__idl_type_def()
+    }
     fn __register_idl_deps(
         accounts: &mut ::alloc::vec::Vec<&'static str>,
         types: &mut ::alloc::vec::Vec<&'static str>,

@@ -28,11 +28,19 @@ pub(super) fn cold_owner_error(view: &AccountView) -> ProgramError {
     }
 }
 
+/// Whether the runtime account header reflects a completed close.
+#[inline(always)]
+pub(super) fn is_closed(view: &AccountView) -> bool {
+    view.lamports() == 0
+        && view.data_len() == 0
+        && view.owned_by(&crate::programs::System::id())
+}
+
 /// Error for read-only account passed to `load_mut`.
 #[cfg(feature = "guardrails")]
 #[inline(always)]
 pub(super) fn cold_not_writable() -> ProgramError {
-    ProgramError::InvalidAccountData
+    crate::ErrorCode::ConstraintMut.into()
 }
 
 /// Capacity from live `data_len` / `items_offset` / `item_size`. Returns 0
@@ -233,6 +241,10 @@ where
                 H::DATA_OFFSET % core::mem::align_of::<H>() == 0,
                 "Slab header DATA_OFFSET is not aligned for the header type",
             );
+            assert!(
+                !Self::HAS_TAIL || core::mem::align_of::<T>() <= 8,
+                "Slab tail alignment exceeds Solana's 8-byte account data alignment",
+            );
         };
     }
 
@@ -247,6 +259,45 @@ where
     #[inline(always)]
     pub fn view(&self) -> &AccountView {
         &self.view
+    }
+
+    /// Enforce that this slab came from `load_mut` before any method mutates
+    /// account bytes, lamports, or data length.
+    #[inline(always)]
+    fn assert_mutable(&self) {
+        if !self.is_mutable {
+            panic!(
+                "Tried to mutate `Slab<H, T>` through a read-only load. Add `#[account(mut)]` \
+                 to your accounts struct."
+            );
+        }
+    }
+
+    /// Re-run the slab's load-time schema checks after a CPI that may have
+    /// changed owner, discriminator, data length, or tail metadata.
+    ///
+    /// Unlike [`super::serialized_account::SerializedAccount::reacquire_borrow_mut`],
+    /// this does not need a preceding `release_borrow()`: `Slab` keeps no
+    /// `Ref` / `RefMut` guard alive, only a raw `AccountView` plus cached
+    /// pointers into the same runtime buffer. Use this when a CPI may have
+    /// mutated the account and you want to ensure the live bytes still
+    /// validate as `Slab<H, T>` before continuing.
+    pub fn revalidate_after_cpi(&mut self) -> Result<(), ProgramError> {
+        let data = unsafe { self.view.borrow_unchecked() };
+        H::validate(&self.view, data)?;
+        if data.len() < Self::ITEMS_OFFSET {
+            return Err(ProgramError::AccountDataTooSmall);
+        }
+        Self::validate_tail(data)?;
+
+        self.header_ptr = if self.is_mutable {
+            let mut view_mut = self.view;
+            (unsafe { view_mut.data_mut_ptr().add(Self::HEADER_OFFSET) }) as *mut H
+        } else {
+            (unsafe { self.view.data_ptr().add(Self::HEADER_OFFSET) }) as *mut H
+        };
+
+        Ok(())
     }
 
     /// Validate `len <= capacity` for the tail region before we do the
@@ -354,6 +405,7 @@ where
     /// Uses a `system::Transfer` CPI; `payer` must be a signer on the outer
     /// transaction (pinocchio enforces signerness at CPI time).
     pub fn top_up(&mut self, payer: &AccountView) -> Result<(), ProgramError> {
+        self.assert_mutable();
         let required = self.min_lamports()?;
         let current = self.view.lamports();
         if current >= required {
@@ -369,6 +421,7 @@ where
     /// Direct lamport arithmetic, no CPI — callers must only use this for
     /// accounts whose owner permits in-program lamport mutation.
     pub fn refund(&mut self, recipient: &mut AccountView) -> Result<(), ProgramError> {
+        self.assert_mutable();
         let required = self.min_lamports()?;
         let current = self.view.lamports();
         if current <= required {
@@ -416,12 +469,7 @@ where
     /// Mutable account data bytes. Panics if the slab was loaded read-only.
     #[inline(always)]
     fn guard_bytes_mut(&mut self) -> &mut [u8] {
-        if !self.is_mutable {
-            panic!(
-                "Slab<H, T> mutated through a read-only load. Add #[account(mut)] to your \
-                 accounts struct."
-            );
-        }
+        self.assert_mutable();
         // SAFETY: is_mutable guarantees this was loaded via load_mut.
         // AccountView data is valid for the instruction lifetime.
         unsafe { self.view.borrow_unchecked_mut() }
@@ -429,18 +477,30 @@ where
 
     /// Read the `len` field without requiring `LEN_OFFSET` alignment —
     /// `from_le_bytes` operates on a copy, so misaligned layouts are fine.
+    ///
+    /// Returns `None` when an external shrink has shortened the live account
+    /// data below the `len` field itself.
     #[inline(always)]
-    fn read_len(&self) -> u32 {
+    fn read_len(&self) -> Option<u32> {
+        if self.view.data_len() < Self::LEN_OFFSET + 4 {
+            return None;
+        }
         let bytes = self.guard_bytes();
         let mut buf = [0u8; 4];
         buf.copy_from_slice(&bytes[Self::LEN_OFFSET..Self::LEN_OFFSET + 4]);
-        u32::from_le_bytes(buf)
+        Some(u32::from_le_bytes(buf))
     }
 
     /// Write the `len` field. Same alignment-free pattern as `read_len`.
+    ///
+    /// If an external shrink has removed the field entirely, this becomes a
+    /// no-op after still validating the mutable-borrow contract.
     #[inline(always)]
     fn write_len(&mut self, new_len: u32) {
         let bytes = self.guard_bytes_mut();
+        if bytes.len() < Self::LEN_OFFSET + 4 {
+            return;
+        }
         bytes[Self::LEN_OFFSET..Self::LEN_OFFSET + 4].copy_from_slice(&new_len.to_le_bytes());
     }
 
@@ -470,9 +530,12 @@ where
     }
 
     /// Current number of items in the tail region.
+    ///
+    /// Returns 0 if an external shrink has shortened the live account data
+    /// below the `len` field.
     #[inline(always)]
     pub fn len(&self) -> usize {
-        self.read_len() as usize
+        self.read_len().unwrap_or(0) as usize
     }
 
     /// How many items the account's tail region can currently hold.
@@ -514,6 +577,9 @@ where
     #[inline]
     pub fn as_slice(&self) -> &[T] {
         let len = self.effective_len();
+        if self.view.data_len() < Self::ITEMS_OFFSET {
+            return &[];
+        }
         let bytes = self.guard_bytes();
         // `ITEMS_OFFSET` is const-computed to be `align_of::<T>()`-aligned,
         // and Pod requires `size_of` is a multiple of `align_of`, so every
@@ -528,6 +594,9 @@ where
     #[inline]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         let len = self.effective_len();
+        if self.view.data_len() < Self::ITEMS_OFFSET {
+            return &mut [];
+        }
         let bytes = self.guard_bytes_mut();
         let items_bytes =
             &mut bytes[Self::ITEMS_OFFSET..Self::ITEMS_OFFSET + len * core::mem::size_of::<T>()];
@@ -656,9 +725,15 @@ where
     /// touching lamports. Compose with `top_up` / `refund` afterward to
     /// settle rent. Re-derives `header_ptr` after the resize; `guard_bytes*`
     /// pick up the new size from `view.data_len()` automatically.
+    ///
+    /// No `self.view = view_mut` write-back is needed here. `AccountView` is
+    /// a raw-pointer wrapper over the shared `RuntimeAccount` header; Pinocchio
+    /// resizes by mutating that header's `data_len` in place, so all
+    /// `AccountView` copies observe the updated length.
     pub fn resize_to_capacity(&mut self, new_capacity: u32) -> Result<(), ProgramError> {
         use pinocchio::Resize;
 
+        self.assert_mutable();
         let new_space = Self::try_space_for(new_capacity)?;
         let mut view_mut = self.view;
         // SAFETY: Slab owns exclusive access to the data (enforced by the
@@ -738,6 +813,7 @@ where
     }
 
     fn close(&mut self, mut destination: AccountView) -> pinocchio::ProgramResult {
+        self.assert_mutable();
         let mut self_view = self.view;
         let dest_lamports = destination
             .lamports()
@@ -789,11 +865,16 @@ where
         payer: AccountView,
         zero: bool,
     ) -> pinocchio::ProgramResult {
+        self.assert_mutable();
         let mut view = *self.account();
         if new_space != view.data_len() {
-            if new_space < Self::ITEMS_OFFSET {
+            if new_space < Self::MIN_DATA_LEN {
                 return Err(ProgramError::AccountDataTooSmall);
             }
+            // No `self.view = view` write-back is needed: `AccountView` is a
+            // raw-pointer wrapper over the shared `RuntimeAccount` header, and
+            // `crate::realloc_account` updates that header's `data_len` in
+            // place. All `AccountView` copies therefore observe the new size.
             crate::realloc_account(&mut view, new_space, &payer, zero)?;
             self.header_ptr = unsafe { view.data_mut_ptr().add(Self::HEADER_OFFSET) } as *mut H;
             if Self::HAS_TAIL {
@@ -839,12 +920,7 @@ where
     fn deref_mut(&mut self) -> &mut H {
         // Always checked (not guardrails-gated): creating `&mut H` from a
         // const-provenance pointer is UB, so this must run even in release.
-        if !self.is_mutable {
-            panic!(
-                "Slab<H, T> mutably dereferenced but loaded read-only. Add #[account(mut)] to \
-                 your accounts struct."
-            );
-        }
+        self.assert_mutable();
         // SAFETY: is_mutable guarantees header_ptr was derived via data_mut_ptr
         // (write provenance). No other live mutable borrow exists; we hold &mut self.
         unsafe { &mut *self.header_ptr }
@@ -924,8 +1000,17 @@ impl<H, T> crate::IdlAccountType for Slab<H, T>
 where
     H: Pod + Zeroable + SlabSchema + crate::IdlAccountType,
 {
+    // IDL currently exposes only the header shape. The dynamic tail cannot be
+    // represented faithfully in the existing spec because `Slab` stores
+    // `[len][pad][items..]`, not a plain `Vec<T>` encoding.
     const __IDL_ACCOUNT_ENTRY: Option<&'static str> = H::__IDL_ACCOUNT_ENTRY;
     const __IDL_TYPE_DEF: Option<&'static str> = H::__IDL_TYPE_DEF;
+    fn __idl_account_entry() -> Option<&'static str> {
+        H::__idl_account_entry()
+    }
+    fn __idl_type_def() -> Option<&'static str> {
+        H::__idl_type_def()
+    }
     fn __register_idl_deps(
         accounts: &mut ::alloc::vec::Vec<&'static str>,
         types: &mut ::alloc::vec::Vec<&'static str>,

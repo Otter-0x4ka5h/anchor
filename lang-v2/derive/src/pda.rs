@@ -17,6 +17,9 @@ use {
 };
 
 const PDA_MARKER: &[u8; 21] = b"ProgramDerivedAddress";
+const MAX_PDA_SEEDS_TOTAL: usize = solana_address::MAX_SEEDS;
+const MAX_PDA_SEED_LEN: usize =  solana_address::MAX_SEED_LEN;
+const MAX_PDA_SEEDS_WITHOUT_BUMP: usize = MAX_PDA_SEEDS_TOTAL - 1;
 
 thread_local! {
     /// `None`   = not yet attempted.
@@ -52,6 +55,9 @@ fn try_discover_program_id() -> Option<[u8; 32]> {
             let last = item_macro.mac.path.segments.last()?;
             if last.ident != "declare_id" {
                 continue;
+            }
+            if crate::has_cfg_attrs(&item_macro.attrs) {
+                return None;
             }
             let lit: syn::LitStr = syn::parse2(item_macro.mac.tokens.clone()).ok()?;
             let decoded = bs58::decode(lit.value()).into_vec().ok()?;
@@ -145,6 +151,12 @@ pub(crate) fn seeds_as_byte_literals(seeds: &[&syn::Expr]) -> Option<Vec<Vec<u8>
 pub(crate) fn precompute_pda(seeds: &[&[u8]], program_id: &[u8; 32]) -> Option<(u8, [u8; 32])> {
     use curve25519_dalek::edwards::CompressedEdwardsY;
 
+    if seeds.len() > MAX_PDA_SEEDS_WITHOUT_BUMP
+        || seeds.iter().any(|seed| seed.len() > MAX_PDA_SEED_LEN)
+    {
+        return None;
+    }
+
     let mut bump: i32 = u8::MAX as i32;
     while bump >= 0 {
         let mut hasher = Sha256::new();
@@ -171,6 +183,8 @@ pub(crate) fn precompute_pda(seeds: &[&[u8]], program_id: &[u8; 32]) -> Option<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Known-value test: `find_program_address(&[b""], DHvAxn78...)` must
     /// return bump = 253. Verified against cargo-expand output of the
@@ -221,5 +235,108 @@ mod tests {
         ];
         let refs: Vec<&syn::Expr> = seeds.iter().collect();
         assert!(seeds_as_byte_literals(&refs).is_none());
+    }
+
+    #[test]
+    fn precompute_pda_rejects_more_than_fifteen_user_seeds() {
+        let program_id = [3u8; 32];
+        let seeds = vec![b"x".as_ref(); MAX_PDA_SEEDS_TOTAL];
+
+        assert!(
+            precompute_pda(&seeds, &program_id).is_none(),
+            "precompute_pda must mirror runtime finder limits and reserve one slot for the bump"
+        );
+    }
+
+    #[test]
+    fn precompute_pda_rejects_seed_longer_than_thirty_two_bytes() {
+        let program_id = [4u8; 32];
+        let long_seed = [7u8; MAX_PDA_SEED_LEN + 1];
+
+        assert!(
+            precompute_pda(&[&long_seed], &program_id).is_none(),
+            "precompute_pda must reject literal seeds that runtime PDA derivation would reject"
+        );
+    }
+
+    #[test]
+    fn discover_program_id_falls_back_for_cfg_gated_declarations() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let original_manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR");
+        let temp_root = std::env::temp_dir().join(format!(
+            "anchor-derive-pda-cfg-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let src_dir = temp_root.join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(
+            src_dir.join("lib.rs"),
+            r#"
+#[cfg(feature = "disabled")]
+declare_id!("11111111111111111111111111111111");
+
+declare_id!("So11111111111111111111111111111111111111112");
+"#,
+        )
+        .unwrap();
+
+        std::env::set_var("CARGO_MANIFEST_DIR", &temp_root);
+        CACHED_PROGRAM_ID.with(|cell| *cell.borrow_mut() = None);
+
+        assert_eq!(discover_program_id(), None);
+
+        CACHED_PROGRAM_ID.with(|cell| *cell.borrow_mut() = None);
+        if let Some(value) = original_manifest_dir {
+            std::env::set_var("CARGO_MANIFEST_DIR", value);
+        } else {
+            std::env::remove_var("CARGO_MANIFEST_DIR");
+        }
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    #[test]
+    fn discover_program_id_skips_target_cfg_gated_declarations_when_cfg_is_unknown() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let original_manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR");
+        let target_os_key = "CARGO_CFG_TARGET_OS";
+        let temp_root = std::env::temp_dir().join(format!(
+            "anchor-derive-pda-target-cfg-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let src_dir = temp_root.join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(
+            src_dir.join("lib.rs"),
+            r#"
+#[cfg(not(target_os = "solana"))]
+declare_id!("11111111111111111111111111111111");
+
+#[cfg(target_os = "solana")]
+declare_id!("So11111111111111111111111111111111111111112");
+"#,
+        )
+        .unwrap();
+
+        std::env::set_var("CARGO_MANIFEST_DIR", &temp_root);
+        std::env::remove_var(target_os_key);
+        CACHED_PROGRAM_ID.with(|cell| *cell.borrow_mut() = None);
+
+        assert_eq!(discover_program_id(), None);
+
+        CACHED_PROGRAM_ID.with(|cell| *cell.borrow_mut() = None);
+        if let Some(value) = original_manifest_dir {
+            std::env::set_var("CARGO_MANIFEST_DIR", value);
+        } else {
+            std::env::remove_var("CARGO_MANIFEST_DIR");
+        }
+        let _ = std::fs::remove_dir_all(&temp_root);
     }
 }

@@ -321,6 +321,12 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                             let key_ident = Ident::parse_any(input)?;
                             // seeds::program = expr — special case, stored separately
                             if ident == "seeds" && key_ident == "program" {
+                                if result.seeds_program.is_some() {
+                                    return Err(syn::Error::new(
+                                        key_ident.span(),
+                                        "`seeds::program` already provided",
+                                    ));
+                                }
                                 input.parse::<Token![=]>()?;
                                 result.seeds_program = Some(input.parse()?);
                                 if !input.is_empty() {
@@ -379,6 +385,13 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                  canonical bump (write `bump` without a value)",
             ));
         }
+    }
+
+    if result.seeds_program.is_some() && result.seeds.is_none() {
+        return Err(syn::Error::new(
+            result.seeds_program.as_ref().unwrap().span(),
+            "`seeds::program` requires `seeds`",
+        ));
     }
 
     Ok(result)
@@ -638,11 +651,7 @@ pub struct AccountField {
     pub load: TokenStream2,
     pub deferred_load: Option<TokenStream2>,
     pub constraints: Vec<TokenStream2>,
-    /// Duplicate-mutable-account check. Collected separately from
-    /// `constraints` so all mut-field dup checks can share a single outer
-    /// `if let Some(__dups) = __duplicates` gate — non-dup txs pay one
-    /// Option-tag branch regardless of field count.
-    pub dup_check: Option<TokenStream2>,
+    pub updates: Vec<TokenStream2>,
     pub exit: Option<TokenStream2>,
     pub has_bump: bool,
     /// True when the field type is `Option<T>` (optional account).
@@ -657,7 +666,8 @@ pub struct AccountField {
     /// `MUT_MASK`: a non-`Option<_>` mut field without `unsafe(dup)`.
     /// `Option<T>` mut fields are excluded because a `None` slot (the
     /// client sends `program_id` as the address) should still silence the
-    /// dup check; the derive keeps the gated per-field `get()` for those.
+    /// dup check; the derive keeps an inline per-field `get()` inside the
+    /// `Some(...)` branch for those.
     pub contributes_mut_bit: bool,
     /// `true` iff this optional field contributes to the runtime active
     /// mutable mask when it loads as `Some`.
@@ -679,14 +689,20 @@ pub struct AccountField {
     /// build the inverse mapping (matches v1's `get_relations`).
     pub idl_has_one: Vec<String>,
     /// Stringified RHS of `#[account(address = <expr>)]`. Emitted verbatim
-    /// as the `address` key of this field in the accounts JSON. `None` when
-    /// the attr is absent *or* when the RHS was v1-encodable (see
-    /// `idl_address_v1_source`) — in that case the constraint is surfaced
-    /// through `relations` instead, matching v1's IDL shape. Wrapper types
-    /// that carry a compile-time address via `IdlAccountType::__IDL_ADDRESS`
-    /// still emit the trait value when this override is `None`
-    /// (fields like `Program<System>`).
+    /// as the `address` key of this field in the accounts JSON for
+    /// client-resolved dotted paths like `data.authority`. `None` when the
+    /// attr is absent, when the RHS was v1-encodable (see
+    /// `idl_address_v1_source`), or when the RHS is resolved from a static
+    /// expression at IDL-build time (see `idl_address_expr`) — in those cases
+    /// the constraint is surfaced through `relations` / runtime evaluation
+    /// instead. Wrapper types that carry a compile-time address via
+    /// `IdlAccountType::__IDL_ADDRESS` still emit the trait value when both
+    /// overrides are `None` (fields like `Program<System>`).
     pub idl_address: Option<String>,
+    /// Runtime-resolved static `#[account(address = <expr>)]` override.
+    /// Holds constant paths / const-fn calls that can be evaluated inside the
+    /// generated `__idl_accounts()` function and rendered as base58.
+    pub idl_address_expr: Option<TokenStream2>,
     /// Set when `#[account(address = <sibling>.<self_name>)]` was used,
     /// i.e. the same relationship `#[has_one = <self_name>]` on `<sibling>`
     /// would have expressed. The outer derive turns this into an inverse
@@ -718,15 +734,109 @@ pub struct FieldSummary {
     pub attrs: AccountAttrs,
 }
 
-/// Turn the RHS of `#[account(address = <expr>)]` into the string form the
-/// IDL emits. Whitespace from `quote!`'s token reassembly is stripped so
-/// `crate :: ID` → `crate::ID`, `data . authority` → `data.authority`, and
-/// `crate :: id ()` → `crate::id()` — matching what a user would hand-write
-/// and what downstream tooling (the Anchor CLI resolver, TS client path
-/// walkers) expect to parse.
-fn stringify_address_expr(expr: &Expr) -> String {
-    let s = quote!(#expr).to_string();
-    s.split_whitespace().collect()
+fn is_static_idl_address_path(
+    path: &syn::ExprPath,
+    field_names: &[String],
+    ix_arg_names: &[String],
+) -> bool {
+    if path.qself.is_some() {
+        return false;
+    }
+    if path.path.leading_colon.is_some() || path.path.segments.len() != 1 {
+        return true;
+    }
+    let seg = &path.path.segments[0];
+    if !seg.arguments.is_empty() {
+        return false;
+    }
+    let ident = seg.ident.to_string();
+    !field_names.contains(&ident) && !ix_arg_names.contains(&ident)
+}
+
+fn static_idl_address_expr(
+    expr: &Expr,
+    field_names: &[String],
+    ix_arg_names: &[String],
+) -> Option<TokenStream2> {
+    match expr {
+        Expr::Group(group) => static_idl_address_expr(&group.expr, field_names, ix_arg_names),
+        Expr::Paren(paren) => static_idl_address_expr(&paren.expr, field_names, ix_arg_names),
+        Expr::Path(path) if is_static_idl_address_path(path, field_names, ix_arg_names) => {
+            Some(quote! { #expr })
+        }
+        Expr::Call(call) if call.args.is_empty() => match &*call.func {
+            Expr::Path(path) if is_static_idl_address_path(path, field_names, ix_arg_names) => {
+                Some(quote! { #expr })
+            }
+            Expr::Group(group) => {
+                let grouped = static_idl_address_expr(&group.expr, field_names, ix_arg_names)?;
+                Some(grouped)
+            }
+            Expr::Paren(paren) => {
+                let grouped = static_idl_address_expr(&paren.expr, field_names, ix_arg_names)?;
+                Some(grouped)
+            }
+            _ => None,
+        },
+        Expr::Macro(_) => Some(quote! { #expr }),
+        _ => None,
+    }
+}
+
+fn dotted_address_hint(
+    expr: &Expr,
+    field_names: &[String],
+    ix_arg_names: &[String],
+) -> Option<String> {
+    fn walk(
+        expr: &Expr,
+        field_names: &[String],
+        ix_arg_names: &[String],
+        suffix: &mut Vec<String>,
+    ) -> bool {
+        match expr {
+            Expr::Field(field) => {
+                let member = match &field.member {
+                    syn::Member::Named(ident) => ident.to_string(),
+                    syn::Member::Unnamed(_) => return false,
+                };
+                if !walk(&field.base, field_names, ix_arg_names, suffix) {
+                    return false;
+                }
+                suffix.push(member);
+                true
+            }
+            Expr::Path(path) => {
+                if path.qself.is_some()
+                    || path.path.leading_colon.is_some()
+                    || path.path.segments.len() != 1
+                {
+                    return false;
+                }
+                let seg = &path.path.segments[0];
+                if !seg.arguments.is_empty() {
+                    return false;
+                }
+                let ident = seg.ident.to_string();
+                if field_names.contains(&ident) || ix_arg_names.contains(&ident) {
+                    suffix.push(ident);
+                    true
+                } else {
+                    false
+                }
+            }
+            Expr::Group(group) => walk(&group.expr, field_names, ix_arg_names, suffix),
+            Expr::Paren(paren) => walk(&paren.expr, field_names, ix_arg_names, suffix),
+            _ => false,
+        }
+    }
+
+    let mut segments = Vec::new();
+    if walk(expr, field_names, ix_arg_names, &mut segments) && segments.len() >= 2 {
+        Some(segments.join("."))
+    } else {
+        None
+    }
 }
 
 /// If `expr` is the v1-encodable shape `<sibling>.<field>` where both:
@@ -862,7 +972,6 @@ fn emit_seeds_check(
     pda_program: &TokenStream2,
     target_addr_ref: &TokenStream2,
     field_name: &Ident,
-    field_ty: Option<&Type>,
     for_init: bool,
     using_our_program_id: bool,
     is_optional: bool,
@@ -922,38 +1031,13 @@ fn emit_seeds_check(
         }
     }
 
-    // Fallback: runtime find loop fused with the equality check.
-    //
-    // Skip `sol_curve_validate_point` when the account is provably
-    // signed-for (`MIN_DATA_LEN > 0`), since account creation already
-    // validates the PDA via `create_program_address`.
-    //
-    // Otherwise (`UncheckedAccount` with zero data, non-init): the curve
-    // check is the only proof the address is a real PDA.
-    //
-    // `MIN_DATA_LEN` is a trait const, so the branch is resolved at
-    // compile time — LLVM eliminates the dead path entirely.
-    // TODO: decide whether init paths should assume the subsequent
-    // CreateAccount CPI guarantees the address is off-curve, letting
-    // us skip `sol_curve_validate_point`. Currently we always run the
-    // curve check on init to avoid relying on the trait impl's CPI.
-    let skip_curve = if let Some(ty) = field_ty {
-        quote! { <#ty as anchor_lang_v2::AnchorAccount>::MIN_DATA_LEN > 0 }
-    } else {
-        quote! { false }
-    };
+    // Fallback: runtime canonical find loop fused with the equality check.
     let bump_assign = wrap_bump(quote! { __bump });
     let find = quote! {
         #(#seed_bindings)*
-        let __bump = if #skip_curve {
-            anchor_lang_v2::find_and_verify_program_address_skip_curve(
-                &[#(#seed_refs),*], #pda_program, #target_addr_ref,
-            ).map_err(|_| anchor_lang_v2::ErrorCode::ConstraintSeeds)?
-        } else {
-            anchor_lang_v2::find_and_verify_program_address(
-                &[#(#seed_refs),*], #pda_program, #target_addr_ref,
-            ).map_err(|_| anchor_lang_v2::ErrorCode::ConstraintSeeds)?
-        };
+        let __bump = anchor_lang_v2::find_and_verify_program_address(
+            &[#(#seed_refs),*], #pda_program, #target_addr_ref,
+        ).map_err(|_| anchor_lang_v2::ErrorCode::ConstraintSeeds)?;
         __bumps.#field_name = #bump_assign;
     };
     if for_init {
@@ -1158,7 +1242,6 @@ fn emit_init_body(
                 &pda_program,
                 &quote! { __target.address() },
                 field_name,
-                None,
                 true,
                 using_our_program_id,
                 is_optional,
@@ -1314,6 +1397,20 @@ pub fn parse_field(
     let field_name = field.ident.as_ref().expect("named field");
     let field_ty = &field.ty;
     let attrs = parse_account_attrs(&field.attrs)?;
+    if attrs.seeds_program.is_some() {
+        if attrs.is_init {
+            return Err(syn::Error::new(
+                attrs.seeds_program.as_ref().unwrap().span(),
+                "`seeds::program` cannot be used with `init`",
+            ));
+        }
+        if attrs.is_init_if_needed {
+            return Err(syn::Error::new(
+                attrs.seeds_program.as_ref().unwrap().span(),
+                "`seeds::program` cannot be used with `init_if_needed`",
+            ));
+        }
+    }
     if attrs.close.is_some() && !attrs.is_mut {
         return Err(syn::Error::new(
             field_name.span(),
@@ -1344,19 +1441,28 @@ pub fn parse_field(
     //     already speaks v1 output sees the same shape for both spellings.
     //     `idl_address` stays `None` to avoid double-encoding the same
     //     check.
-    //   * Anything else — constant path, const-fn call, or a field access
-    //     whose subfield doesn't match self's ident. Emit verbatim under
-    //     the `address` key; the Anchor CLI resolves constants to base58
-    //     pubkeys at IDL-build time, and dotted paths flow through as
-    //     client-side resolution hints.
-    let (idl_address, idl_address_v1_source) = match attrs.address.as_ref() {
+    //   * Constant path / const-fn call / address! macro — evaluate at
+    //     IDL-build time and emit the resolved base58 address.
+    //   * Other dotted field paths — keep as client-side resolution hints.
+    //   * Anything else — omit from the IDL rather than emitting raw Rust
+    //     source that clients cannot resolve faithfully.
+    let (idl_address, idl_address_expr, idl_address_v1_source) = match attrs.address.as_ref() {
         Some(addr) => {
             match address_v1_relation_source(addr, &field_name.to_string(), field_names) {
-                Some(sibling) => (None, Some(sibling)),
-                None => (Some(stringify_address_expr(addr)), None),
+                Some(sibling) => (None, None, Some(sibling)),
+                None => {
+                    if let Some(expr) = static_idl_address_expr(addr, field_names, ix_arg_names) {
+                        (None, Some(expr), None)
+                    } else if let Some(hint) = dotted_address_hint(addr, field_names, ix_arg_names)
+                    {
+                        (Some(hint), None, None)
+                    } else {
+                        (None, None, None)
+                    }
+                }
             }
         }
-        None => (None, None),
+        None => (None, None, None),
     };
     let idl_docs = crate::idl::extract_doc_lines(&field.attrs);
     let idl_pda = attrs.seeds.as_ref().map(|seeds_expr| {
@@ -1446,7 +1552,7 @@ pub fn parse_field(
             load,
             deferred_load: None,
             constraints: vec![],
-            dup_check: None,
+            updates: vec![],
             exit,
             has_bump: false,
             is_optional: false,
@@ -1461,6 +1567,7 @@ pub fn parse_field(
             idl_init_signer: false,
             idl_has_one: vec![],
             idl_address: None,
+            idl_address_expr: None,
             idl_address_v1_source: None,
             idl_docs: vec![],
             idl_pda: None,
@@ -1584,6 +1691,20 @@ pub fn parse_field(
                 };
             }
         });
+        let optional_dup_precheck =
+            if !attrs.is_dup && (attrs.is_mut || attrs.is_zeroed || attrs.is_init_if_needed) {
+                Some(quote! {
+                    if let Some(__dups) = __duplicates {
+                        if __dups.get((__base_offset + #offset_expr) as u8) {
+                            return Err(
+                                anchor_lang_v2::ErrorCode::ConstraintDuplicateMutableAccount.into(),
+                            );
+                        }
+                    }
+                })
+            } else {
+                None
+            };
         let load = quote! {
             #init_if_needed_existed_binding
             let mut #field_name: #field_ty = {
@@ -1591,6 +1712,7 @@ pub fn parse_field(
                 if anchor_lang_v2::address_eq(__target.address(), __program_id) {
                     None
                 } else {
+                    #optional_dup_precheck
                     #inner_action
                 }
             };
@@ -1714,6 +1836,7 @@ pub fn parse_field(
 
     // --- Constraints ---
     let mut constraints = Vec::new();
+    let mut updates = Vec::new();
 
     // Writable check is now owned by `AnchorAccount::load_mut` (default
     // impl in `lang-v2/src/traits.rs`), so the derive no longer emits a
@@ -1785,7 +1908,6 @@ pub fn parse_field(
                         &pda_program,
                         &target_addr_ref,
                         field_name,
-                        Some(field_ty),
                         false,
                         using_our_program_id,
                         is_optional,
@@ -1831,25 +1953,15 @@ pub fn parse_field(
                         }
                     }
                 } else {
-                    // Bare bump: use find_and_verify with skip_curve
-                    // when the account type guarantees non-zero data.
-                    let skip_curve = quote! {
-                        <#field_ty as anchor_lang_v2::AnchorAccount>::MIN_DATA_LEN > 0
-                    };
+                    // Bare bump: find and verify the canonical PDA.
                     let target_addr = quote! { #field_name.account().address() };
                     quote! {
                         {
                             let __seed_val = #seeds_expr;
                             let __seed_ref: &[&[u8]] = __seed_val.as_ref();
-                            let __bump = if #skip_curve {
-                                anchor_lang_v2::find_and_verify_program_address_skip_curve(
-                                    __seed_ref, #pda_program, #target_addr,
-                                ).map_err(|_| anchor_lang_v2::ErrorCode::ConstraintSeeds)?
-                            } else {
-                                anchor_lang_v2::find_and_verify_program_address(
-                                    __seed_ref, #pda_program, #target_addr,
-                                ).map_err(|_| anchor_lang_v2::ErrorCode::ConstraintSeeds)?
-                            };
+                            let __bump = anchor_lang_v2::find_and_verify_program_address(
+                                __seed_ref, #pda_program, #target_addr,
+                            ).map_err(|_| anchor_lang_v2::ErrorCode::ConstraintSeeds)?;
                             __bumps.#field_name = #bump_assign;
                         }
                     }
@@ -2007,8 +2119,9 @@ pub fn parse_field(
     //
     // The `init` dispatch is embedded inline into the init body by
     // `wrap_init_body_with_constraints` above so the hook only fires on
-    // actual creation. Only `check` and `update` emit out here in the
-    // constraint phase.
+    // actual creation. `check` emits into the validation phase here;
+    // `update` is deferred into a later post-validation phase so sibling
+    // field constraints still observe the pre-update state.
     //
     // Field refs thread through `AsRef::as_ref` so the call-site's
     // `V` is inferred from the `AccountConstraint::Value` associated
@@ -2039,8 +2152,9 @@ pub fn parse_field(
             } else {
                 quote! { &mut #field_name }
             };
-            // `update(...)` — fires regardless of init state.
-            constraints.push(quote! {
+            // `update(...)` — fires regardless of init state, but only after
+            // all account validations have completed.
+            updates.push(quote! {
                 <#ns::#key as anchor_lang_v2::AccountConstraint<_>>::update(
                     #update_target, #expected,
                 )?;
@@ -2164,26 +2278,6 @@ pub fn parse_field(
         None
     };
 
-    // Dup-check emission: only `Option<_>` mut fields keep a gated
-    // per-field `get()` check — a `None` slot (the client encodes
-    // `program_id` as the address) must stay silent even when that slot
-    // is also the dup target of another account, and the
-    // `if let Some(...)` wrapper built below preserves that. Non-`Option`
-    // mut fields are folded into the enclosing struct's `MUT_MASK` const
-    // and checked once per dispatch by `run_handler`. Stored separately
-    // from `constraints` so the struct-level codegen can aggregate all
-    // mut fields' dup checks under a single outer
-    // `if let Some(__dups) = __duplicates { ... }` gate.
-    let dup_check = if attrs.is_mut && !attrs.is_dup && is_optional {
-        Some(quote! {
-            if __dups.get((__base_offset + #offset_expr) as u8) {
-                return Err(anchor_lang_v2::ErrorCode::ConstraintDuplicateMutableAccount.into());
-            }
-        })
-    } else {
-        None
-    };
-
     // For `Option<T>` fields, each constraint body was generated against the
     // unwrapped inner — we wrap it in `if let Some(#field_name) = #field_name`
     // so `#field_name.account()`, `#field_name.authority`, etc. resolve on the
@@ -2193,7 +2287,7 @@ pub fn parse_field(
     // Mutable fields use `ref mut` so constraint bodies that need `&mut self`
     // (e.g. BorshAccount::release_borrow in the realloc path) can work.
     // Read-only methods still resolve via auto-deref from `&mut T` to `&T`.
-    let (constraints, exit) = if is_optional {
+    let (constraints, updates, exit) = if is_optional {
         let constraints = constraints
             .into_iter()
             .map(|c| {
@@ -2218,6 +2312,17 @@ pub fn parse_field(
                             let _ = &#field_name;
                             #c
                         }
+                    }
+                }
+            })
+            .collect();
+        let updates = updates
+            .into_iter()
+            .map(|u| {
+                quote! {
+                    if let Some(ref mut #field_name) = #field_name {
+                        let _ = &#field_name;
+                        #u
                     }
                 }
             })
@@ -2280,9 +2385,9 @@ pub fn parse_field(
                 }
             }
         });
-        (constraints, exit)
+        (constraints, updates, exit)
     } else {
-        (constraints, exit)
+        (constraints, updates, exit)
     };
 
     let contributes_mut_bit = attrs.is_mut && !attrs.is_dup && !is_optional;
@@ -2297,7 +2402,7 @@ pub fn parse_field(
         load,
         deferred_load,
         constraints,
-        dup_check,
+        updates,
         exit,
         has_bump,
         is_optional,
@@ -2309,6 +2414,7 @@ pub fn parse_field(
         idl_init_signer,
         idl_has_one,
         idl_address,
+        idl_address_expr,
         idl_address_v1_source,
         idl_docs,
         idl_pda,
@@ -2494,5 +2600,47 @@ mod tests {
                 .contains("unknown account constraint `bumpp`"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn address_constraint_static_paths_resolve_at_idl_build_time() {
+        use syn::parse::Parser;
+
+        let field: syn::Field = syn::Field::parse_named
+            .parse2(quote::quote! {
+                #[account(address = EXPECTED_PROGRAM)]
+                pub program: UncheckedAccount
+            })
+            .unwrap();
+        let parsed = parse_field(&field, &[], &[], quote::quote!(0usize), &[], &[]).unwrap();
+
+        assert!(parsed.idl_address.is_none());
+        assert!(parsed.idl_address_expr.is_some());
+        assert!(parsed.idl_address_v1_source.is_none());
+    }
+
+    #[test]
+    fn address_constraint_dotted_paths_remain_client_hints() {
+        use syn::parse::Parser;
+
+        let field: syn::Field = syn::Field::parse_named
+            .parse2(quote::quote! {
+                #[account(address = data.expected_program)]
+                pub program: UncheckedAccount
+            })
+            .unwrap();
+        let parsed = parse_field(
+            &field,
+            &["data".into(), "program".into()],
+            &[],
+            quote::quote!(0usize),
+            &[],
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(parsed.idl_address.as_deref(), Some("data.expected_program"));
+        assert!(parsed.idl_address_expr.is_none());
+        assert!(parsed.idl_address_v1_source.is_none());
     }
 }

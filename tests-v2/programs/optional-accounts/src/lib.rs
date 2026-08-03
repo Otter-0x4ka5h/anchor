@@ -1,4 +1,9 @@
-use anchor_lang_v2::prelude::*;
+use {
+    anchor_lang_v2::prelude::*,
+    core::ops::Deref,
+    pinocchio::account::AccountView,
+    solana_program_error::ProgramError,
+};
 
 declare_id!("EDhJyPDycxByBe3wTsN2zppGcRYgM2WR5LQw9f8SFxMF");
 
@@ -7,6 +12,38 @@ pub struct Data {
     pub value: u64,
     pub bump: u8,
     pub _pad: [u8; 7],
+}
+
+pub struct SpyAccount {
+    view: AccountView,
+}
+
+impl Deref for SpyAccount {
+    type Target = AccountView;
+
+    fn deref(&self) -> &Self::Target {
+        &self.view
+    }
+}
+
+impl AnchorAccount for SpyAccount {
+    type Data = AccountView;
+
+    fn load(view: AccountView) -> Result<Self> {
+        Ok(Self { view })
+    }
+
+    unsafe fn load_mut(view: AccountView) -> Result<Self> {
+        anchor_lang_v2::msg!("spy_load_mut");
+        if !view.is_writable() {
+            return Err(ErrorCode::ConstraintMut.into());
+        }
+        Ok(Self { view })
+    }
+
+    fn account(&self) -> &AccountView {
+        &self.view
+    }
 }
 
 #[program]
@@ -88,6 +125,22 @@ pub mod optional_accounts {
     pub fn optional_constraint(_ctx: &mut Context<OptionalConstraint>) -> Result<()> {
         Ok(())
     }
+
+    #[discrim = 10]
+    pub fn optional_spy_mut(_ctx: &mut Context<OptionalSpyMut>) -> Result<()> {
+        Ok(())
+    }
+
+    #[discrim = 11]
+    pub fn double_mut_optional(ctx: &mut Context<DoubleMutOptional>) -> Result<()> {
+        if let Some(a) = ctx.accounts.a.as_mut() {
+            a.value = a.value.saturating_add(1);
+        }
+        if let Some(b) = ctx.accounts.b.as_mut() {
+            b.value = b.value.saturating_add(1);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
@@ -167,4 +220,20 @@ pub struct OptionalClose {
 pub struct OptionalConstraint {
     #[account(constraint = data.value == 7)]
     pub data: Option<Account<Data>>,
+}
+
+#[derive(Accounts)]
+pub struct OptionalSpyMut {
+    #[account(mut)]
+    pub a: Option<SpyAccount>,
+    #[account(mut)]
+    pub b: Option<SpyAccount>,
+}
+
+#[derive(Accounts)]
+pub struct DoubleMutOptional {
+    #[account(mut)]
+    pub a: Option<Account<Data>>,
+    #[account(mut)]
+    pub b: Option<Account<Data>>,
 }
