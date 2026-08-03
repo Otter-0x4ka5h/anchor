@@ -896,7 +896,6 @@ mod tests {
     }
 
     #[test]
-#[test]
     fn test_pod_vec_layout_respects_element_alignment() {
         let source = r#"
             #[repr(C)]
