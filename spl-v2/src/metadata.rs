@@ -970,8 +970,8 @@ impl TokenRecordAccount {
         // following bytes untouched, so decode the first valid token-record
         // prefix and report its consumed length.
         if data.len() >= Self::LEN {
-            let prefix = &data[..Self::LEN];
-            if let Ok(record) = Self::parse(prefix) {
+            let mut prefix = &data[..Self::LEN];
+            if let Ok(record) = Self::parse(&mut prefix) {
                 return Ok((record, Self::LEN));
             }
         }
@@ -980,8 +980,8 @@ impl TokenRecordAccount {
             return Err(ProgramError::InvalidAccountData);
         }
 
-        let prefix = &data[..Self::LEGACY_LEN];
-        let record = Self::parse(prefix)?;
+        let mut prefix = &data[..Self::LEGACY_LEN];
+        let record = Self::parse(&mut prefix)?;
         Ok((record, Self::LEGACY_LEN))
     }
 }
