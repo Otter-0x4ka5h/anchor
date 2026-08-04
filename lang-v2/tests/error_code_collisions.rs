@@ -121,7 +121,7 @@ fn no_two_variants_share_a_custom_code() {
     }
     // Snapshot — adding a new Custom variant forces a review of this number.
     assert_eq!(
-        custom_count, 16,
+        custom_count, 17,
         "Number of Custom error codes changed; update this snapshot after review"
     );
 }
@@ -177,6 +177,11 @@ fn builtin_groupings_are_stable() {
         "ConstraintSeeds",
         ErrorCode::ConstraintSeeds.into(),
         InvalidSeeds,
+    );
+    check(
+        "ConstraintAccountIsNone",
+        ErrorCode::ConstraintAccountIsNone.into(),
+        Custom(2020),
     );
     check(
         "ConstraintOwner",
