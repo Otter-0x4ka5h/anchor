@@ -204,7 +204,7 @@ where
         "{\"name\":\"PodVec\",\"generics\":[{\"kind\":\"type\",\"name\":\"T\"},\
          {\"kind\":\"const\",\"name\":\"MAX\",\"type\":\"usize\"}],\
          \"serialization\":\"bytemuck\",\"repr\":{\"kind\":\"c\"},\
-         \"type\":{\"kind\":\"struct\",\"fields\":[{\"name\":\"len\",\"type\":\"u16\"},\
+         \"type\":{\"kind\":\"struct\",\"fields\":[{\"name\":\"len\",\"type\":{\"defined\":{\"name\":\"PodU16\"}}},\
          {\"name\":\"data\",\"type\":{\"array\":[{\"generic\":\"T\"},{\"generic\":\"MAX\"}]}}]}}",
     );
 
