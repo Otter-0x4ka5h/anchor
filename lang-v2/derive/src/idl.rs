@@ -18,8 +18,8 @@ use {
     quote::quote,
     serde_json::{json, Value},
     syn::{
-        punctuated::Punctuated, visit::Visit, Expr, GenericParam, Generics, Lit, PathArguments,
-        Token, Type, TypePath,
+        punctuated::Punctuated, spanned::Spanned, visit::Visit, Expr, GenericParam, Generics,
+        Lit, PathArguments, Token, Type, TypePath,
     },
 };
 
@@ -606,6 +606,19 @@ pub fn bytemuck_repr_from_attrs(attrs: &[syn::Attribute]) -> syn::Result<Bytemuc
         for meta in metas {
             match meta {
                 syn::Meta::Path(path) if path.is_ident("packed") => {
+                    repr.packed = true;
+                }
+                syn::Meta::List(list) if list.path.is_ident("packed") => {
+                    let packed = list.parse_args::<syn::LitInt>()?;
+                    let packed = packed.base10_parse::<usize>()?;
+                    if packed != 1 {
+                        return Err(syn::Error::new(
+                            list.span(),
+                            "Anchor IDL only supports `#[repr(..., packed)]` or \
+                             `#[repr(..., packed(1))]`; `packed(N)` with N > 1 would \
+                             round-trip to a lossy IDL layout",
+                        ));
+                    }
                     repr.packed = true;
                 }
                 syn::Meta::List(list) if list.path.is_ident("align") => {
@@ -1495,6 +1508,25 @@ mod tests {
         assert!(generated.contains("Box :: leak"));
         assert!(generated.contains("limits :: ITEMS"));
         assert!(!generated.contains("generic"));
+    }
+
+    #[test]
+    fn packed_one_repr_modifier_sets_packed_flag() {
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[repr(C, packed(1))])];
+        let repr = bytemuck_repr_from_attrs(&attrs).expect("packed(1) should parse");
+        assert!(repr.packed);
+        assert_eq!(repr.align, None);
+    }
+
+    #[test]
+    fn packed_greater_than_one_repr_modifier_is_rejected() {
+        let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[repr(C, packed(2))])];
+        let err = match bytemuck_repr_from_attrs(&attrs) {
+            Ok(_) => panic!("packed(2) should be rejected"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("Anchor IDL only supports"));
+        assert!(err.to_string().contains("lossy IDL layout"));
     }
 
     #[test]
