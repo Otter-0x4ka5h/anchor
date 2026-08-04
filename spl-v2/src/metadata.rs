@@ -735,6 +735,23 @@ pub struct MetadataAccount {
 
 impl MetadataAccount {
     #[inline]
+    fn deserialize_trailing<T>(buf: &mut &[u8]) -> Result<T>
+    where
+        T: BorshDeserialize + Default,
+    {
+        let start = *buf;
+        let mut cursor = start;
+        match BorshDeserialize::deserialize(&mut cursor) {
+            Ok(value) => {
+                *buf = cursor;
+                Ok(value)
+            }
+            Err(_) if cursor.len() == start.len() => Ok(T::default()),
+            Err(_) => Err(ProgramError::InvalidAccountData),
+        }
+    }
+
+    #[inline]
     fn parse(buf: &mut &[u8]) -> Result<mpl_token_metadata::accounts::Metadata> {
         use mpl_token_metadata::types::{
             Collection, CollectionDetails, Data, Key, ProgrammableConfig, TokenStandard, Uses,
@@ -763,31 +780,11 @@ impl MetadataAccount {
         let edition_nonce: Option<u8> =
             BorshDeserialize::deserialize(buf).map_err(|_| ProgramError::InvalidAccountData)?;
 
-        let token_standard_res: core::result::Result<Option<TokenStandard>, borsh::io::Error> =
-            BorshDeserialize::deserialize(buf);
-        let collection_res: core::result::Result<Option<Collection>, borsh::io::Error> =
-            BorshDeserialize::deserialize(buf);
-        let uses_res: core::result::Result<Option<Uses>, borsh::io::Error> =
-            BorshDeserialize::deserialize(buf);
-        let collection_details_res: core::result::Result<
-            Option<CollectionDetails>,
-            borsh::io::Error,
-        > = BorshDeserialize::deserialize(buf);
-        let programmable_config_res: core::result::Result<
-            Option<ProgrammableConfig>,
-            borsh::io::Error,
-        > = BorshDeserialize::deserialize(buf);
-
-        let (token_standard, collection, uses) =
-            match (token_standard_res, collection_res, uses_res) {
-                (Ok(token_standard), Ok(collection), Ok(uses)) => {
-                    (token_standard, collection, uses)
-                }
-                _ => (None, None, None),
-            };
-
-        let collection_details = collection_details_res.unwrap_or(None);
-        let programmable_config = programmable_config_res.unwrap_or(None);
+        let token_standard: Option<TokenStandard> = Self::deserialize_trailing(buf)?;
+        let collection: Option<Collection> = Self::deserialize_trailing(buf)?;
+        let uses: Option<Uses> = Self::deserialize_trailing(buf)?;
+        let collection_details: Option<CollectionDetails> = Self::deserialize_trailing(buf)?;
+        let programmable_config: Option<ProgrammableConfig> = Self::deserialize_trailing(buf)?;
 
         Ok(mpl_token_metadata::accounts::Metadata {
             key,

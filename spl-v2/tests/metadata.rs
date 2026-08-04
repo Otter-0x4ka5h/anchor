@@ -65,6 +65,29 @@ fn sample_metadata_with_programmable_config() -> mpl_token_metadata::accounts::M
     metadata
 }
 
+fn sample_metadata_with_collection_without_uses_bytes() -> Vec<u8> {
+    let metadata = sample_metadata_with_v1_2_fields();
+    let data = mpl_token_metadata::types::Data {
+        name: metadata.name,
+        symbol: metadata.symbol,
+        uri: metadata.uri,
+        seller_fee_basis_points: metadata.seller_fee_basis_points,
+        creators: metadata.creators,
+    };
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&to_vec(&metadata.key).unwrap());
+    bytes.extend_from_slice(&to_vec(&metadata.update_authority).unwrap());
+    bytes.extend_from_slice(&to_vec(&metadata.mint).unwrap());
+    bytes.extend_from_slice(&to_vec(&data).unwrap());
+    bytes.extend_from_slice(&to_vec(&metadata.primary_sale_happened).unwrap());
+    bytes.extend_from_slice(&to_vec(&metadata.is_mutable).unwrap());
+    bytes.extend_from_slice(&to_vec(&metadata.edition_nonce).unwrap());
+    bytes.extend_from_slice(&to_vec(&metadata.token_standard).unwrap());
+    bytes.extend_from_slice(&to_vec(&metadata.collection).unwrap());
+    bytes
+}
+
 fn sample_legacy_metadata() -> LegacyMetadataAccount {
     let creator = Pubkey::from([7u8; 32]);
     LegacyMetadataAccount {
@@ -166,6 +189,21 @@ fn metadata_account_preserves_v1_2_fields_when_uses_is_none() {
     assert_eq!(account.token_standard, expected.token_standard);
     assert_eq!(account.collection, expected.collection);
     assert_eq!(account.uses, None);
+    assert!(cursor.is_empty());
+}
+
+#[test]
+fn metadata_account_preserves_v1_2_fields_when_uses_field_is_absent() {
+    let expected = sample_metadata_with_v1_2_fields();
+    let data = sample_metadata_with_collection_without_uses_bytes();
+    let mut cursor = data.as_slice();
+    let account = MetadataAccount::try_deserialize(&mut cursor).unwrap();
+
+    assert_eq!(account.token_standard, expected.token_standard);
+    assert_eq!(account.collection, expected.collection);
+    assert_eq!(account.uses, None);
+    assert_eq!(account.collection_details, None);
+    assert_eq!(account.programmable_config, None);
     assert!(cursor.is_empty());
 }
 
