@@ -426,7 +426,6 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
             "`realloc` requires `realloc_payer = <target>`",
         ));
     }
--
 
     Ok(result)
 }
