@@ -241,6 +241,26 @@ fn token_record_account_deserialize_advances_cursor() {
 }
 
 #[test]
+fn token_record_account_load_accepts_padded_accounts() {
+    let data = to_vec(&sample_token_record()).unwrap();
+    let account = AccountBuffer::<4096>::new();
+    account.init(
+        [8u8; 32],
+        metadata::ID.to_bytes(),
+        data.len() + 8,
+        false,
+        false,
+        false,
+    );
+    account.write_data(&data);
+
+    let loaded = TokenRecordAccount::load(unsafe { account.view() }).unwrap();
+    assert_eq!(loaded.key, mpl_token_metadata::types::Key::TokenRecord);
+    assert_eq!(loaded.bump, 7);
+    assert_eq!(loaded.locked_transfer, Some(Pubkey::from([4u8; 32])));
+}
+
+#[test]
 fn metadata_account_load_validates_owner_and_raw_data() {
     let expected = sample_metadata();
     let data = to_vec(&expected).unwrap();

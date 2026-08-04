@@ -1001,7 +1001,7 @@ impl AnchorAccount for TokenRecordAccount {
     fn load(view: AccountView) -> Result<Self> {
         require!(view.owned_by(&ID), ProgramError::IllegalOwner);
         let data_ref = view.try_borrow()?;
-        let data = Self::parse(&mut &data_ref[..])?;
+        let (data, _) = Self::parse_prefix(&data_ref[..])?;
         drop(data_ref);
         Ok(Self {
             view: Some(view),
