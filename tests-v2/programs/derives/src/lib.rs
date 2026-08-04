@@ -380,8 +380,8 @@ mod idl_tests {
 
     #[test]
     fn packed_bytemuck_idl_preserves_packed_repr() {
-        let type_def =
-            <PackedProducer as IdlAccountType>::__IDL_TYPE_DEF.expect("PackedProducer should emit an IDL type");
+        let type_def = <PackedProducer as IdlAccountType>::__idl_type_def()
+            .expect("PackedProducer should emit an IDL type");
         assert!(type_def.contains("\"name\":\"PackedProducer\""));
         assert!(type_def.contains("\"serialization\":\"bytemuck\""));
         assert!(type_def.contains("\"repr\":{\"kind\":\"c\",\"packed\":true}"));
@@ -389,8 +389,8 @@ mod idl_tests {
 
     #[test]
     fn packed_bytemuck_event_idl_preserves_packed_repr() {
-        let type_def =
-            <PackedSnapshot as IdlAccountType>::__IDL_TYPE_DEF.expect("PackedSnapshot should emit an IDL type");
+        let type_def = <PackedSnapshot as IdlAccountType>::__idl_type_def()
+            .expect("PackedSnapshot should emit an IDL type");
         assert!(type_def.contains("\"name\":\"PackedSnapshot\""));
         assert!(type_def.contains("\"serialization\":\"bytemuck\""));
         assert!(type_def.contains("\"repr\":{\"kind\":\"c\",\"packed\":true}"));
