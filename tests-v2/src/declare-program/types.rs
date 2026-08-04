@@ -97,7 +97,12 @@ fn declared_weird_type_docs_and_repr_metadata_compile() {
         core::mem::size_of::<weird_types::PodVec<anchor_lang_v2::pod::PodU64, 4>>(),
         34
     );
+    assert_eq!(
+        core::mem::align_of::<weird_types::PodVec<anchor_lang_v2::pod::PodU64, 4>>(),
+        1
+    );
     assert_eq!(core::mem::size_of::<weird_types::PodVecOnly>(), 34);
+    assert_eq!(core::mem::align_of::<weird_types::PodVecOnly>(), 1);
 
     let packed = weird_types::PackedBytemuck { wide: 7, tag: 9 };
     assert_eq!(anchor_lang_v2::bytemuck::bytes_of(&packed).len(), 9);

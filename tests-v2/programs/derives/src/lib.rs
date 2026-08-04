@@ -375,7 +375,7 @@ mod idl_tests {
         assert!(pod_vec_type.contains("\"generics\":[{\"kind\":\"type\",\"name\":\"T\"},{\"kind\":\"const\",\"name\":\"MAX\",\"type\":\"usize\"}]"));
         assert!(pod_vec_type.contains("\"serialization\":\"bytemuck\""));
         assert!(pod_vec_type.contains("\"repr\":{\"kind\":\"c\"}"));
-        assert!(pod_vec_type.contains("\"fields\":[{\"name\":\"len\",\"type\":\"u16\"},{\"name\":\"data\",\"type\":{\"array\":[{\"generic\":\"T\"},{\"generic\":\"MAX\"}]}}]"));
+        assert!(pod_vec_type.contains("\"fields\":[{\"name\":\"len\",\"type\":{\"defined\":{\"name\":\"PodU16\"}}},{\"name\":\"data\",\"type\":{\"array\":[{\"generic\":\"T\"},{\"generic\":\"MAX\"}]}}]"));
     }
 
     #[test]

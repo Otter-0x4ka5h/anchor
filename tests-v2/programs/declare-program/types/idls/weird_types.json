@@ -455,7 +455,11 @@
         "fields": [
           {
             "name": "len",
-            "type": "u16"
+            "type": {
+              "defined": {
+                "name": "PodU16"
+              }
+            }
           },
           {
             "name": "data",
