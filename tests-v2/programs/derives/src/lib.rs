@@ -128,14 +128,14 @@ pub struct PodVecOnly {
 }
 
 #[account]
-#[repr(C, packed)]
+#[repr(C, packed(1))]
 pub struct PackedProducer {
     pub tag: u8,
     pub wide: u64,
 }
 
 #[event(bytemuck)]
-#[repr(C, packed)]
+#[repr(C, packed(1))]
 pub struct PackedSnapshot {
     pub tag: u8,
     pub wide: u64,
