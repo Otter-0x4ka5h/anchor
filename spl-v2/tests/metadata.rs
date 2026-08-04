@@ -231,6 +231,26 @@ fn master_edition_account_deserialize_advances_cursor() {
 }
 
 #[test]
+fn master_edition_account_load_accepts_padded_accounts() {
+    let data = to_vec(&sample_master_edition()).unwrap();
+    let account = AccountBuffer::<4096>::new();
+    account.init(
+        [6u8; 32],
+        metadata::ID.to_bytes(),
+        data.len() + 8,
+        false,
+        false,
+        false,
+    );
+    account.write_data(&data);
+
+    let loaded = MasterEditionAccount::load(unsafe { account.view() }).unwrap();
+    assert_eq!(loaded.key, mpl_token_metadata::types::Key::MasterEditionV2);
+    assert_eq!(loaded.supply, 42);
+    assert_eq!(loaded.max_supply, Some(100));
+}
+
+#[test]
 fn token_record_account_deserialize_advances_cursor() {
     let data = to_vec(&sample_token_record()).unwrap();
     let mut cursor = data.as_slice();
@@ -261,6 +281,26 @@ fn token_record_account_load_accepts_padded_accounts() {
 }
 
 #[test]
+fn token_record_account_load_accepts_legacy_padded_accounts() {
+    let data = sample_legacy_token_record_bytes();
+    let account = AccountBuffer::<4096>::new();
+    account.init(
+        [5u8; 32],
+        metadata::ID.to_bytes(),
+        data.len() + 8,
+        false,
+        false,
+        false,
+    );
+    account.write_data(&data);
+
+    let loaded = TokenRecordAccount::load(unsafe { account.view() }).unwrap();
+    assert_eq!(loaded.key, mpl_token_metadata::types::Key::TokenRecord);
+    assert_eq!(loaded.bump, 7);
+    assert_eq!(loaded.locked_transfer, None);
+}
+
+#[test]
 fn metadata_account_load_validates_owner_and_raw_data() {
     let expected = sample_metadata();
     let data = to_vec(&expected).unwrap();
@@ -278,6 +318,27 @@ fn metadata_account_load_validates_owner_and_raw_data() {
     let loaded = MetadataAccount::load(unsafe { account.view() }).unwrap();
     assert_eq!(loaded.update_authority, expected.update_authority);
     assert_eq!(loaded.seller_fee_basis_points, 250);
+}
+
+#[test]
+fn metadata_account_load_accepts_padded_accounts() {
+    let expected = sample_metadata_with_programmable_config();
+    let data = to_vec(&expected).unwrap();
+    let account = AccountBuffer::<4096>::new();
+    account.init(
+        [4u8; 32],
+        metadata::ID.to_bytes(),
+        data.len() + 8,
+        false,
+        false,
+        false,
+    );
+    account.write_data(&data);
+
+    let loaded = MetadataAccount::load(unsafe { account.view() }).unwrap();
+    assert_eq!(loaded.token_standard, expected.token_standard);
+    assert_eq!(loaded.collection, expected.collection);
+    assert_eq!(loaded.programmable_config, expected.programmable_config);
 }
 
 #[test]
