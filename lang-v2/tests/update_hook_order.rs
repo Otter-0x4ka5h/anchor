@@ -1,3 +1,5 @@
+#![allow(dead_code, deprecated, unexpected_cfgs)]
+
 use {
     anchor_lang_v2::{
         accounts::{BorshAccount, Signer, UncheckedAccount},
@@ -268,7 +270,7 @@ fn update_accounts_runs_after_validation_and_persists_on_exit() {
     accounts.update_accounts().unwrap();
     assert_eq!(accounts.vault.current_authority.to_bytes(), NEW_AUTHORITY);
 
-    accounts.exit_accounts().unwrap();
+    accounts.exit_accounts(&[]).unwrap();
     assert_eq!(read_vault_authority(&vault), NEW_AUTHORITY);
 }
 
@@ -356,6 +358,6 @@ fn nested_try_accounts_runs_inner_updates_once() {
         "nested update hooks should run exactly once"
     );
 
-    accounts.exit_accounts().unwrap();
+    accounts.exit_accounts(&[]).unwrap();
     assert_eq!(read_counter_value(&counter), 1);
 }

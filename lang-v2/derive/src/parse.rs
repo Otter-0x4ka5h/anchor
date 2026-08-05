@@ -927,11 +927,6 @@ pub struct AccountField {
     pub deferred_load: Option<TokenStream2>,
     pub constraints: Vec<TokenStream2>,
     pub update: Option<TokenStream2>,
-    /// Duplicate-mutable-account check. Collected separately from
-    /// `constraints` so all mut-field dup checks can share a single outer
-    /// `if let Some(__dups) = __duplicates` gate — non-dup txs pay one
-    /// Option-tag branch regardless of field count.
-    pub dup_check: Option<TokenStream2>,
     pub exit: Option<TokenStream2>,
     pub has_bump: bool,
     /// True when the field type is `Option<T>` (optional account).
@@ -1918,7 +1913,6 @@ pub fn parse_field(
             update: Some(quote! {
                 self.#field_name.0.update_accounts()?;
             }),
-            dup_check: None,
             exit,
             has_bump: false,
             is_optional: false,
@@ -2556,19 +2550,22 @@ pub fn parse_field(
             } else {
                 quote! { &mut self.#field_name }
             };
-            let update_expected =
-                if nc.is_field_ref && (nc.namespace == "mint" || nc.namespace == "token") {
-                    quote! { anchor_lang_v2::AccountAddress::account_address(&self.#value) }
-                } else if nc.is_field_ref {
-                    quote! { AsRef::as_ref(&self.#value) }
-                } else {
-                    quote! { &#value }
-            };
+            let (update_expected_binding, update_expected_arg) = emit_constraint_expected_binding(
+                &ns,
+                &key,
+                nc,
+                field_names,
+                field_summaries,
+                true,
+            );
             // `update(...)` runs after validation + access-control.
             updates.push(quote! {
-                <#ns::#key as anchor_lang_v2::AccountConstraint<_>>::update(
-                    #update_target, #update_expected,
-                )?;
+                {
+                    #update_expected_binding
+                    <#ns::#key as anchor_lang_v2::AccountConstraint<_>>::update(
+                        #update_target, #update_expected_arg,
+                    )?;
+                }
             });
             continue;
         }
@@ -2685,26 +2682,6 @@ pub fn parse_field(
         // that only needs to run post-instruction).
         Some(quote! {
             #(#constraint_exits)*
-        })
-    } else {
-        None
-    };
-
-    // Dup-check emission: only `Option<_>` mut fields keep a gated
-    // per-field `get()` check — a `None` slot (the client encodes
-    // `program_id` as the address) must stay silent even when that slot
-    // is also the dup target of another account, and the
-    // `if let Some(...)` wrapper built below preserves that. Non-`Option`
-    // mut fields are folded into the enclosing struct's `MUT_MASK` const
-    // and checked once per dispatch by `run_handler`. Stored separately
-    // from `constraints` so the struct-level codegen can aggregate all
-    // mut fields' dup checks under a single outer
-    // `if let Some(__dups) = __duplicates { ... }` gate.
-    let dup_check = if attrs.is_mut && !attrs.is_dup && is_optional {
-        Some(quote! {
-            if __dups.get((__base_offset + #offset_expr) as u8) {
-                return Err(anchor_lang_v2::ErrorCode::ConstraintDuplicateMutableAccount.into());
-            }
         })
     } else {
         None
@@ -2842,7 +2819,6 @@ pub fn parse_field(
         deferred_load,
         constraints,
         update,
-        dup_check,
         exit,
         has_bump,
         is_optional,
