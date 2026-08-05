@@ -213,8 +213,8 @@ impl AccountInitialize for FakeTokenAccount {
 }
 
 mod mint {
-    use super::FakeMintAccount;
     use {
+        super::FakeMintAccount,
         anchor_lang_v2::{AccountConstraint, Error},
         solana_program_error::ProgramError,
     };
@@ -260,8 +260,8 @@ mod mint {
 }
 
 mod token {
-    use super::FakeTokenAccount;
     use {
+        super::FakeTokenAccount,
         anchor_lang_v2::{AccountConstraint, Error},
         solana_program_error::ProgramError,
     };
@@ -484,11 +484,12 @@ fn seedless_reuse_treats_zero_length_program_owned_target_as_existing() {
 }
 
 #[test]
-fn seedless_reuse_allows_extra_space() {
+fn seedless_reuse_rejects_extra_space() {
     let target = target_account(PROGRAM_ID, 16, true, 1_000_000);
     let payer = payer_account();
 
-    try_reuse(&target, &payer).expect("reused accounts with extra space should stay valid");
+    let err = expect_err(try_reuse(&target, &payer));
+    assert_eq!(err, ErrorCode::ConstraintSpace.into());
 }
 
 #[test]

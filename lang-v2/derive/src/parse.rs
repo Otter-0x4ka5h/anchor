@@ -1768,7 +1768,7 @@ fn emit_init_if_needed_reuse_validation(
     Ok(quote! {
         let __expected_space = #space;
         #signer_check
-        if __target.data_len() < __expected_space {
+        if __target.data_len() != __expected_space {
             return Err(anchor_lang_v2::ErrorCode::ConstraintSpace.into());
         }
         let __expected_owner = #owner;
