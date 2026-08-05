@@ -778,7 +778,7 @@ pub struct MissingInitPayer {
     pub system_program: Program<System>,
 }
 "#,
-        &["`init` requires `payer = <target>`"],
+        &["`init` and `init_if_needed` require `payer`"],
         &["proc-macro derive panicked"],
     );
 
@@ -803,7 +803,7 @@ pub struct MissingReallocPayer {
     pub system_program: Program<System>,
 }
 "#,
-        &["`realloc` requires `realloc_payer = <target>`"],
+        &["`realloc` requires `realloc_payer`"],
         &["proc-macro derive panicked"],
     );
 }
@@ -1342,7 +1342,7 @@ pub struct Bad {
     pub data: UncheckedAccount,
 }
 "#,
-        &["`seeds::program` requires `seeds`"],
+        &["seeds must be provided before seeds::program"],
     );
 
     compile_fail_case(

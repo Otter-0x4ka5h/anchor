@@ -565,12 +565,6 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
             "`seeds` requires `bump`",
         ));
     }
-    if result.seeds_program.is_some() && result.seeds.is_none() {
-        return Err(syn::Error::new(
-            result.seeds_program.as_ref().unwrap().span(),
-            "`seeds::program` requires `seeds`",
-        ));
-    }
     if let Some(program) = result.seeds_program.as_ref() {
         if result.is_init_if_needed {
             return Err(syn::Error::new(
@@ -584,30 +578,6 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
                 "`seeds::program` cannot be used with `init`",
             ));
         }
-    }
-
-    if result.payer.is_none() {
-        if let Some(init_span) = result.init_span {
-            return Err(syn::Error::new(
-                init_span,
-                "`init` requires `payer = <target>`",
-            ));
-        }
-        if let Some(init_if_needed_span) = result.init_if_needed_span {
-            return Err(syn::Error::new(
-                init_if_needed_span,
-                "`init_if_needed` requires `payer = <target>`",
-            ));
-        }
-    }
-
-    if result.realloc.is_some() && result.realloc_payer.is_none() {
-        return Err(syn::Error::new(
-            result
-                .realloc_span
-                .unwrap_or_else(proc_macro2::Span::call_site),
-            "`realloc` requires `realloc_payer = <target>`",
-        ));
     }
     if result.realloc_payer.is_some() && result.realloc.is_none() {
         return Err(syn::Error::new(
@@ -3021,7 +2991,7 @@ pub fn parse_field(
         let realloc_payer = attrs.realloc_payer.as_ref().ok_or_else(|| {
             syn::Error::new(
                 attrs.realloc_span.unwrap_or_else(|| field_name.span()),
-                "`realloc` requires `realloc_payer = <target>`",
+                "`realloc` requires `realloc_payer`",
             )
         })?;
         let zero_fill = attrs.realloc_zero;
@@ -3289,16 +3259,18 @@ mod tests {
     }
 
     #[test]
-    fn empty_seed_array_with_seeds_program_is_accepted() {
+    fn empty_seed_array_with_seeds_program_requires_bump() {
         let attrs: Vec<Attribute> = vec![syn::parse_quote!(
             #[account(seeds = [], seeds::program = other_program.key())]
         )];
-        let parsed = parse_account_attrs(&attrs).expect("empty seeds array remains valid");
-        let Expr::Array(arr) = parsed.seeds.expect("seed array should be preserved") else {
-            panic!("expected parsed seeds to stay as an array expression");
+        let err = match parse_account_attrs(&attrs) {
+            Ok(_) => panic!("empty seeds array without bump must be rejected"),
+            Err(err) => err,
         };
-        assert!(arr.elems.is_empty());
-        assert!(parsed.seeds_program.is_some());
+        assert!(
+            err.to_string().contains("`seeds` requires `bump`"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -3413,7 +3385,7 @@ mod tests {
         };
         assert!(
             err.to_string()
-                .contains("`init` requires `payer = <target>`"),
+                .contains("`init` and `init_if_needed` require `payer`"),
             "unexpected error: {err}"
         );
     }
@@ -3429,7 +3401,7 @@ mod tests {
         };
         assert!(
             err.to_string()
-                .contains("`init_if_needed` requires `payer = <target>`"),
+                .contains("`init` and `init_if_needed` require `payer`"),
             "unexpected error: {err}"
         );
     }
@@ -3445,7 +3417,7 @@ mod tests {
         };
         assert!(
             err.to_string()
-                .contains("`realloc` requires `realloc_payer = <target>`"),
+                .contains("`realloc` requires `realloc_payer`"),
             "unexpected error: {err}"
         );
     }
