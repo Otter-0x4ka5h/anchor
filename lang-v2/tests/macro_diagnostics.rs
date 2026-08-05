@@ -447,9 +447,7 @@ pub struct Bad {
     pub data: Option<UncheckedAccount>,
 }
 "#,
-        &[
-            "instruction argument names beginning with `__` are reserved for generated code",
-        ],
+        &["instruction argument names beginning with `__` are reserved for generated code"],
     );
 }
 
@@ -1814,6 +1812,33 @@ pub struct Bad {
 }
 "#,
         &["when initializing, `mint::decimals` must be provided if `mint::authority` is"],
+    );
+
+    compile_pass_case(
+        "init_mint_allows_update_only_decimals",
+        r#"
+use anchor_lang_v2::prelude::*;
+use anchor_spl_v2::{
+    mint::{self},
+    token::{self},
+    token_interface::Mint,
+};
+
+#[derive(Accounts)]
+pub struct Good {
+    #[account(mut)]
+    pub payer: Signer,
+    pub authority: UncheckedAccount,
+    #[account(
+        init,
+        payer = payer,
+        update(mint::decimals = 9),
+        mint::authority = authority,
+    )]
+    pub mint: InterfaceAccount<Mint>,
+    pub system_program: Program<System>,
+}
+"#,
     );
 }
 

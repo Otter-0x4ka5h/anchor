@@ -607,19 +607,22 @@ pub fn parse_account_attrs(attrs: &[Attribute]) -> syn::Result<AccountAttrs> {
         ));
     }
 
-    let has_namespaced = |ns: &str, key: &str| {
+    let has_namespaced = |ns: &str, key: &str, allow_update: bool| {
         result
             .namespaced
             .iter()
-            .any(|nc| !nc.is_update && nc.namespace == ns && nc.raw_key == key)
+            .any(|nc| (allow_update || !nc.is_update) && nc.namespace == ns && nc.raw_key == key)
     };
     if result.is_init || result.is_init_if_needed {
-        for (namespace, left, right) in [
-            ("token", "mint", "authority"),
-            ("mint", "decimals", "authority"),
+        for (namespace, left, right, allow_update) in [
+            ("token", "mint", "authority", false),
+            // `update(mint::...)` constraints should still compile on init
+            // accounts; they are applied later and must not leak into the
+            // init params that `Mint::create_and_initialize` consumes.
+            ("mint", "decimals", "authority", true),
         ] {
-            let has_left = has_namespaced(namespace, left);
-            let has_right = has_namespaced(namespace, right);
+            let has_left = has_namespaced(namespace, left, allow_update);
+            let has_right = has_namespaced(namespace, right, allow_update);
             if has_left != has_right {
                 let (missing, present) = if has_left {
                     (right, left)
@@ -1453,8 +1456,7 @@ pub fn validate_account_fields(fields: &[FieldSummary]) -> syn::Result<()> {
                 .realloc_payer
                 .as_ref()
                 .expect("realloc payer is validated while parsing account attributes");
-            let payer_field =
-                require_summary_field(fields, payer, target, "realloc payer", false)?;
+            let payer_field = require_summary_field(fields, payer, target, "realloc payer", false)?;
             if extract_option_inner(&payer_field.ty).is_some() {
                 return Err(syn::Error::new(
                     payer_field.name.span(),
