@@ -1058,19 +1058,6 @@ fn impl_accounts(input: &DeriveInput) -> TokenStream2 {
     let constraints: Vec<_> = fields.iter().flat_map(|f| &f.constraints).collect();
     let updates: Vec<_> = fields.iter().filter_map(|f| f.update.as_ref()).collect();
     let exits: Vec<_> = fields.iter().filter_map(|f| f.exit.as_ref()).collect();
-    // Collect per-field dup checks under a single outer `if let Some(__dups)`
-    // gate so non-dup txs pay one Option-tag branch for the whole struct,
-    // not one per mut field.
-    let dup_checks: Vec<_> = fields.iter().filter_map(|f| f.dup_check.as_ref()).collect();
-    let dup_check_block = if dup_checks.is_empty() {
-        quote::quote! {}
-    } else {
-        quote::quote! {
-            if let Some(__dups) = __duplicates {
-                #(#dup_checks)*
-            }
-        }
-    };
     // Bump-cache surface:
     //   - direct PDA fields keep their existing `u8` / `Option<u8>` entries;
     //     optional accounts still use `Option<u8>` so the sentinel-`None`
@@ -2032,7 +2019,6 @@ fn impl_accounts(input: &DeriveInput) -> TokenStream2 {
                 #(#bump_cache_locals)*
                 #(#loads)*
                 #(#deferred_loads)*
-                #dup_check_block
                 #(#constraints)*
                 #bumps_build
                 Ok((Self { #(#field_names),* }, __bumps, #ix_args_return))
