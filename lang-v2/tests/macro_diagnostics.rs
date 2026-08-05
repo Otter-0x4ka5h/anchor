@@ -1821,7 +1821,7 @@ use anchor_lang_v2::prelude::*;
 use anchor_spl_v2::{
     mint::{self},
     token::{self},
-    token_interface::Mint,
+    token_interface::{Mint, TokenInterface},
 };
 
 #[derive(Accounts)]
@@ -1829,6 +1829,7 @@ pub struct Good {
     #[account(mut)]
     pub payer: Signer,
     pub authority: UncheckedAccount,
+    pub token_program: Interface<'static, TokenInterface>,
     #[account(
         init,
         payer = payer,
