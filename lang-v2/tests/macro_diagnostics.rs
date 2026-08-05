@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn emitted_idl_keeps_wincode_tag_metadata() {
-        let idl = <Tagged as IdlAccountType>::__IDL_TYPE_DEF.unwrap();
+        let idl = <Tagged as IdlAccountType>::__idl_type_def().unwrap();
         assert!(idl.contains("\"tagEncoding\":\"u32\""));
         assert!(idl.contains("\"name\":\"A\""));
         assert!(idl.contains("\"tag\":\"5\""));
