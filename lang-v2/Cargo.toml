@@ -115,6 +115,10 @@ name = "init_if_needed_space_check"
 required-features = ["testing"]
 
 [[test]]
+name = "init_if_needed_signer_check"
+required-features = ["testing"]
+
+[[test]]
 name = "lamports"
 required-features = ["testing"]
 

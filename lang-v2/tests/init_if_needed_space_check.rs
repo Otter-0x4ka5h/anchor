@@ -1,7 +1,8 @@
 //! Smoke test for `init_if_needed` with an explicit `space = ...` account.
 //!
-//! The behavioral regression is covered end-to-end in `tests-v2`; this file
-//! just keeps a focused derive example in `lang-v2`.
+//! Runtime signer enforcement for seedless `init_if_needed` (+ `close`) lives
+//! in `init_if_needed_signer_check.rs`. End-to-end LiteSVM coverage is in
+//! `tests-v2`.
 
 use {
     anchor_lang_v2::{
@@ -41,6 +42,20 @@ struct InitIfNeededVault {
     vault: Account<Vault>,
     #[account(mut)]
     payer: SystemAccount,
+    system_program: Program<System>,
+}
+
+/// Compile smoke for the seedless surface (signer enforced at runtime in
+/// `init_if_needed_signer_check.rs`).
+#[allow(dead_code)]
+#[derive(Accounts)]
+struct InitIfNeededSeedlessClose {
+    #[account(mut)]
+    payer: SystemAccount,
+    #[account(init_if_needed, payer = payer, space = VAULT_SPACE, close = receiver)]
+    vault: Account<Vault>,
+    #[account(mut)]
+    receiver: SystemAccount,
     system_program: Program<System>,
 }
 
