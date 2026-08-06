@@ -953,10 +953,12 @@ pub struct AccountField {
     // IDL metadata
     pub idl_writable: bool,
     /// True when this is a fresh-keypair init site (attrs: `init` or
-    /// `init_if_needed` without `seeds`). The caller must sign the tx with
-    /// the new account's keypair, so it surfaces as `signer: true` in the
-    /// IDL. Orthogonal to the `Signer` field type — those contribute via
-    /// `<Ty as IdlAccountType>::__IDL_IS_SIGNER` at runtime.
+    /// `init_if_needed` without `seeds`) or an explicit `signer` constraint.
+    /// The caller must sign the tx with the account's keypair. Used for:
+    ///   - IDL / client / CPI metadata (`signer: true`)
+    ///   - the runtime `ConstraintSigner` check emitted by the derive
+    /// Orthogonal to the `Signer` field type — those contribute via
+    /// `<Ty as IdlAccountType>::__IDL_IS_SIGNER` / `AnchorAccount::IS_SIGNER`.
     pub idl_init_signer: bool,
     /// `has_one = target` targets declared on this field's attrs. Relations
     /// emission walks every field and looks for has_one chains targeting
@@ -1777,9 +1779,16 @@ pub fn parse_field(
 
     let option_inner = extract_option_inner(field_ty);
     let is_optional = option_inner.is_some();
-    // Explicit signer constraint or fresh-keypair init (no seeds) — caller
-    // signs the tx. Distinct from `Signer`-type fields, which the IDL picks
-    // up through `IdlAccountType::__IDL_IS_SIGNER` at runtime.
+    // Explicit signer constraint or fresh-keypair init / init_if_needed
+    // (no seeds, not an ATA). The flag drives both IDL/CPI `signer: true`
+    // metadata and the runtime `ConstraintSigner` check below. Distinct
+    // from `Signer`-type fields, which the IDL picks up through
+    // `IdlAccountType::__IDL_IS_SIGNER` / `AnchorAccount::IS_SIGNER`.
+    //
+    // Runtime enforcement matters most for seedless `init_if_needed`: the
+    // exist branch calls `load_mut` without a System Program create CPI,
+    // so without this check an unsigned victim account could reach
+    // `close = …` exit and have its lamports drained.
     let idl_init_signer = attrs.is_signer
         || ((attrs.is_init || attrs.is_init_if_needed)
             && attrs.seeds.is_none()
@@ -2208,8 +2217,10 @@ pub fn parse_field(
     // the default (UncheckedAccount, SystemAccount, Program, Sysvar) get
     // it via the trait default.
 
-    // signer check
-    if attrs.is_signer {
+    // signer check — covers explicit `signer` and seedless init /
+    // init_if_needed (see `idl_init_signer`). PDA / ATA init paths leave
+    // the flag false so they are not required to be transaction signers.
+    if idl_init_signer {
         constraints.push(quote! {
             if !#field_name.account().is_signer() {
                 return Err(anchor_lang_v2::ErrorCode::ConstraintSigner.into());
@@ -2897,6 +2908,141 @@ mod tests {
             err.to_string()
                 .contains("`#[account(...)]` attributes are not supported on `Nested<T>` fields"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn seedless_init_if_needed_emits_runtime_signer_check() {
+        // Regression: seedless init_if_needed previously only set
+        // `idl_init_signer` for client/CPI metadata. The exist branch
+        // loaded via `load_mut` with no System Program create CPI, so an
+        // unsigned victim account could reach `close = …` and be drained.
+        // The derive must emit ConstraintSigner for that surface.
+        use syn::parse::Parser;
+
+        let payer_field: syn::Field = syn::Field::parse_named
+            .parse2(quote::quote! {
+                #[account(mut)]
+                pub payer: Signer
+            })
+            .unwrap();
+        let data_field: syn::Field = syn::Field::parse_named
+            .parse2(quote::quote! {
+                #[account(init_if_needed, payer = payer, space = 8, close = payer)]
+                pub data: Account<Data>
+            })
+            .unwrap();
+
+        let payer_attrs = parse_account_attrs(&payer_field.attrs).unwrap();
+        let data_attrs = parse_account_attrs(&data_field.attrs).unwrap();
+        let summaries = vec![
+            FieldSummary {
+                name: syn::parse_quote!(payer),
+                ty: payer_field.ty.clone(),
+                attrs: payer_attrs,
+            },
+            FieldSummary {
+                name: syn::parse_quote!(data),
+                ty: data_field.ty.clone(),
+                attrs: data_attrs,
+            },
+        ];
+        let field_names = vec!["payer".to_string(), "data".to_string()];
+        let field_offsets = vec![
+            ("payer".to_string(), quote::quote!(0usize)),
+            ("data".to_string(), quote::quote!(1usize)),
+        ];
+
+        let parsed = parse_field(
+            &data_field,
+            &field_names,
+            &field_offsets,
+            quote::quote!(1usize),
+            &[],
+            &summaries,
+        )
+        .unwrap();
+
+        assert!(
+            parsed.idl_init_signer,
+            "seedless init_if_needed must still advertise signer in IDL metadata"
+        );
+        let joined = parsed
+            .constraints
+            .iter()
+            .map(|t| t.to_string())
+            .collect::<String>();
+        assert!(
+            joined.contains("ConstraintSigner"),
+            "seedless init_if_needed must emit a runtime ConstraintSigner check, got: {joined}"
+        );
+        assert!(
+            joined.contains("is_signer"),
+            "expected is_signer() guard in generated constraints, got: {joined}"
+        );
+    }
+
+    #[test]
+    fn seeded_init_if_needed_does_not_emit_runtime_signer_check() {
+        // Control: PDA init_if_needed accounts cannot sign. Runtime must
+        // not require is_signer(); authorization comes from seeds/bump.
+        use syn::parse::Parser;
+
+        let payer_field: syn::Field = syn::Field::parse_named
+            .parse2(quote::quote! {
+                #[account(mut)]
+                pub payer: Signer
+            })
+            .unwrap();
+        let data_field: syn::Field = syn::Field::parse_named
+            .parse2(quote::quote! {
+                #[account(init_if_needed, payer = payer, space = 8, seeds = [b"vault"], bump)]
+                pub data: Account<Data>
+            })
+            .unwrap();
+
+        let payer_attrs = parse_account_attrs(&payer_field.attrs).unwrap();
+        let data_attrs = parse_account_attrs(&data_field.attrs).unwrap();
+        let summaries = vec![
+            FieldSummary {
+                name: syn::parse_quote!(payer),
+                ty: payer_field.ty.clone(),
+                attrs: payer_attrs,
+            },
+            FieldSummary {
+                name: syn::parse_quote!(data),
+                ty: data_field.ty.clone(),
+                attrs: data_attrs,
+            },
+        ];
+        let field_names = vec!["payer".to_string(), "data".to_string()];
+        let field_offsets = vec![
+            ("payer".to_string(), quote::quote!(0usize)),
+            ("data".to_string(), quote::quote!(1usize)),
+        ];
+
+        let parsed = parse_field(
+            &data_field,
+            &field_names,
+            &field_offsets,
+            quote::quote!(1usize),
+            &[],
+            &summaries,
+        )
+        .unwrap();
+
+        assert!(
+            !parsed.idl_init_signer,
+            "PDA init_if_needed must not advertise signer metadata"
+        );
+        let joined = parsed
+            .constraints
+            .iter()
+            .map(|t| t.to_string())
+            .collect::<String>();
+        assert!(
+            !joined.contains("ConstraintSigner"),
+            "PDA init_if_needed must not emit ConstraintSigner, got: {joined}"
         );
     }
 
