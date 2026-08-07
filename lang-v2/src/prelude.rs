@@ -11,6 +11,8 @@ pub use crate::{
     accounts::{
         Account, BorshAccount, Interface, InterfaceAccount, Program, Signer, SlabSchema,
         SystemAccount, Sysvar, SysvarId, UncheckedAccount,
+        // Instructions sysvar handle for `Sysvar<Instructions>`
+        Instructions,
     },
     constant,
     create_account,
