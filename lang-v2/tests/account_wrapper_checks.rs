@@ -16,8 +16,8 @@
 use {
     anchor_lang_v2::{
         accounts::{
-            Account, BorshAccount, Instructions, Interface, Program, Signer, SlabSchema,
-            SystemAccount, Sysvar, UncheckedAccount,
+            Account, BorshAccount, Interface, Program, Signer, SlabSchema, SystemAccount, Sysvar,
+            SysvarInstructions, UncheckedAccount,
         },
         programs::{System, Token},
         testing::AccountBuffer,
@@ -415,7 +415,7 @@ fn sysvar_instructions_loads_from_account_data() {
     setup_empty_instructions_sysvar(&mut buf);
 
     let view = unsafe { buf.view() };
-    let ix_sysvar = Sysvar::<Instructions>::load(view).unwrap();
+    let ix_sysvar = Sysvar::<SysvarInstructions>::load(view).unwrap();
     assert_eq!(ix_sysvar.num_instructions(), 0);
     assert_eq!(ix_sysvar.load_current_index(), 0);
 }
@@ -427,7 +427,7 @@ fn sysvar_instructions_rejects_wrong_address() {
     buf.write_data(&[0u8; 4]);
 
     let view = unsafe { buf.view() };
-    let err = expect_err(Sysvar::<Instructions>::load(view));
+    let err = expect_err(Sysvar::<SysvarInstructions>::load(view));
     assert_eq!(err, ProgramError::InvalidArgument);
 }
 

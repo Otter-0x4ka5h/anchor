@@ -41,12 +41,15 @@ impl SysvarId for pinocchio::sysvars::rent::Rent {
 // FIXME: Add `EpochSchedule`: https://github.com/anza-xyz/pinocchio/pull/411
 
 /// Concrete pinocchio [`Instructions`](pinocchio::sysvars::instructions::Instructions)
-/// handle for use as `Sysvar<Instructions>`.
+/// handle for use as `Sysvar<SysvarInstructions>`.
+///
+/// Named to avoid colliding with the common program-local `Instructions`
+/// module / enum when `use anchor_lang_v2::prelude::*` is in scope.
 ///
 /// The instructions sysvar is account-data backed (no `Sysvar::get` syscall),
 /// so Anchor binds it to a `'static` borrow of the account buffer — the same
 /// pattern [`super::SerializedAccount`] uses for its `Ref` guard.
-pub type Instructions =
+pub type SysvarInstructions =
     pinocchio::sysvars::instructions::Instructions<Ref<'static, [u8]>>;
 
 /// How [`Sysvar<T>`] materializes `T` after the account address is validated.
@@ -72,14 +75,14 @@ impl SysvarLoad for pinocchio::sysvars::rent::Rent {
     }
 }
 
-impl SysvarLoad for Instructions {
+impl SysvarLoad for SysvarInstructions {
     #[inline(always)]
     fn load_data(view: &AccountView) -> Result<Self, ProgramError> {
         let data_ref = view.try_borrow()?;
         // SAFETY: `AccountView` data is valid for the instruction lifetime.
         // `Sysvar` retains `view`, and the `Ref` guard keeps the borrow alive
-        // for as long as this `Instructions` value exists (mirrors
-        // `SerializedAccount`'s immutable load path).
+        // for as long as this value exists (mirrors `SerializedAccount`'s
+        // immutable load path).
         let guard: Ref<'static, [u8]> = unsafe { core::mem::transmute(data_ref) };
         // SAFETY: caller (`Sysvar::load`) already checked `T::SYSVAR_ID`.
         Ok(unsafe {
@@ -92,7 +95,7 @@ impl SysvarLoad for Instructions {
 ///
 /// Validates that the passed account address matches `T::SYSVAR_ID`, then
 /// loads `T` via [`SysvarLoad`]: syscall `get()` for `Clock` / `Rent`, or
-/// a borrow of the account data for [`Instructions`].
+/// a borrow of the account data for [`SysvarInstructions`].
 ///
 /// ## `#[account(address = X @ MyErr)]` does NOT surface `MyErr`
 ///
