@@ -763,7 +763,7 @@ pub struct Bad {
     pub system_program: Program<System>,
 }
 "#,
-        &["the payer specified for the init constraint must be mutable"],
+        &["the payer specified for an init constraint must be mutable"],
     );
 
     compile_fail_case(
