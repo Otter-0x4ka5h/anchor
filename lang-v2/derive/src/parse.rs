@@ -1366,6 +1366,8 @@ fn require_summary_field<'a>(
 }
 
 pub fn validate_account_fields(fields: &[FieldSummary]) -> syn::Result<()> {
+    let field_names: Vec<String> = fields.iter().map(|field| field.name.to_string()).collect();
+
     for target in fields {
         let attrs = &target.attrs;
         let required = extract_option_inner(&target.ty).is_none();
@@ -1420,10 +1422,16 @@ pub fn validate_account_fields(fields: &[FieldSummary]) -> syn::Result<()> {
                 } else {
                     for constraint in token_program_constraints {
                         let token_program =
-                            expr_as_field_ident(&constraint.value).ok_or_else(|| {
+                            expr_as_known_field_ident(&constraint.value, &field_names)
+                                .ok_or_else(|| {
                                 syn::Error::new(
                                     constraint.value.span(),
-                                    "SPL token program constraints must reference an account field",
+                                    format!(
+                                        "SPL init constraint `{}::{}` needs an AccountView, not \
+                                         a pubkey. Use a sibling account field of your Accounts \
+                                         struct instead of a const or field access",
+                                        constraint.namespace, constraint.raw_key
+                                    ),
                                 )
                             })?;
                         require_summary_field(
@@ -1441,11 +1449,15 @@ pub fn validate_account_fields(fields: &[FieldSummary]) -> syn::Result<()> {
                 constraint.raw_key == "mint"
                     && matches!(constraint.namespace.as_str(), "token" | "associated_token")
             }) {
-                let mint = expr_as_field_ident(&constraint.value).ok_or_else(|| {
+                let mint = expr_as_known_field_ident(&constraint.value, &field_names).ok_or_else(|| {
                     syn::Error::new(
                         constraint.value.span(),
-                        "the mint constraint must reference an account field for token \
-                         initialization",
+                        format!(
+                            "SPL init constraint `{}::{}` needs an AccountView, not a pubkey. \
+                             Use a sibling account field of your Accounts struct instead of a \
+                             const or field access",
+                            constraint.namespace, constraint.raw_key
+                        ),
                     )
                 })?;
                 require_summary_field(fields, &mint, target, "token mint", false)?;
