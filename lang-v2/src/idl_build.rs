@@ -229,7 +229,6 @@ pub fn __idl_const_seed_json(value: impl AsRef<[u8]>) -> alloc::string::String {
     s
 }
 
-<<<<<<< HEAD
 pub fn __idl_const_seeds_json<I, B>(values: I) -> alloc::string::String
 where
     I: IntoIterator<Item = B>,
