@@ -204,8 +204,9 @@ fn len_from_type(ty: Type, attrs: &mut Option<VecDeque<TokenStream2>>) -> TokenS
                     }
                 }
                 _ => {
-                    let ty = &ty_path.path;
-                    quote!(<#ty as anchor_lang::Space>::INIT_SPACE)
+                    // Keep the full TypePath so `<T as Trait>::Assoc` retains
+                    // its qself; quoting only `.path` would emit `Trait::Assoc`.
+                    quote!(<#ty_path as anchor_lang::Space>::INIT_SPACE)
                 }
             }
         }

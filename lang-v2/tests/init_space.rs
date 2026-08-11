@@ -126,6 +126,26 @@ fn nested_struct_uses_inner_init_space() {
     assert_eq!(Outer::INIT_SPACE, 8 + 24);
 }
 
+trait Schema {
+    type Value: Space;
+}
+
+struct SchemaHost;
+
+impl Schema for SchemaHost {
+    type Value = u64;
+}
+
+#[derive(InitSpace)]
+struct WithQualifiedAssoc {
+    _value: <SchemaHost as Schema>::Value,
+}
+
+#[test]
+fn qualified_associated_type_preserves_qself() {
+    assert_eq!(WithQualifiedAssoc::INIT_SPACE, 8);
+}
+
 #[derive(InitSpace)]
 enum Variant {
     A,             // 0
