@@ -146,6 +146,26 @@ fn qualified_associated_type_preserves_qself() {
     assert_eq!(WithQualifiedAssoc::INIT_SPACE, 8);
 }
 
+mod custom {
+    use super::Space;
+
+    pub struct Address;
+
+    impl Space for Address {
+        const INIT_SPACE: usize = 8;
+    }
+}
+
+#[derive(InitSpace)]
+struct WithCustomAddress {
+    _addr: custom::Address,
+}
+
+#[test]
+fn qualified_path_does_not_use_builtin_address_size() {
+    assert_eq!(WithCustomAddress::INIT_SPACE, 8);
+}
+
 #[derive(InitSpace)]
 enum Variant {
     A,             // 0
