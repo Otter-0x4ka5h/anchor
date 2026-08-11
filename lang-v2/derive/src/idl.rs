@@ -615,7 +615,8 @@ pub fn bytemuck_repr_from_attrs(attrs: &[syn::Attribute]) -> syn::Result<Bytemuc
                         return Err(syn::Error::new(
                             list.span(),
                             "Anchor IDL only supports `#[repr(..., packed)]` or \
-                             `#[repr(..., packed(1))]`"
+                             `#[repr(..., packed(1))]`; other packed widths \
+                             would produce a lossy IDL layout"
                         ));
                     }
                     repr.packed = true;
