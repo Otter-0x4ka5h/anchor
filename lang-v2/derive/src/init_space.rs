@@ -203,19 +203,12 @@ fn len_from_type(ty: Type, attrs: &mut Option<VecDeque<TokenStream2>>) -> TokenS
                             quote_spanned!(ident.span() => compile_error!("Invalid argument in Vec"))
                         }
                     }
-                    _ => {
-                        // Keep the full TypePath so `<T as Trait>::Assoc` retains
-                        // its qself; quoting only `.path` would emit `Trait::Assoc`.
-                        //
-                        // Arbitrary qualified paths such as `custom::Address`
-                        // must not match built-in shortcuts keyed on the final
-                        // segment name alone.
-                        quote!(<#ty_path as anchor_lang::Space>::INIT_SPACE)
-                    }
+<<<<<<< HEAD
+                    _ => unreachable!("all builtin type names should be covered"),
                 }
             } else {
-                // Keep the full TypePath so `<T as Trait>::Assoc` retains its
-                // qself; quoting only `.path` would emit `Trait::Assoc`.
+                // Keep the full TypePath so `<T as Trait>::Assoc` retains
+                // its qself; quoting only `.path` would emit `Trait::Assoc`.
                 //
                 // Arbitrary qualified paths such as `custom::Address` must not
                 // match built-in shortcuts keyed on the final segment name
@@ -280,7 +273,6 @@ fn builtin_type_name(ty_path: &syn::TypePath) -> Option<&'static str> {
 
 fn path_matches(ty_path: &syn::TypePath, segments: &[&str]) -> bool {
     ty_path.qself.is_none()
-        && ty_path.path.leading_colon.is_none()
         && ty_path.path.segments.len() == segments.len()
         && ty_path
             .path

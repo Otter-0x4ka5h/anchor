@@ -9,6 +9,7 @@
 #![allow(dead_code)]
 
 use anchor_lang::{prelude::*, InitSpace, Space};
+extern crate alloc;
 
 #[derive(InitSpace)]
 struct Primitives {
@@ -67,6 +68,16 @@ fn option_adds_one_byte_discriminator() {
 }
 
 #[derive(InitSpace)]
+struct WithQualifiedCoreOption {
+    _maybe: core::option::Option<u64>, // 1 + 8
+}
+
+#[test]
+fn qualified_core_option_uses_option_layout() {
+    assert_eq!(WithQualifiedCoreOption::INIT_SPACE, 9);
+}
+
+#[derive(InitSpace)]
 struct WithString {
     #[max_len(32)]
     _name: String, // 4 + 32
@@ -78,6 +89,17 @@ fn string_reserves_max_len_plus_length_prefix() {
 }
 
 #[derive(InitSpace)]
+struct WithQualifiedAllocString {
+    #[max_len(32)]
+    _name: alloc::string::String, // 4 + 32
+}
+
+#[test]
+fn qualified_alloc_string_uses_string_layout() {
+    assert_eq!(WithQualifiedAllocString::INIT_SPACE, 36);
+}
+
+#[derive(InitSpace)]
 struct WithVec {
     #[max_len(10)]
     _xs: Vec<u64>, // 4 + 8 * 10
@@ -86,6 +108,17 @@ struct WithVec {
 #[test]
 fn vec_reserves_max_len_times_element_plus_prefix() {
     assert_eq!(WithVec::INIT_SPACE, 84);
+}
+
+#[derive(InitSpace)]
+struct WithQualifiedAllocVec {
+    #[max_len(10)]
+    _xs: alloc::vec::Vec<u64>, // 4 + 8 * 10
+}
+
+#[test]
+fn qualified_alloc_vec_uses_vec_layout() {
+    assert_eq!(WithQualifiedAllocVec::INIT_SPACE, 84);
 }
 
 #[derive(InitSpace)]
