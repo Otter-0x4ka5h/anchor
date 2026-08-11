@@ -580,14 +580,23 @@ where
         self.len().min(self.capacity())
     }
 
+    /// Whether the live tail has no readable items.
+    ///
+    /// Uses [`effective_len`](Self::effective_len) so a retained slab whose
+    /// account was externally shrunk below the stored `len` still reports
+    /// empty when every live slot is gone (including zero-capacity shrinks).
     #[inline(always)]
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.effective_len() == 0
     }
 
+    /// Whether the live tail cannot accept another push without growing.
+    ///
+    /// Uses [`effective_len`](Self::effective_len) so a post-shrink state with
+    /// raw `len > capacity` reports full rather than neither-empty-nor-full.
     #[inline(always)]
     pub fn is_full(&self) -> bool {
-        self.len() == self.capacity()
+        self.effective_len() == self.capacity()
     }
 
     /// View the tail region as an immutable slice. Uses `effective_len` so
@@ -684,9 +693,17 @@ where
     /// `effective_len` so a post-shrink Slab (raw len > capacity) doesn't
     /// read past the live data buffer; the write-back also clamps the
     /// stored len to a value `<= capacity`.
+    ///
+    /// When an external shrink left `capacity == 0` but a nonzero stored
+    /// `len`, this still clears the stale length before returning `None`
+    /// so a later `load` does not reject `len > capacity`.
     pub fn pop(&mut self) -> Option<T> {
         let len = self.effective_len();
         if len == 0 {
+            // Repair a zero-capacity post-shrink that retained a stale len.
+            if self.len() != 0 {
+                self.write_len(0);
+            }
             return None;
         }
         let new_len = len - 1;
