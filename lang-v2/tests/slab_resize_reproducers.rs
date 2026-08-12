@@ -402,6 +402,28 @@ fn pop_after_external_shrink_uses_effective_len() {
 }
 
 #[test]
+fn drop_repairs_stale_len_after_external_shrink_without_tail_mutation() {
+    let buf = setup_ledger(/*capacity*/ 4, /*len*/ 3);
+
+    let view = unsafe { buf.view() };
+    let slab = unsafe { CounterLedger::load_mut(view) }.unwrap();
+    assert_eq!(slab.len(), 3);
+    assert_eq!(slab.capacity(), 4);
+
+    // External resize: capacity drops to 1 while the slab stays in scope.
+    buf.set_data_len((ITEMS_OFFSET + ITEM_SIZE) as u64);
+    assert_eq!(slab.capacity(), 1);
+
+    // Dropping without any tail mutation should still persist a repaired
+    // len so future loads do not reject `len > capacity`.
+    drop(slab);
+
+    let reloaded = CounterLedger::load(view).unwrap();
+    assert_eq!(reloaded.capacity(), 1);
+    assert_eq!(reloaded.len(), 1);
+}
+
+#[test]
 fn predicates_use_effective_len_after_external_shrink() {
     let buf = setup_ledger(/*capacity*/ 4, /*len*/ 3);
 

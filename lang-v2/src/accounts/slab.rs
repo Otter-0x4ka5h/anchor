@@ -169,6 +169,12 @@ where
     H: Pod + Zeroable + SlabSchema,
 {
     fn drop(&mut self) {
+        if self.is_mutable {
+            // If the account was externally shrunk while this wrapper was
+            // retained, persist a repaired tail length before we release the
+            // exclusive borrow so a later reload still validates.
+            self.repair_stale_len_after_external_shrink();
+        }
         let borrow_state = unsafe { &mut (*self.view.account_ptr().cast_mut()).borrow_state };
         if self.is_mutable {
             *borrow_state = NOT_BORROWED;
@@ -246,6 +252,30 @@ where
                 "Slab tail alignment exceeds Solana's 8-byte account data alignment",
             );
         };
+    }
+
+    /// Clamp a retained tail's stored `len` down to current capacity after an
+    /// external shrink. No-op for header-only slabs, read-only loads, or when
+    /// the shrink removed the `len` field entirely.
+    #[inline(always)]
+    fn repair_stale_len_after_external_shrink(&mut self) {
+        if !self.is_mutable || !Self::HAS_TAIL || self.view.data_len() < Self::LEN_OFFSET + 4 {
+            return;
+        }
+
+        let capacity = capacity_for(
+            self.view.data_len(),
+            Self::ITEMS_OFFSET,
+            core::mem::size_of::<T>(),
+        );
+        let bytes = unsafe { self.view.borrow_unchecked_mut() };
+        let mut len_bytes = [0u8; 4];
+        len_bytes.copy_from_slice(&bytes[Self::LEN_OFFSET..Self::LEN_OFFSET + 4]);
+        let len = u32::from_le_bytes(len_bytes) as usize;
+        if len > capacity {
+            bytes[Self::LEN_OFFSET..Self::LEN_OFFSET + 4]
+                .copy_from_slice(&(capacity as u32).to_le_bytes());
+        }
     }
 
     /// Returns the account's address. Always safe regardless of borrow state.
