@@ -789,11 +789,11 @@ fn empty_seeds_array_with_bump_compiles() {
     compile_pass_case(
         "empty_seeds_with_bump",
         r#"
-use anchor_lang_v2::prelude::*;
+use anchor_lang::prelude::*;
 
 declare_id!("11111111111111111111111111111111");
 
-#[derive(anchor_lang_v2::wincode::SchemaRead, anchor_lang_v2::wincode::SchemaWrite)]
+#[derive(anchor_lang::wincode::SchemaRead, anchor_lang::wincode::SchemaWrite)]
 pub struct Data {
     pub value: u64,
 }
