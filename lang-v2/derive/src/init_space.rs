@@ -203,7 +203,6 @@ fn len_from_type(ty: Type, attrs: &mut Option<VecDeque<TokenStream2>>) -> TokenS
                             quote_spanned!(ident.span() => compile_error!("Invalid argument in Vec"))
                         }
                     }
-<<<<<<< HEAD
                     _ => unreachable!("all builtin type names should be covered"),
                 }
             } else {
