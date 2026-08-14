@@ -22,13 +22,15 @@ pub mod remaining_accounts {
         Ok(())
     }
 
-    pub fn test_remaining_accounts(ctx: Context<TestRemainingAccounts>) -> Result<()> {
-        let remaining_accounts_iter = &mut ctx.remaining_accounts.iter();
+    pub fn test_remaining_accounts<'info>(
+        ctx: Context<'_, '_, 'info, 'info, TestRemainingAccounts<'info>>,
+    ) -> Result<()> {
+        let mut remaining_accounts_iter = ctx.remaining_accounts.iter();
 
         let token_account =
-            Account::<TokenAccount>::try_from(next_account_info(remaining_accounts_iter)?)?;
+            Account::<TokenAccount>::try_from(next_account_info(&mut remaining_accounts_iter)?)?;
 
-        let data_account_info = next_account_info(remaining_accounts_iter)?;
+        let data_account_info = next_account_info(&mut remaining_accounts_iter)?;
         require_eq!(data_account_info.is_writable, true);
         let mut data = Account::<Data>::try_from(data_account_info)?;
 
