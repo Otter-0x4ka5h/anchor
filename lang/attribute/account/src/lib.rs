@@ -27,6 +27,8 @@ fn is_zero_lit(lit: &syn::Lit) -> bool {
     }
 }
 
+// Fast-path obvious literal forms so simple mistakes still get a direct
+// compile_error! on the user-provided expression span.
 fn is_zeroed_discriminator(discr: &Expr) -> bool {
     match discr {
         Expr::Reference(syn::ExprReference { expr, .. })
@@ -39,6 +41,30 @@ fn is_zeroed_discriminator(discr: &Expr) -> bool {
             is_zeroed_discriminator(&rep.expr) || is_zeroed_discriminator(&rep.len)
         }
         _ => false,
+    }
+}
+
+fn gen_custom_discriminator_check(discrim: &Expr) -> proc_macro2::TokenStream {
+    quote_spanned! {discrim.span() =>
+        const __ANCHOR_DISCRIMINATOR_CHECK: [(); {
+            const fn __anchor_check_discriminator(discriminator: &[u8]) -> usize {
+                if discriminator.is_empty() {
+                    panic!("all-zero or empty discriminators are not supported");
+                }
+
+                let mut i = 0;
+                while i < discriminator.len() {
+                    if discriminator[i] != 0 {
+                        return 0;
+                    }
+                    i += 1;
+                }
+
+                panic!("all-zero or empty discriminators are not supported");
+            }
+
+            __anchor_check_discriminator(<Self as anchor_lang::Discriminator>::DISCRIMINATOR)
+        }] = [];
     }
 }
 
@@ -137,17 +163,21 @@ pub fn account(
     let account_name_str = account_name.to_string();
     let (impl_gen, type_gen, where_clause) = account_strct.generics.split_for_impl();
 
-    let discriminator = match args.overrides.and_then(|ov| ov.discriminator) {
+    let (discriminator, discriminator_check) = match args.overrides.and_then(|ov| ov.discriminator)
+    {
         Some(discrim) => {
             let zero_err = is_zeroed_discriminator(&discrim).then(||
                 quote_spanned! {discrim.span() => compile_error!("all-zero or empty discriminators are not supported");}
             );
-            quote! {
-                {
-                    #zero_err
-                    #discrim
-                }
-            }
+            (
+                quote! {
+                    {
+                        #zero_err
+                        #discrim
+                    }
+                },
+                gen_custom_discriminator_check(&discrim),
+            )
         }
         None => {
             // Namespace the discriminator to prevent collisions.
@@ -157,7 +187,10 @@ pub fn account(
                 &namespace
             };
 
-            gen_discriminator(namespace, account_name)
+            (
+                gen_discriminator(namespace, account_name),
+                proc_macro2::TokenStream::new(),
+            )
         }
     };
 
@@ -225,6 +258,11 @@ pub fn account(
                 #[automatically_derived]
                 impl #impl_gen anchor_lang::Discriminator for #account_name #type_gen #where_clause {
                     const DISCRIMINATOR: &'static [u8] = #discriminator;
+                }
+
+                #[automatically_derived]
+                impl #impl_gen #account_name #type_gen #where_clause {
+                    #discriminator_check
                 }
 
                 // This trait is useful for clients deserializing accounts.
@@ -303,6 +341,11 @@ pub fn account(
                 #[automatically_derived]
                 impl #impl_gen anchor_lang::Discriminator for #account_name #type_gen #where_clause {
                     const DISCRIMINATOR: &'static [u8] = #discriminator;
+                }
+
+                #[automatically_derived]
+                impl #impl_gen #account_name #type_gen #where_clause {
+                    #discriminator_check
                 }
 
                 #owner_impl
