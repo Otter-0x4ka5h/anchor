@@ -57,6 +57,7 @@
     "relations-derivation",
     "pyth",
     "realloc",
+    "remaining-accounts-lifetime",
     "spl/metadata",
     "spl/token-extensions",
     "spl/token-proxy",
