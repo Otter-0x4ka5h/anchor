@@ -103,10 +103,10 @@ fn create_error(error_code: Expr, source: bool, account_name: Option<Expr>) -> T
     let error_origin = match (source, account_name) {
         (false, None) => quote! { None },
         (false, Some(account_name)) => quote! {
-            Some(anchor_lang::error::ErrorOrigin::AccountName(#account_name.to_string()))
+            Some(::anchor_lang::error::ErrorOrigin::AccountName(#account_name.to_string()))
         },
         (true, _) => quote! {
-            Some(anchor_lang::error::ErrorOrigin::Source(anchor_lang::error::Source {
+            Some(::anchor_lang::error::ErrorOrigin::Source(::anchor_lang::error::Source {
                 filename: file!(),
                 line: line!()
             }))
@@ -114,8 +114,8 @@ fn create_error(error_code: Expr, source: bool, account_name: Option<Expr>) -> T
     };
 
     TokenStream::from(quote! {
-        anchor_lang::error::Error::from(
-            anchor_lang::error::AnchorError {
+        ::anchor_lang::error::Error::from(
+            ::anchor_lang::error::AnchorError {
                 error_name: #error_code.name(),
                 error_code_number: #error_code.into(),
                 error_msg: #error_code.to_string(),

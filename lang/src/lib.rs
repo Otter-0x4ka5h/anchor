@@ -742,12 +742,12 @@ pub mod __private {
 macro_rules! require {
     ($invariant:expr, $error:tt $(,)?) => {
         if !($invariant) {
-            return Err(anchor_lang::error!($crate::ErrorCode::$error));
+            return ::core::result::Result::Err($crate::error!($crate::error::ErrorCode::$error));
         }
     };
     ($invariant:expr, $error:expr $(,)?) => {
         if !($invariant) {
-            return Err(anchor_lang::error!($error));
+            return ::core::result::Result::Err($crate::error!($error));
         }
     };
 }
@@ -771,13 +771,17 @@ macro_rules! require {
 macro_rules! require_eq {
     ($value1: expr, $value2: expr, $error_code:expr $(,)?) => {
         if $value1 != $value2 {
-            return Err(anchor_lang::error!($error_code).with_values(($value1, $value2)));
+            return ::core::result::Result::Err(
+                $crate::error!($error_code).with_values(($value1, $value2)),
+            );
         }
     };
     ($value1: expr, $value2: expr $(,)?) => {
         if $value1 != $value2 {
-            return Err(error!(anchor_lang::error::ErrorCode::RequireEqViolated)
-                .with_values(($value1, $value2)));
+            return ::core::result::Result::Err(
+                $crate::error!($crate::error::ErrorCode::RequireEqViolated)
+                    .with_values(($value1, $value2)),
+            );
         }
     };
 }
@@ -801,13 +805,17 @@ macro_rules! require_eq {
 macro_rules! require_neq {
     ($value1: expr, $value2: expr, $error_code: expr $(,)?) => {
         if $value1 == $value2 {
-            return Err(anchor_lang::error!($error_code).with_values(($value1, $value2)));
+            return ::core::result::Result::Err(
+                $crate::error!($error_code).with_values(($value1, $value2)),
+            );
         }
     };
     ($value1: expr, $value2: expr $(,)?) => {
         if $value1 == $value2 {
-            return Err(error!(anchor_lang::error::ErrorCode::RequireNeqViolated)
-                .with_values(($value1, $value2)));
+            return ::core::result::Result::Err(
+                $crate::error!($crate::error::ErrorCode::RequireNeqViolated)
+                    .with_values(($value1, $value2)),
+            );
         }
     };
 }
@@ -831,13 +839,17 @@ macro_rules! require_neq {
 macro_rules! require_keys_eq {
     ($value1: expr, $value2: expr, $error_code:expr $(,)?) => {
         if $value1 != $value2 {
-            return Err(anchor_lang::error!($error_code).with_pubkeys(($value1, $value2)));
+            return ::core::result::Result::Err(
+                $crate::error!($error_code).with_pubkeys(($value1, $value2)),
+            );
         }
     };
     ($value1: expr, $value2: expr $(,)?) => {
         if $value1 != $value2 {
-            return Err(error!(anchor_lang::error::ErrorCode::RequireKeysEqViolated)
-                .with_pubkeys(($value1, $value2)));
+            return ::core::result::Result::Err(
+                $crate::error!($crate::error::ErrorCode::RequireKeysEqViolated)
+                    .with_pubkeys(($value1, $value2)),
+            );
         }
     };
 }
@@ -861,13 +873,15 @@ macro_rules! require_keys_eq {
 macro_rules! require_keys_neq {
     ($value1: expr, $value2: expr, $error_code: expr $(,)?) => {
         if $value1 == $value2 {
-            return Err(anchor_lang::error!($error_code).with_pubkeys(($value1, $value2)));
+            return ::core::result::Result::Err(
+                $crate::error!($error_code).with_pubkeys(($value1, $value2)),
+            );
         }
     };
     ($value1: expr, $value2: expr $(,)?) => {
         if $value1 == $value2 {
-            return Err(
-                error!(anchor_lang::error::ErrorCode::RequireKeysNeqViolated)
+            return ::core::result::Result::Err(
+                $crate::error!($crate::error::ErrorCode::RequireKeysNeqViolated)
                     .with_pubkeys(($value1, $value2)),
             );
         }
@@ -893,13 +907,17 @@ macro_rules! require_keys_neq {
 macro_rules! require_gt {
     ($value1: expr, $value2: expr, $error_code: expr $(,)?) => {
         if $value1 <= $value2 {
-            return Err(anchor_lang::error!($error_code).with_values(($value1, $value2)));
+            return ::core::result::Result::Err(
+                $crate::error!($error_code).with_values(($value1, $value2)),
+            );
         }
     };
     ($value1: expr, $value2: expr $(,)?) => {
         if $value1 <= $value2 {
-            return Err(error!(anchor_lang::error::ErrorCode::RequireGtViolated)
-                .with_values(($value1, $value2)));
+            return ::core::result::Result::Err(
+                $crate::error!($crate::error::ErrorCode::RequireGtViolated)
+                    .with_values(($value1, $value2)),
+            );
         }
     };
 }
@@ -921,13 +939,17 @@ macro_rules! require_gt {
 macro_rules! require_gte {
     ($value1: expr, $value2: expr, $error_code: expr $(,)?) => {
         if $value1 < $value2 {
-            return Err(anchor_lang::error!($error_code).with_values(($value1, $value2)));
+            return ::core::result::Result::Err(
+                $crate::error!($error_code).with_values(($value1, $value2)),
+            );
         }
     };
     ($value1: expr, $value2: expr $(,)?) => {
         if $value1 < $value2 {
-            return Err(error!(anchor_lang::error::ErrorCode::RequireGteViolated)
-                .with_values(($value1, $value2)));
+            return ::core::result::Result::Err(
+                $crate::error!($crate::error::ErrorCode::RequireGteViolated)
+                    .with_values(($value1, $value2)),
+            );
         }
     };
 }
@@ -954,10 +976,10 @@ macro_rules! require_gte {
 #[macro_export]
 macro_rules! err {
     ($error:tt $(,)?) => {
-        Err(anchor_lang::error!($crate::ErrorCode::$error))
+        ::core::result::Result::Err($crate::error!($crate::error::ErrorCode::$error))
     };
     ($error:expr $(,)?) => {
-        Err(anchor_lang::error!($error))
+        ::core::result::Result::Err($crate::error!($error))
     };
 }
 
@@ -965,7 +987,7 @@ macro_rules! err {
 #[macro_export]
 macro_rules! source {
     () => {
-        anchor_lang::error::Source {
+        $crate::error::Source {
             filename: file!(),
             line: line!(),
         }
