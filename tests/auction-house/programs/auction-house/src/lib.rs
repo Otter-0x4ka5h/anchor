@@ -649,7 +649,7 @@ pub mod auction_house {
     }
 
     pub fn execute_sale<'info>(
-        ctx: Context<'info, ExecuteSale<'info>>,
+        ctx: Context<'_, '_, '_, 'info, ExecuteSale<'info>>,
         buyer_price: u64,
         token_size: u64,
     ) -> Result<()> {

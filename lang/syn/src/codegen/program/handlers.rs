@@ -133,38 +133,12 @@ pub fn generate(program: &Program) -> proc_macro2::TokenStream {
                         &mut __reallocs,
                     )?;
 
-                    #[inline(always)]
-                    unsafe fn __shorten_invariant_lifetime_remaining_accounts<'a, 'info: 'a>(
-                        value: &'a [AccountInfo<'info>],
-                    ) -> &'a [AccountInfo<'a>] {
-                        unsafe { ::core::mem::transmute(value) }
-                    }
-
                     // Invoke user defined handler.
                     let result = #program_name::#ix_method_name(
                         anchor_lang::context::Context::new(
                             __program_id,
-                            // SAFETY: `__shorten_invariant_lifetime` functions are used to *shrink*
-                            // the lifetime of the inner `AccountInfo`s from `'info` to the local
-                            // function's lifetime. No lifetime is extended by this operation. The
-                            // lifetime is not shrunk automatically as `RefCell` causes `AccountInfo`
-                            // to be invariant.
-                            //
-                            // This is sound provided the following invariants hold:
-                            //
-                            // * The `'info` lifetime strictly outlives the local function lifetime;
-                            //   therefore, the transmuted references cannot outlive their backing
-                            //   data.
-                            // * `AccountInfo` does not implement custom `Drop` logic and does not
-                            //   rely on its lifetime parameter during destruction.
-                            // * The `Context` value is dropped before the `__accounts` reference
-                            //   is dropped or otherwise accessed, preventing any use-after-scope.
-                            //
-                            // This lifetime narrowing is required to conform to the `Context`
-                            // struct's single-lifetime parameterization, which uses a single
-                            // lifetime to keep the API simple and ergonomic.
-                            unsafe { #accounts_struct_name::__shorten_invariant_lifetime(&mut __accounts) },
-                            unsafe { __shorten_invariant_lifetime_remaining_accounts(__remaining_accounts) },
+                            &mut __accounts,
+                            __remaining_accounts,
                             __bumps,
                         ),
                         #(#ix_arg_names),*
