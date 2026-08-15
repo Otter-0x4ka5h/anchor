@@ -46,8 +46,8 @@ fn is_zeroed_discriminator(discr: &Expr) -> bool {
 
 fn gen_custom_discriminator_check(discrim: &Expr) -> proc_macro2::TokenStream {
     quote_spanned! {discrim.span() =>
-        const __ANCHOR_DISCRIMINATOR_CHECK: [(); {
-            const fn __anchor_check_discriminator(discriminator: &[u8]) -> usize {
+        const __ANCHOR_DISCRIMINATOR_CHECK: () = {
+                let discriminator = <Self as anchor_lang::Discriminator>::DISCRIMINATOR;
                 if discriminator.is_empty() {
                     panic!("all-zero or empty discriminators are not supported");
                 }
@@ -61,10 +61,6 @@ fn gen_custom_discriminator_check(discrim: &Expr) -> proc_macro2::TokenStream {
                 }
 
                 panic!("all-zero or empty discriminators are not supported");
-            }
-
-            __anchor_check_discriminator(<Self as anchor_lang::Discriminator>::DISCRIMINATOR)
-        }] = [];
     }
 }
 
