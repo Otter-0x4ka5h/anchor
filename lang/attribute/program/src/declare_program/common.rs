@@ -604,6 +604,31 @@ mod tests {
         ]
     }
 
+    fn create_recursive_container_idl_types() -> Vec<IdlTypeDef> {
+        vec![
+            struct_def(
+                "NodeVec",
+                vec![field(
+                    "children",
+                    IdlType::Vec(Box::new(IdlType::Defined {
+                        name: "NodeVec".to_string(),
+                        generics: vec![],
+                    })),
+                )],
+            ),
+            struct_def(
+                "NodeOption",
+                vec![field(
+                    "next",
+                    IdlType::Option(Box::new(IdlType::Defined {
+                        name: "NodeOption".to_string(),
+                        generics: vec![],
+                    })),
+                )],
+            ),
+        ]
+    }
+
     #[test]
     fn test_can_derive_copy_ty() {
         let ty_defs = create_test_idl_types();
@@ -685,6 +710,10 @@ mod tests {
             &IdlType::Vec(Box::new(IdlType::U8)),
             &ty_defs
         ));
+        assert!(can_derive_default_ty(
+            &IdlType::Vec(Box::new(IdlType::Generic("T".to_string()))),
+            &ty_defs
+        ));
 
         // Test Array with small fixed size (should be defaultable)
         assert!(can_derive_default_ty(
@@ -707,6 +736,10 @@ mod tests {
         // Test Option with defaultable inner type
         assert!(can_derive_default_ty(
             &IdlType::Option(Box::new(IdlType::String)),
+            &ty_defs
+        ));
+        assert!(can_derive_default_ty(
+            &IdlType::Option(Box::new(IdlType::Generic("T".to_string()))),
             &ty_defs
         ));
 
@@ -785,6 +818,14 @@ mod tests {
         // Wrapper around NonCopyStruct: inherits Default-able (String: Default)
         let wrapper = &ty_defs[6];
         assert!(can_derive_default(wrapper, &ty_defs));
+    }
+
+    #[test]
+    fn test_can_derive_default_for_recursive_containers() {
+        let ty_defs = create_recursive_container_idl_types();
+
+        assert!(can_derive_default(&ty_defs[0], &ty_defs));
+        assert!(can_derive_default(&ty_defs[1], &ty_defs));
     }
 
     #[test]

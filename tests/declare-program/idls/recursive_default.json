@@ -1,0 +1,46 @@
+{
+  "address": "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS",
+  "metadata": {
+    "name": "recursive_default",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Recursive default regression coverage"
+  },
+  "instructions": [
+    {
+      "name": "test_compilation_recursive_default",
+      "discriminator": [201, 142, 79, 15, 99, 133, 17, 62],
+      "accounts": [],
+      "args": [
+        {
+          "name": "node_vec",
+          "type": {
+            "defined": {
+              "name": "NodeVec"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "types": [
+    {
+      "name": "NodeVec",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "children",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "NodeVec"
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
