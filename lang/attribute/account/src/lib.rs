@@ -9,7 +9,7 @@ use {
         parse_macro_input,
         spanned::Spanned,
         token::Paren,
-        Expr, Ident, LitStr, Token,
+        Ident, LitStr, Token,
     },
 };
 
@@ -17,52 +17,6 @@ mod id;
 
 #[cfg(feature = "lazy-account")]
 mod lazy;
-
-fn is_zero_lit(lit: &syn::Lit) -> bool {
-    match lit {
-        syn::Lit::Int(val) => val.base10_parse::<u128>().is_ok_and(|v| v == 0),
-        syn::Lit::Byte(val) => val.value() == 0,
-        syn::Lit::ByteStr(val) => val.value().iter().all(|byte| *byte == 0),
-        _ => false,
-    }
-}
-
-// Fast-path obvious literal forms so simple mistakes still get a direct
-// compile_error! on the user-provided expression span.
-fn is_zeroed_discriminator(discr: &Expr) -> bool {
-    match discr {
-        Expr::Reference(syn::ExprReference { expr, .. })
-        | Expr::Paren(syn::ExprParen { expr, .. })
-        | Expr::Group(syn::ExprGroup { expr, .. }) => is_zeroed_discriminator(expr),
-        Expr::Lit(syn::ExprLit { lit, .. }) => is_zero_lit(lit),
-        Expr::Array(arr) => arr.elems.iter().all(is_zeroed_discriminator),
-        // [0; N] is all zeroed for any N, and [X; 0] is empty.
-        Expr::Repeat(rep) => {
-            is_zeroed_discriminator(&rep.expr) || is_zeroed_discriminator(&rep.len)
-        }
-        _ => false,
-    }
-}
-
-fn gen_custom_discriminator_check(discrim: &Expr) -> proc_macro2::TokenStream {
-    quote_spanned! {discrim.span() =>
-        const __ANCHOR_DISCRIMINATOR_CHECK: () = {
-                let discriminator = <Self as anchor_lang::Discriminator>::DISCRIMINATOR;
-                if discriminator.is_empty() {
-                    panic!("all-zero or empty discriminators are not supported");
-                }
-
-                let mut i = 0;
-                while i < discriminator.len() {
-                    if discriminator[i] != 0 {
-                        return 0;
-                    }
-                    i += 1;
-                }
-
-                panic!("all-zero or empty discriminators are not supported");
-    }
-}
 
 /// An attribute for a data structure representing a Solana account.
 ///
@@ -159,21 +113,29 @@ pub fn account(
     let account_name_str = account_name.to_string();
     let (impl_gen, type_gen, where_clause) = account_strct.generics.split_for_impl();
 
-    let (discriminator, discriminator_check) = match args.overrides.and_then(|ov| ov.discriminator)
-    {
+    let discriminator = match args.overrides.and_then(|ov| ov.discriminator) {
         Some(discrim) => {
-            let zero_err = is_zeroed_discriminator(&discrim).then(||
-                quote_spanned! {discrim.span() => compile_error!("all-zero or empty discriminators are not supported");}
-            );
-            (
-                quote! {
-                    {
-                        #zero_err
-                        #discrim
+            quote_spanned! {discrim.span() =>
+                {
+                    let discriminator = #discrim;
+                    if discriminator.is_empty() {
+                        panic!("all-zero or empty discriminators are not supported");
                     }
-                },
-                gen_custom_discriminator_check(&discrim),
-            )
+
+                    let mut i = 0;
+                    while i < discriminator.len() {
+                        if discriminator[i] != 0 {
+                            break;
+                        }
+                        i += 1;
+                    }
+
+                    if i == discriminator.len() {
+                        panic!("all-zero or empty discriminators are not supported");
+                    }
+                    discriminator
+                }
+            }
         }
         None => {
             // Namespace the discriminator to prevent collisions.
@@ -183,10 +145,7 @@ pub fn account(
                 &namespace
             };
 
-            (
-                gen_discriminator(namespace, account_name),
-                proc_macro2::TokenStream::new(),
-            )
+            gen_discriminator(namespace, account_name)
         }
     };
 
@@ -254,11 +213,6 @@ pub fn account(
                 #[automatically_derived]
                 impl #impl_gen anchor_lang::Discriminator for #account_name #type_gen #where_clause {
                     const DISCRIMINATOR: &'static [u8] = #discriminator;
-                }
-
-                #[automatically_derived]
-                impl #impl_gen #account_name #type_gen #where_clause {
-                    #discriminator_check
                 }
 
                 // This trait is useful for clients deserializing accounts.
@@ -337,11 +291,6 @@ pub fn account(
                 #[automatically_derived]
                 impl #impl_gen anchor_lang::Discriminator for #account_name #type_gen #where_clause {
                     const DISCRIMINATOR: &'static [u8] = #discriminator;
-                }
-
-                #[automatically_derived]
-                impl #impl_gen #account_name #type_gen #where_clause {
-                    #discriminator_check
                 }
 
                 #owner_impl
@@ -683,42 +632,4 @@ pub fn declare_id(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
     #[allow(unreachable_code)]
     proc_macro::TokenStream::from(ret)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[allow(clippy::expect_used)]
-    fn zeroed(source: &str) -> bool {
-        let expr = syn::parse_str(source).expect("test expression should parse");
-        is_zeroed_discriminator(&expr)
-    }
-
-    #[test]
-    fn detects_zeroed_discriminator_literals() {
-        assert!(zeroed("0"));
-        assert!(zeroed("b'\\x00'"));
-        assert!(zeroed("b\"\""));
-        assert!(zeroed("b\"\\x00\\x00\""));
-
-        assert!(!zeroed("1"));
-        assert!(!zeroed("b'a'"));
-        assert!(!zeroed("b\"\\x00\\x01\""));
-        assert!(!zeroed("\"\""));
-    }
-
-    #[test]
-    fn detects_zeroed_discriminator_collections() {
-        assert!(zeroed("&[0, (0)]"));
-        assert!(zeroed("[]"));
-        assert!(zeroed("[0; N]"));
-        assert!(zeroed("[1; 0]"));
-        assert!(zeroed("(&b\"\\x00\" )"));
-
-        assert!(!zeroed("&[0, 1]"));
-        assert!(!zeroed("[1; N]"));
-        assert!(!zeroed("MY_DISC"));
-        assert!(!zeroed("get_disc()"));
-    }
 }
