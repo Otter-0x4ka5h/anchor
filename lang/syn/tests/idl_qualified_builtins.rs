@@ -36,7 +36,8 @@ fn qualified_builtin_paths_lower_to_builtin_idl_types() {
     ] {
         assert!(
             !output.contains(unexpected),
-            "Output incorrectly treated a qualified builtin as a defined type: '{unexpected}'. Got: '{output}'",
+            "Output incorrectly treated a qualified builtin as a defined type: '{unexpected}'. \
+             Got: '{output}'",
         );
     }
 }
