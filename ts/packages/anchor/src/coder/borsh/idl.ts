@@ -397,7 +397,7 @@ export class IdlCoder {
         return IdlCoder.fieldLayoutWithContext(
           { type: typeDef.type.alias, name },
           types,
-          null,
+          genericArgs,
           typeDef.serialization,
           typeStack
         );
