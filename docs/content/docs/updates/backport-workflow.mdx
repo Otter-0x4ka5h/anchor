@@ -125,7 +125,7 @@ Bug fix in IDL generation needs backporting to v0.30.x:
 ```bash
 # Original PR #5678 merged to master with commit def456
 git fetch origin
-git checkout -b backport-5678-to-v0.30.x origin/v0.30.x
+git checkout -b backport-5678-to-0.30 origin/0.30
 git cherry-pick def456
 
 # Conflicts occur due to code differences
@@ -140,8 +140,8 @@ git cherry-pick --continue
 cargo test --package anchor-idl
 
 # Push and create PR
-git push origin backport-5678-to-v0.30.x
-# Open PR: "[Backport v0.30.x] Fix IDL generation for nested types"
+git push origin backport-5678-to-0.30
+# Open PR: "[Backport 0.30] Fix IDL generation for nested types"
 ```
 
 ### Example 3: Multiple Related Commits
@@ -150,7 +150,7 @@ Feature flag fix requires backporting multiple commits:
 
 ```bash
 # Original PR #9012 has 3 related commits
-git checkout -b backport-9012-to-v0.30.x origin/v0.30.x
+git checkout -b backport-9012-to-0.30 origin/0.30
 
 # Cherry-pick all related commits together
 git cherry-pick abc123 def456 ghi789
@@ -159,7 +159,7 @@ git cherry-pick abc123 def456 ghi789
 git log -3
 
 # Push and create PR
-git push origin backport-9012-to-v0.30.x
+git push origin backport-9012-to-0.30
 ```
 
 ---
