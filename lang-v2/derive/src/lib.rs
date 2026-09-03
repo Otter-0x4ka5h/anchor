@@ -3616,6 +3616,8 @@ enum DeclareTypeSerialization {
 }
 
 impl DeclareTypeSerialization {
+    // This intentionally matches both `Bytemuck` and `BytemuckUnsafe`.
+    // Use `is_bytemuck_unsafe` when the unsafe-only distinction matters.
     fn is_bytemuck(self) -> bool {
         matches!(self, Self::Bytemuck | Self::BytemuckUnsafe)
     }
