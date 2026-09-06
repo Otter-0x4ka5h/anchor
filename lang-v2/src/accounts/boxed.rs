@@ -132,8 +132,6 @@ impl<T: AccountInitialize> AccountInitialize for Box<T> {
     }
 }
 
-/// Forward the foreign-owner init marker so `Box<UncheckedAccount>` works with
-/// `#[account(init, owner = …)]` the same way bare `UncheckedAccount` does.
 impl<T: ForeignOwnerInit> ForeignOwnerInit for Box<T> {}
 
 impl<T: Space> Space for Box<T> {
